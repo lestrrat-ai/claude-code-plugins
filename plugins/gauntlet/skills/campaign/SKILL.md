@@ -233,7 +233,9 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
     `followups.py add`: record it the moment it is noticed, never in driver prose, which dies with the
     driver's context; recording one never discharges a finding (`references/followups.md`).
 26. Every PR merged or set aside -> run `carryover.py distill` to write the carryover ledger (it projects
-    the terminal ledger, exactly once), then the final report. Otherwise refresh the lease and reschedule.
+    the terminal ledger, exactly once). If a later verified MERGED result changes one already-distilled
+    aborted row, run `carryover.py reconcile-merged` for that PR before the final report. Otherwise refresh
+    the lease and reschedule.
 
 ## Bundled Scripts
 
@@ -295,7 +297,7 @@ a line the tool writes.
 | `repair-pass.py` | Reassessment pass's door: `permitted` / `bundle` / `decide` — deterministic complete-history prompt, bundle hash binding, closed decision enum, ownership guardrail, repair cap | `references/repair-pass.md` |
 | `followups.py` | Schema-owning accessor for the follow-up store (`.gauntlet/followups.jsonl`) — a durable work QUEUE, not an archive: entries are deleted once recorded elsewhere, kept when nothing else would remember | `references/followups.md` |
 | `review-learnings.py` | Schema-owning accessor for the durable review-learnings store (`.gauntlet/review-learnings.jsonl`) — refuted and legacy-demoted finding CLASSES the DRIVER consults when authoring intent; ACCUMULATES and never auto-deletes, expires to `stale`, promotion beyond gauntlet-local is the user's | `references/review-learnings.md` |
-| `carryover.py` | `distill` — project a run's TERMINAL ledger into `.gauntlet/history/<run-id>.md` on normal exit: merged/aborted/API-declined facts, exactly once (refuses a live run and refuses to overwrite) | `references/carryover.md` |
+| `carryover.py` | `distill` — project a run's TERMINAL ledger into `.gauntlet/history/<run-id>.md` on normal exit, exactly once; `reconcile-merged` safely replaces one existing aborted projection after a verified MERGED transition | `references/carryover.md` |
 | `nudge.py` | Advisory reminder printer for heartbeat start; always exits 0 | its own module docstring |
 | `transport-contract-test.py` | Standalone suite the plugin validator runs directly to pin the typed review/adoption boundary; owns no run state | `references/runtime-adapter.md` |
 | `script-table-test.py` | Standalone suite CI runs directly to prove this table and `scripts/` agree; owns no run state | this section |

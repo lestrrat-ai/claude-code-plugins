@@ -385,7 +385,7 @@
   at the door (`files-and-ledger.md`, the `head_sha` field, "What a genuine head move resets") — and
   require fresh CI.
 - Resume vs. fresh run is decided by **liveness**, not by `state.jsonl` existing: live work → resume;
-  a finished prior run → ask the user before a fresh run; `--new` → fresh run with
+  after its terminal-aborted follow-up, a finished prior run → ask the user before a fresh run; `--new` → fresh run with
   carryover (Loop control step 1). A finished run must never silently exit "all done" or silently
   restart.
 - A fresh run carries over prior knowledge from `.gauntlet/history/` (merged/aborted PR record, to

@@ -1017,6 +1017,29 @@ def t_absent_routing_decision():
             finish(td, real)
 
 
+def t_terminal_aborted_follow_up_routes_later_merge():
+    # A previously aborted PR is absent from the open snapshot, but a later live view verifies that it was
+    # externally merged. The terminal-aborted follow-up must expose the absent fact before completion and
+    # route that fact through the existing finalizer, which updates the ledger without re-merging.
+    td, root, f, led, real = scenario(state="MERGED", status="aborted")
+    try:
+        prs = root / "prs.json"
+        prs.write_text("[]", encoding="utf-8")
+        facts = RECON.detect(led, prs, "g1")
+        row_fact = facts["rows"]["9"]
+        check(row_fact == {"terminal": "aborted", "absent_from_snapshot": True},
+              f"terminal aborted follow-up fact drifted: {row_fact}")
+        code, result, err = invoke(f, led, root)
+        check(code == 0, f"terminal aborted follow-up did not finalize the later merge: {err}")
+        check(result is not None and result["status"] == "merged",
+              f"terminal aborted follow-up returned {result}")
+        check(status(led) == "merged", "the verified later merge did not update the terminal row")
+        check(not any(argv[:3] == ["gh", "pr", "merge"] for argv, _ in f.calls),
+              "the terminal aborted follow-up attempted a second merge")
+    finally:
+        finish(td, real)
+
+
 def t_label_free_half_adopted_closed_out():
     # A HALF-ADOPTION can fail even EARLIER than the worktree step: pr-adopt.py persists the ledger row and
     # then, during its step-5 Git work, dies BEFORE `gh pr edit` attaches the run label. GitHub then reports
@@ -1703,6 +1726,8 @@ CASES = [
     ("closed-out-moved-refs", "the CLOSED close-out terminates as aborted despite a moved head, base, or branch", t_closed_out_terminates_despite_moved_head_base_or_branch),
     ("closed-out-held-statuses", "a CLOSED PR closes out every held status to aborted; merged+CLOSED stays refused", t_closed_out_terminates_every_held_status),
     ("absent-routing", "the absent fact routes reconcile -> merge.py run, which finalizes MERGED and CLOSED sides", t_absent_routing_decision),
+    ("terminal-aborted-follow-up", "an absent aborted row routes a later MERGED view through merge.py run without re-merging",
+     t_terminal_aborted_follow_up_routes_later_merge),
     ("label-free-half-adopted-closed", "a half-adopted CLOSED row with no own label closes out to aborted; a foreign label still refuses", t_label_free_half_adopted_closed_out),
     ("external-merge-held-resume", "an external MERGE of a held row resumes to merged for every held status; OPEN+held stays refused", t_external_merge_while_held_resumes),
     ("absent-held-merge-routing", "an absent held row externally MERGED routes reconcile -> merge.py run, which resumes it to merged", t_absent_held_row_external_merge_routes_to_resume),

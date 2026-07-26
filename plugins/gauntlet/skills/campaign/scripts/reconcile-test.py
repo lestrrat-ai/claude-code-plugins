@@ -10,9 +10,11 @@ suite that only checked `code == 0` would pass against a detector that emitted t
 facts are what the skill routes on.
 
 Two decisions this suite PINS, because they are the ones a reader would otherwise have to guess:
-- **A TERMINAL row is not compared at all.** `merged`/`aborted` rows emit `{"terminal": status}` and
-  nothing else — even when the snapshot still shows the PR (a reopened-after-merge oddity). Presence is not
-  reported, absence is not reported, no change is computed. The fixtures drive both branches.
+- **A TERMINAL row is not compared against a present snapshot.** `merged` rows and present `aborted` rows
+  emit `{"terminal": status}` and nothing else — even when the snapshot still shows the PR (a
+  reopened-after-merge oddity). An absent `aborted` row additionally reports
+  `absent_from_snapshot: true` so the skill can run its terminal follow-up before completion. The fixtures
+  drive all branches.
 - **`absent_from_snapshot` is a FACT, never an error.** A live row missing from the snapshot exits 0 with
   `{"absent_from_snapshot": true}` — the merged/closed-by-absence signal — not a non-zero "PR vanished".
 """
@@ -453,11 +455,25 @@ def t_terminal_merged_even_when_present():
 
 
 def t_terminal_aborted_absent():
-    # An aborted row absent from the snapshot — still ONLY `terminal`, absence is NOT reported.
+    # An aborted row absent from the snapshot reports its terminal status plus the follow-up absence fact.
     code, res, err = scenario([row(41, status="aborted")], [])
     check(code == 0, f"exit 0, got {code} (stderr {err!r})")
+    check(res["rows"]["41"] == {"terminal": "aborted", "absent_from_snapshot": True},
+          f"an aborted row absent from the snapshot reports its follow-up fact, got {res['rows']['41']!r}")
+    check(res["counts"]["terminal_rows"] == 1 and res["counts"]["live_rows"] == 0
+          and res["counts"]["present_in_snapshot"] == 0 and res["counts"]["absent_from_snapshot"] == 1,
+          f"terminal-aborted follow-up counts drifted, got {res['counts']!r}")
+
+
+def t_terminal_aborted_present_stays_terminal_only():
+    # An aborted row still present in the open snapshot is unchanged: it stays terminal-only and does not
+    # enter the follow-up route or any gate comparison.
+    code, res, err = scenario([row(41, status="aborted")], [entry(41)])
+    check(code == 0, f"exit 0, got {code} (stderr {err!r})")
     check(res["rows"]["41"] == {"terminal": "aborted"},
-          f"an aborted row emits ONLY {{terminal: aborted}}, got {res['rows']['41']!r}")
+          f"a present aborted row must remain terminal-only, got {res['rows']['41']!r}")
+    check(res["counts"]["terminal_rows"] == 1 and res["counts"]["absent_from_snapshot"] == 0,
+          f"a present aborted row entered the follow-up count, got {res['counts']!r}")
 
 
 # --- refusals: fail closed, exit 2, empty stdout, named cause ------------------
@@ -617,7 +633,10 @@ CASES = [
     ("unadopted-int", "an unadopted number stays a verbatim int", t_unadopted_number_stays_int),
     ("terminal-present", "a merged row still in the snapshot -> only {terminal}, nothing else",
      t_terminal_merged_even_when_present),
-    ("terminal-absent", "an aborted row absent from the snapshot -> only {terminal}", t_terminal_aborted_absent),
+    ("terminal-absent", "an aborted row absent from the snapshot -> terminal plus the follow-up absence fact",
+     t_terminal_aborted_absent),
+    ("terminal-present-aborted", "an aborted row present in the snapshot stays terminal-only",
+     t_terminal_aborted_present_stays_terminal_only),
     ("refuse-missing-field", "a missing canonical field -> exit 2, names field + block",
      t_missing_canonical_field_refused),
     ("refuse-null-field", "a null canonical field -> exit 2, names null", t_null_canonical_field_refused),

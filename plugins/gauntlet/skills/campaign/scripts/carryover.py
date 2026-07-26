@@ -7,6 +7,10 @@ deterministic projection of `state.jsonl` at the moment every row is terminal �
 prose. PRUNING and any JUDGMENT stay with the driver (a fresh run edits/removes OTHER runs' files); this
 tool only WRITES this run's own file, and only when the run is actually finished.
 
+`reconcile-merged` is the one narrow exception to the once-only write: after the existing merge finalizer
+verifies that one previously aborted row is now MERGED, it safely replaces that run's history projection
+atomically. It refuses every other existing-history change.
+
 **The once-only rule is this tool's REFUSAL, not an exhortation.** A run is distilled exactly once
 (`carryover.md`, "distilled exactly once, on normal exit"): an already-present `<run-id>.md` means a
 previous exit already wrote it, so `distill` REFUSES to overwrite it. `--force` exists for one case only —
@@ -92,12 +96,14 @@ def _ledger():
 
 def sections(rows: list[dict]) -> "list[tuple[str, tuple[str, ...], list[dict]]]":
     """The three terminal-class projections, in a FIXED order. Row order is the ledger's, so the output is
-    deterministic. A declined-API PR is terminal-`aborted`, so it appears in BOTH `aborted` and
-    `api-declined`; that overlap is documented in the file's header and is not double-counting.
+    deterministic. A declined-API non-merged PR is terminal-`aborted`, so it appears in BOTH `aborted` and
+    `api-declined`; that overlap is documented in the file's header and is not double-counting. A PR that
+    is now `merged` appears in `merged` only.
     """
     merged = [r for r in rows if r["status"] == "merged"]
     aborted = [r for r in rows if r["status"] == "aborted"]
-    api_declined = [r for r in rows if r["api_approval"].startswith("declined@")]
+    api_declined = [r for r in rows
+                    if r["status"] != "merged" and r["api_approval"].startswith("declined@")]
     return [
         ("merged", MERGED_FIELDS, merged),
         ("aborted", ABORTED_FIELDS, aborted),
@@ -119,12 +125,13 @@ def render(run_id: str, base_branches: "list[str]", now: str,
     out.append(f"<!-- gauntlet carryover history — format v{FORMAT_VERSION}")
     out.append("Distilled ONCE from a run's terminal ledger by `carryover.py distill`, on the run's")
     out.append("normal exit (every PR merged or aborted). A deterministic projection of state.jsonl —")
-    out.append("DO NOT hand-edit, and it is never re-distilled (an existing file means a previous exit")
-    out.append("already wrote it). Object keys are ledger field names (scripts/ledger.py ROW_FIELDS).")
+    out.append("DO NOT hand-edit. Normal distill never rewrites an existing file; the one safe")
+    out.append("aborted-to-MERGED reconciliation is owned by `carryover.py reconcile-merged`. Object keys are")
+    out.append("ledger field names (scripts/ledger.py ROW_FIELDS).")
     out.append("Each `## <section>` heading is followed by zero or more rows, one JSON object per PR:")
     out.append("  merged        pr, slug, head_sha (at merge), tier, review_rounds, base_branch")
     out.append("  aborted       pr, slug, ci_reason, blocker_ruling, base_branch  (the durable why it stopped)")
-    out.append("  api-declined  pr, slug, api_approval, base_branch. A declined PR is ALSO aborted, so it")
+    out.append("  api-declined  pr, slug, api_approval, base_branch. A declined non-merged PR is ALSO aborted,")
     out.append("                appears in BOTH sections — this is a reminder projection, not double-counting.")
     out.append("Each object's `base_branch` is the row's EFFECTIVE base at distillation (its own recorded")
     out.append("base, else the run's legacy header base). `base_branches` below is the sorted, deduplicated")
@@ -183,27 +190,18 @@ def check_terminal(rows: list[dict]) -> None:
                                  f"live; drive it to completion first")
 
 
-def distill(ledger, ledger_path: Path, out_dir: Path, now: str, *, force: bool) -> dict:
-    """Load, validate, and (on success) ATOMICALLY write `<out_dir>/<run_id>.md`. Returns the summary dict.
-    Raises `Refusal` for every declined case, having written NOTHING.
-    """
+def _prepare(ledger, ledger_path: Path, now: str):
+    """Load a terminal ledger and prepare its complete, validated history projection."""
     now = check_now(now)
     header, rows = ledger.load(ledger_path)  # the schema owner's loader — its strictness IS the validation
     run_id = check_run_id(header)
     check_terminal(rows)
 
-    out_path = out_dir / f"{run_id}.md"
-    if out_path.exists() and not force:
-        raise Refusal(EXIT_STOP, f"{out_path} already exists — this run was already distilled (a run is "
-                                 f"distilled exactly once). Pass --force ONLY to re-run after a crash that "
-                                 f"died mid-write")
-
     # Each row's EFFECTIVE base resolves through the schema owner (its own recorded base, else the legacy
     # header) — never a second copy of that fallback. An UNRESOLVED base (blank or the `-` sentinel) is
     # REFUSED before it can be stamped into the durable history: `ledger.require_effective_base` is the one
     # owner of that fail-closed rule, and history that recorded `-` as a branch name would poison every
-    # future prune ("prune each entry against ITS OWN base"). `base_branches` is the sorted, deduplicated set
-    # for the v2 metadata; `base_of` stamps each object so history prunes per PR/base pair.
+    # future prune ("prune each entry against ITS OWN base").
     def base_of(row: dict) -> str:
         base, base_problem = ledger.require_effective_base(header, row, row.get("pr", "-"))
         if base_problem is not None:
@@ -213,18 +211,132 @@ def distill(ledger, ledger_path: Path, out_dir: Path, now: str, *, force: bool) 
 
     base_branches = sorted({base_of(r) for r in rows})
     projected = sections(rows)
-    text = render(run_id, base_branches, now, projected, base_of)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    # Same-directory temp + os.replace: a reader sees the whole old file or the whole new one, never a torn
-    # write, and a failure leaves the ORIGINAL untouched and takes the temp with it (the house pattern).
-    replace_text(out_path, text, temp_prefix=f".{run_id}.md.", encoding="utf-8")
+    return now, header, rows, run_id, base_branches, projected, base_of
 
+
+def _projected_objects(projected, base_of: "Callable[[dict], str]") -> dict[str, list[dict]]:
+    """Convert the live projection to the exact JSON objects written in each history section."""
+    return {
+        name: [{**{field: row[field] for field in fields}, "base_branch": base_of(row)} for row in rows]
+        for name, fields, rows in projected
+    }
+
+
+def _read_history(path: Path, run_id: str) -> dict[str, list[dict]]:
+    """Read the prior projection needed by the one safe aborted-to-merged rewrite."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise Refusal(EXIT_STOP, f"cannot read existing carryover {path}: {exc}") from exc
+
+    recorded_run_id = next((line.removeprefix("run_id: ").strip()
+                            for line in text.splitlines() if line.startswith("run_id: ")), None)
+    if recorded_run_id != run_id:
+        raise Refusal(EXIT_STOP, f"existing carryover {path} does not name run {run_id!r}")
+
+    legacy_base = next((line.removeprefix("base_branch: ").strip()
+                        for line in text.splitlines() if line.startswith("base_branch: ")), None)
+    sections_found: dict[str, list[dict]] = {name: [] for name in ("merged", "aborted", "api-declined")}
+    seen_sections: set[str] = set()
+    current: "str | None" = None
+    for line in text.splitlines():
+        if line.startswith("## "):
+            name = line[3:].strip()
+            if name not in sections_found or name in seen_sections:
+                raise Refusal(EXIT_STOP, f"existing carryover {path} has an invalid or duplicate section {name!r}")
+            seen_sections.add(name)
+            current = name
+            continue
+        if not line.startswith("{"):
+            continue
+        if current is None:
+            raise Refusal(EXIT_STOP, f"existing carryover {path} has a row outside a section")
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise Refusal(EXIT_STOP, f"existing carryover {path} has invalid JSON: {exc}") from exc
+        if not isinstance(row, dict) or not isinstance(row.get("pr"), str):
+            raise Refusal(EXIT_STOP, f"existing carryover {path} has a row without a string PR")
+        if "base_branch" not in row:
+            if legacy_base is None or not legacy_base or legacy_base == "-":
+                raise Refusal(EXIT_STOP, f"existing carryover {path} has an unresolved legacy base")
+            row = {**row, "base_branch": legacy_base}
+        sections_found[current].append(row)
+
+    if current is None or seen_sections != set(sections_found):
+        raise Refusal(EXIT_STOP, f"existing carryover {path} has no projection sections")
+    return sections_found
+
+
+def _without_pr(rows: list[dict], pr: str) -> tuple[list[dict], int]:
+    kept = [row for row in rows if row.get("pr") != pr]
+    return kept, len(rows) - len(kept)
+
+
+def _check_aborted_to_merged(old: dict[str, list[dict]], current: dict[str, list[dict]], pr: str,
+                             path: Path) -> None:
+    """Require exactly one prior aborted row to become the requested merged row, with no other changes."""
+    old_aborted = [row for row in old["aborted"] if row.get("pr") == pr]
+    old_merged = [row for row in old["merged"] if row.get("pr") == pr]
+    new_merged = [row for row in current["merged"] if row.get("pr") == pr]
+    new_aborted = [row for row in current["aborted"] if row.get("pr") == pr]
+    new_declined = [row for row in current["api-declined"] if row.get("pr") == pr]
+    if len(old_aborted) != 1 or old_merged or len(new_merged) != 1 or new_aborted or new_declined:
+        raise Refusal(EXIT_STOP, f"{path} is not the prior aborted projection for PR {pr}; refusing rewrite")
+
+    for name in ("merged", "aborted", "api-declined"):
+        old_rest, _ = _without_pr(old[name], pr)
+        new_rest, _ = _without_pr(current[name], pr)
+        if old_rest != new_rest:
+            raise Refusal(EXIT_STOP, f"{path} and the current ledger differ outside aborted PR {pr}; refusing rewrite")
+
+
+def _summary(run_id: str, out_path: Path, base_branches: list[str], projected) -> dict:
     return {
         "run_id": run_id,
         "path": str(out_path),
         "base_branches": base_branches,
         **{name.replace("-", "_"): len(rows) for name, _fields, rows in projected},
     }
+
+
+def distill(ledger, ledger_path: Path, out_dir: Path, now: str, *, force: bool) -> dict:
+    """Load, validate, and (on success) ATOMICALLY write `<out_dir>/<run_id>.md`. Returns the summary dict.
+    Raises `Refusal` for every declined case, having written NOTHING.
+    """
+    now, _header, _rows, run_id, base_branches, projected, base_of = _prepare(ledger, ledger_path, now)
+
+    out_path = out_dir / f"{run_id}.md"
+    if out_path.exists() and not force:
+        raise Refusal(EXIT_STOP, f"{out_path} already exists — this run was already distilled (a run is "
+                                 f"distilled exactly once). Pass --force ONLY to re-run after a crash that "
+                                 f"died mid-write")
+
+    text = render(run_id, base_branches, now, projected, base_of)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    # Same-directory temp + os.replace: a reader sees the whole old file or the whole new one, never a torn
+    # write, and a failure leaves the ORIGINAL untouched and takes the temp with it (the house pattern).
+    replace_text(out_path, text, temp_prefix=f".{run_id}.md.", encoding="utf-8")
+
+    return _summary(run_id, out_path, base_branches, projected)
+
+
+def reconcile_merged(ledger, ledger_path: Path, out_dir: Path, pr: str, now: str) -> dict:
+    """Atomically replace one run's history after exactly one aborted row becomes merged."""
+    now, _header, rows, run_id, base_branches, projected, base_of = _prepare(ledger, ledger_path, now)
+    row = next((row for row in rows if row.get("pr") == pr), None)
+    if row is None or row.get("status") != "merged":
+        raise Refusal(EXIT_STOP, f"PR {pr} is not merged in the current ledger; refusing carryover rewrite")
+
+    out_path = out_dir / f"{run_id}.md"
+    if not out_path.exists():
+        raise Refusal(EXIT_STOP, f"{out_path} does not exist; only an existing aborted projection may be reconciled")
+    old = _read_history(out_path, run_id)
+    current = _projected_objects(projected, base_of)
+    _check_aborted_to_merged(old, current, pr, out_path)
+    replace_text(out_path, render(run_id, base_branches, now, projected, base_of),
+                 temp_prefix=f".{run_id}.md.", encoding="utf-8")
+    return _summary(run_id, out_path, base_branches, projected)
 
 
 # --- cli ----------------------------------------------------------------------
@@ -240,6 +352,24 @@ def cmd_distill(args) -> int:
         # explanation to stderr and raising SystemExit(1). Translate that to this tool's operator-error
         # code without re-printing — the loader already said what is wrong, and reusing it is the point
         # (its strictness is not re-implemented here).
+        return EXIT_OPERATOR
+    except Refusal as exc:
+        print(f"carryover: {exc.msg}", file=sys.stderr)
+        return exc.code
+    except OSError as exc:
+        print(f"carryover: cannot read ledger {ledger_path}: {exc}", file=sys.stderr)
+        return EXIT_OPERATOR
+    print(json.dumps(summary))
+    return 0
+
+
+def cmd_reconcile_merged(args) -> int:
+    ledger = _ledger()
+    ledger_path = Path(args.ledger)
+    out_dir = Path(args.out_dir)
+    try:
+        summary = reconcile_merged(ledger, ledger_path, out_dir, args.pr, args.now)
+    except SystemExit:
         return EXIT_OPERATOR
     except Refusal as exc:
         print(f"carryover: {exc.msg}", file=sys.stderr)
@@ -268,6 +398,15 @@ def build_parser() -> argparse.ArgumentParser:
                    help="overwrite an existing <run-id>.md. For ONE case only: re-running after a crash "
                         "that died mid-write. A normal exit distills exactly once and never needs it")
 
+    r = sub.add_parser("reconcile-merged", help="atomically update existing history after one aborted PR "
+                                       "is verified MERGED; refuses unrelated changes")
+    r.add_argument("--ledger", required=True, help="path to the run's ledger (<rundir>/state.jsonl)")
+    r.add_argument("--out-dir", dest="out_dir", required=True,
+                   help="the history directory containing the existing <run-id>.md")
+    r.add_argument("--pr", required=True, help="the PR whose aborted history row was verified MERGED")
+    r.add_argument("--now", required=True,
+                   help="the replacement distilled-at timestamp (ISO-8601), a REQUIRED input")
+
     sub.add_parser("self-test", help="run every fixture and assert the rules this file enforces still hold")
     return parser
 
@@ -278,6 +417,8 @@ def main(argv: "list[str] | None" = None) -> int:
         return self_test()
     if args.cmd == "distill":
         return cmd_distill(args)
+    if args.cmd == "reconcile-merged":
+        return cmd_reconcile_merged(args)
     raise AssertionError(f"unreachable subcommand {args.cmd!r}")  # pragma: no cover
 
 

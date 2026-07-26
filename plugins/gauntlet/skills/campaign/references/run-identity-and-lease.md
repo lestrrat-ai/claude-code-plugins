@@ -196,14 +196,18 @@ the verdict the tool prints.
      cap **bounds** the scan rather than proving it complete) ∪ run-ids with a `<rundir>/` (its `state.jsonl` or
      `lease.json`), each bucketed by `lease.py read` (advisory status — never decide ownership from it;
      that is `acquire`'s job): **actively-driven** (`held`),
-     **orphaned** (non-terminal, `absent`/`stale`), or **finished** (terminal, no open PR):
+     **orphaned** (non-terminal, `absent`/`stale`), or **finished** (terminal, no open PR, after
+     terminal-aborted follow-up):
      - exactly one **orphaned** → adopt and resume it ("pick up where the previous instance left off"),
        reconciling its run-labelled PRs (see "PR adoption");
      - several orphaned → list them (id, #open PRs) and **ask which to resume, or start new**;
      - only **actively-driven** → each has a live driver; do NOT hijack — offer to start a **new** run;
      - a lease reading **`corrupt`** → neither driven nor adoptable; report it to the user and leave
        that run alone (see "Adopt only an orphaned run");
-     - only **finished** → the finished-run prompt (Loop control step 1), per run;
+     - only **finished** → first take the run and perform the terminal-aborted follow-up in Loop control
+       Step 1/Step 4 for every terminal `aborted` row whose PR is absent from the canonical snapshot. A
+       CLOSED verification keeps the abort and a verified MERGED result updates the row and carryover;
+       only after those checks may the finished-run prompt be shown, per run;
      - **none at all** (idle — nothing to drive) → **prompt**: "No PRs under a campaign. Run
        `gauntlet:review` to find issues, or pass PR numbers to gate." (This wording is **CANONICAL** —
        every other site shows the idle prompt by pointing here, not by retyping it.) Campaign never

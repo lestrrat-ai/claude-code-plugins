@@ -34,6 +34,11 @@ active work — see the repo's CLAUDE.md. Absence is a FACT to report, not a bug
 input or response is not evidence. A failed command, malformed response, wrong-label row, possible
 limit-boundary truncation, or failed promotion leaves any previous `prs.json` byte-for-byte intact.
 
+Terminal rows are not compared against a present snapshot. An `aborted` row that is absent from the
+snapshot is the one follow-up exception: it reports both its terminal status and the absence so the skill
+can perform the existing single live verification before declaring the run finished. `merged` rows and
+`aborted` rows that are still present remain terminal-only facts.
+
 The fixture suite is the SIBLING `reconcile-test.py`, this tool's executable contract; `self-test` loads
 it by a `__file__`-relative path and FAILS LOUDLY if it is missing — a self-test that passes because it
 found no tests is not a passing gate.
@@ -87,10 +92,11 @@ RUN_LABEL_PREFIX = "gauntlet-run-"
 REVIEWING_LABEL = "gauntlet-reviewing"
 ACCEPTED_LABEL = "gauntlet-accepted"
 
-# The two TERMINAL row statuses. A terminal row is DONE and reconcile does not compare it against the
-# snapshot at all (see `detect`). The status taxonomy is owned by `references/files-and-ledger.md`,
-# "`status` held and parked taxonomy"; there is no importable constant for the terminal pair, so it is
-# named here and pinned by a sibling fixture.
+# The two TERMINAL row statuses. A terminal row is DONE and reconcile does not compare it against a
+# present snapshot. An absent `aborted` row additionally reports the absence for the one terminal follow-up
+# route; the status taxonomy is owned by `references/files-and-ledger.md`, "`status` held and parked
+# taxonomy"; there is no importable constant for the terminal pair, so it is named here and pinned by a
+# sibling fixture.
 TERMINAL_STATUSES = ("merged", "aborted")
 
 # The JSON shape reconcile REQUIRES of each canonical field, as a type. `labels` is a list; `number` is an
@@ -359,10 +365,19 @@ def detect(ledger_path: Path, prs_path: Path, run_id: str) -> dict:
     for row in rows:
         pr = row["pr"]
         status = row["status"]
+        if status == "aborted" and pr not in by_pr:
+            # An aborted row normally remains CLOSED and absent after its terminal close-out. Report the
+            # absence as a follow-up fact so loop-control can run the existing single live verification
+            # before terminal completion. That verifier preserves the CLOSED no-op and routes a verified
+            # MERGED result through merge.py run; an OPEN contradiction remains a refusal there.
+            result_rows[pr] = {"terminal": "aborted", "absent_from_snapshot": True}
+            terminal_n += 1
+            absent_n += 1
+            continue
         if status in TERMINAL_STATUSES:
-            # A terminal row is DONE: it is NOT compared against the snapshot. Even if a matching entry is
-            # present (a reopened-after-merge oddity), the tool stays silent beyond `terminal` — presence
-            # is not reported, absence is not reported, no change is computed. Nothing is left to detect.
+            # A terminal row is DONE: it is NOT compared against a present snapshot. Even if a matching
+            # entry is present (a reopened-after-merge oddity), the tool stays silent beyond `terminal` —
+            # presence is not reported, no change is computed. Nothing is left to detect.
             result_rows[pr] = {"terminal": status}
             terminal_n += 1
             continue

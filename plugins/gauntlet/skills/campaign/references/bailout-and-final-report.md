@@ -84,9 +84,10 @@ LOCAL state against that same PR / its head; the PR itself is left in place.
   ever touch this run's own PRs (ownership = the `gauntlet-run-<run-id>` label). **Terminal detection
   relies on label removal, not closure**: loop control gates the finished-run branch on "no open PR
   still carrying this run's label", so once this run's owner label is removed the still-open PR no
-  longer carries it and can no longer block terminal exit — an aborted row is terminal and lacks its
-  `required(tier)` SATISFIED verdicts, so reconcile will never merge or keep driving it, and the
-  un-labelled open PR is simply left for its owner.
+  longer carries it and can no longer block terminal exit — an aborted row is outside ordinary gate work and
+  lacks its `required(tier)` SATISFIED verdicts. The one absent-snapshot terminal follow-up may still run the
+  existing finalizer to verify a later external MERGED result; it never initiates a merge, and a CLOSED result
+  remains a no-op. The un-labelled open PR is otherwise simply left for its owner.
 - **Not converging → the REASSESSMENT PASS takes over. `repair-pass.md` owns this, and it SUPERSEDES the
   rule that used to live here.** The bailouts above catch a *stuck* task; this catches one that is
   *progressing by whack-a-mole* — a loop that produces a real finding and a real fix every single round and
@@ -186,7 +187,8 @@ When the loop exits, summarize:
 - Any worktrees left for inspection.
 
 This run's durable carryover file (`.gauntlet/history/<run-id>.md`) is written on exit by
-`carryover.py distill` (Loop control step 5), so the next fresh run inherits what this run's PRs came to.
+`carryover.py distill` (Loop control step 5), or updated by `carryover.py reconcile-merged` after a later
+verified MERGED result, so the next fresh run inherits what this run's PRs came to.
 Its contents are **NOT** a copy of the list above: the carryover file is a mechanical projection of the
 terminal ledger, owned by `carryover.md` ("The carryover ledger") — take any change to its slots from
 there. The two lists overlap but are not the same list, and the report must never be read as an

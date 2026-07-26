@@ -5,9 +5,10 @@ They live in a SIBLING file, and `carryover.py self-test` FAILS LOUDLY if it can
 
 EVERY FIXTURE PINS A RULE WITH TEETH. The load-bearing ones are the two REFUSALS a distill must never
 skip: a run with ANY non-terminal row is NOT distilled (a live run has no history to write yet), and an
-existing `<run-id>.md` is NOT overwritten without `--force` (distilled exactly once). A distiller that
-quietly wrote either would pass a naive "did it produce a file?" check and be exactly the corruption this
-tool exists to prevent — a half-run recorded as finished, or a second exit clobbering the first.
+existing `<run-id>.md` is NOT overwritten without `--force` (distilled exactly once). The one explicit
+`reconcile-merged` command is separately pinned to a single verified aborted-to-MERGED transition and
+refuses unrelated changes. A distiller that quietly wrote any other change would pass a naive "did it
+produce a file?" check and be exactly the corruption this tool exists to prevent.
 
 Ledgers are built through the ledger module itself (`dump`), so a fixture cannot drift from the real
 schema; the distiller reads them back through the same module's `load`.
@@ -278,6 +279,74 @@ def t_existing_file_refused_without_force_then_overwritten_with() -> None:
               "--force rewrites the file with the new distill")
 
 
+def t_aborted_to_merged_reconciliation_rewrites_history() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        header = _header()
+        aborted = _row("41", slug="external-merge", status="aborted", head_sha=SHA_A,
+                       api_approval="declined@2026-07-04T17:00:00Z",
+                       ci_reason="required check absent", blocker_ruling="abort@2026-07-04T17:00:00Z")
+        code, _out, err, out_dir = _distill(tmp, header, [aborted])
+        check(code == 0, f"the initial aborted ledger distills; stderr={err!r}")
+        out_path = out_dir / "g260704-0915-a3f29c1b.md"
+        before = out_path.read_text(encoding="utf-8")
+
+        merged = dict(aborted, status="merged", tier="STANDARD", review_rounds="2")
+        _write_ledger(tmp / "state.jsonl", header, [merged])
+        code, out, err = capture_cli(
+            C.main, ["reconcile-merged", "--ledger", str(tmp / "state.jsonl"),
+                     "--out-dir", str(out_dir), "--pr", "41", "--now", "2026-07-04T19:00:00Z"])
+        check(code == 0, f"the verified aborted-to-MERGED transition rewrites history; stderr={err!r}")
+        summary = json.loads(out)
+        check(summary["merged"] == 1 and summary["aborted"] == 0,
+              f"the reconciliation summary reports the final disposition: {summary}")
+
+        text = out_path.read_text(encoding="utf-8")
+        parsed = _parse_sections(text)
+        check(any(row["pr"] == "41" for row in parsed["merged"]),
+              "the reconciled PR is listed under merged")
+        check(all(row["pr"] != "41" for section in ("aborted", "api-declined") for row in parsed[section]),
+              "the reconciled PR is listed under merged only")
+        check(text != before and "distilled_at: 2026-07-04T19:00:00Z" in text,
+              "the existing history is atomically replaced with the new projection")
+
+        code, out, err = capture_cli(
+            C.main, ["reconcile-merged", "--ledger", str(tmp / "state.jsonl"),
+                     "--out-dir", str(out_dir), "--pr", "41", "--now", "2026-07-04T20:00:00Z"])
+        check(code == C.EXIT_STOP, f"a second reconciliation is refused ({C.EXIT_STOP}); got {code}")
+        check("prior aborted projection" in err,
+              f"the second reconciliation explains the once-only refusal: {err!r}")
+        check(out.strip() == "", "a second reconciliation emits no summary")
+        check(out_path.read_text(encoding="utf-8") == text,
+              "a second reconciliation leaves the merged history byte-for-byte unchanged")
+
+
+def t_aborted_to_merged_reconciliation_refuses_unrelated_change() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        header = _header()
+        first = _row("41", slug="first", status="aborted", head_sha=SHA_A,
+                     ci_reason="required check absent", blocker_ruling="abort@2026-07-04T17:00:00Z")
+        second = _row("52", slug="second", status="aborted", head_sha=SHA_B,
+                      ci_reason="another blocker", blocker_ruling="abort@2026-07-04T17:00:00Z")
+        code, _out, err, out_dir = _distill(tmp, header, [first, second])
+        check(code == 0, f"the initial two-row aborted ledger distills; stderr={err!r}")
+        out_path = out_dir / "g260704-0915-a3f29c1b.md"
+        before = out_path.read_text(encoding="utf-8")
+
+        merged = dict(first, status="merged", tier="STANDARD", review_rounds="1")
+        changed_second = dict(second, ci_reason="changed unrelated blocker")
+        _write_ledger(tmp / "state.jsonl", header, [merged, changed_second])
+        code, out, err = capture_cli(
+            C.main, ["reconcile-merged", "--ledger", str(tmp / "state.jsonl"),
+                     "--out-dir", str(out_dir), "--pr", "41", "--now", "2026-07-04T19:00:00Z"])
+        check(code == C.EXIT_STOP, f"an unrelated ledger change is refused ({C.EXIT_STOP}); got {code}")
+        check("outside aborted PR 41" in err, f"the refusal names the protected transition: {err!r}")
+        check(out.strip() == "", "a refused reconciliation emits no summary")
+        check(out_path.read_text(encoding="utf-8") == before,
+              "a refused unrelated reconciliation leaves the old history byte-for-byte unchanged")
+
+
 # --- refusal: a malformed ledger (the loader's strictness is reused) ----------
 
 def t_malformed_ledger_is_refused() -> None:
@@ -371,6 +440,10 @@ CASES = [
      t_non_terminal_row_is_refused_naming_the_pr),
     ("once-only", "an existing file is not overwritten without --force; --force overwrites",
      t_existing_file_refused_without_force_then_overwritten_with),
+    ("aborted-to-merged", "a verified aborted-to-MERGED transition rewrites existing history and lists the PR under merged only",
+     t_aborted_to_merged_reconciliation_rewrites_history),
+    ("aborted-to-merged-guard", "an aborted-to-MERGED reconciliation refuses unrelated ledger changes and preserves history",
+     t_aborted_to_merged_reconciliation_refuses_unrelated_change),
     ("malformed-refused", "a malformed ledger is refused (the loader's strictness)",
      t_malformed_ledger_is_refused),
     ("no-run-identity", "a header with no run_id is refused",

@@ -63,7 +63,8 @@ distilled_at: 2026-06-01T12:00:00Z
 {"pr": "12", "slug": "fix-typo", ...}
 ```
 
-Existing history is never rewritten; a v1 file remains v1 on disk.
+Existing history is never rewritten during normal reads; a v1 file remains v1 on disk unless the safe
+aborted-to-MERGED reconciliation updates that run's affected projection.
 
 ### Pruning the ledger
 
@@ -96,9 +97,12 @@ from the terminal ledger (the CONTENT is a mechanical projection of `state.jsonl
 with any non-terminal row, so a live run is never distilled). **The "exactly once" rule is the tool's own
 refusal, not an exhortation:** an existing `<run-id>.md` means a previous exit already wrote it, so
 `distill` REFUSES to overwrite it (a `--force` flag exists for one case only — re-running after a crash
-that died mid-write). The finished-run "ask the user → yes" path reuses *that* file; it does not
-re-distill. `--new` never pre-empts other runs — each run is isolated and always distills itself on its
-own exit — so there is no mid-flight snapshot path.
+that died mid-write). The one terminal-aborted follow-up exception is explicit:
+`carryover.py reconcile-merged --ledger <state.jsonl> --out-dir <history> --pr <N> --now <iso>` verifies
+that the current ledger moved exactly one PR from the existing `aborted` projection to `merged`, refuses
+any unrelated change, and replaces the artifact atomically. The finished-run "ask the user → yes" path
+reuses *that* file; it does not re-distill. `--new` never pre-empts other runs — each run is isolated and
+always distills itself on its own exit — so there is no other mid-flight snapshot path.
 
 **Follow-ups are NOT in this file.** Work the campaign found-and-deferred lives in its own durable store,
 `.gauntlet/followups.jsonl` (`followups.md`) — a sibling of `history/`, **not** run-scoped, and the

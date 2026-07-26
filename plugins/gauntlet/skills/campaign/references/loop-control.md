@@ -36,8 +36,11 @@ the worker returns, and what never moves into it. The steps below are unchanged 
    exists — and scope **every** git/gh scan to this run's `gauntlet-run-<run-id>` label so another run's
    PRs are never mistaken for your own (adopted PRs keep their OWN head branch, so ownership is the
    LABEL only — never a branch prefix). Live work (this run) = any open PR carrying this run's label,
-   **OR** any non-terminal row in this run's `state.jsonl` (any status that is not terminal `merged`/`aborted`).
-   Three cases:
+     **OR** any non-terminal row in this run's `state.jsonl` (any status that is not terminal `merged`/`aborted`).
+     Terminal `aborted` rows are not live gate work, but they do require the one terminal follow-up below before
+     this run may take the finished branch: fetch the canonical snapshot, route each absent terminal-aborted
+     fact through Step 4, and only then decide whether the run is finished. A CLOSED verification keeps the
+     abort; a verified MERGED result updates the row and any existing carryover projection. Three cases:
 
    - **This run has live work → resume.** Resolve a dead review pass — no verdict, no live task — from its
      highest-numbered `launch_attempt` through `runtime-adapter.md`, **Review preparation mapping**, **NOT
@@ -75,9 +78,11 @@ the worker returns, and what never moves into it. The steps below are unchanged 
      `scripts/reconcile.py detect --ledger <rundir>/state.jsonl --prs <rundir>/prs.json --run-id
      <run-id>`. The comparison is MECHANICAL and the TOOL does it — do NOT hand-walk the snapshot row by
      row.** It emits **FACTS ONLY** (one object per ledger row, plus an `unadopted` list) and **names no
-     action**: a terminal row reports only `{"terminal": <status>}` (it is not compared), and every live
-     row reports `absent_from_snapshot` and, when present, `head_moved` / `base_changed` /
-     `branch_mismatch` / `state` / `mergeable` / `mergeStateStatus` / `label_facts` (see its `--help`).
+     action**: a present terminal row reports only `{"terminal": <status>}` (it is not compared), an absent
+     terminal `aborted` row reports `{"terminal": "aborted", "absent_from_snapshot": true}` for its one
+     finalization follow-up, and every live row reports `absent_from_snapshot` and, when present,
+     `head_moved` / `base_changed` / `branch_mismatch` / `state` / `mergeable` / `mergeStateStatus` /
+     `label_facts` (see its `--help`).
      **Routing each fact is THIS skill's policy — the tool observes, you route** (a moved head is a FACT,
      not a tool failure, so `detect` exits 0 on it; it fails closed only on a snapshot that is not
      evidence). Route each fact to the rule that already governs it — the rules are unchanged, this only
@@ -164,8 +169,9 @@ the worker returns, and what never moves into it. The steps below are unchanged 
      leaves a discoverable, adoptable run. **When the whole requested set is adopted, clear the checkpoint —
      `ledger.py … header set pending_adoption -`** (this is adoption's final step; a later entry that
      still sees it set knows setup did not finish and resumes it). Then fall through to dispatch/reschedule.
-   - **This run's `state.jsonl` is fully terminal — every row `merged`/`aborted`, no open PR carrying this
-     run's label → the run is finished.** Do **not** silently exit "all fixed" (the old bug) and do **not**
+   - **This run's `state.jsonl` is fully terminal — every row `merged`/`aborted`, no pending terminal-
+     `aborted` follow-up, and no open PR carrying this run's label → the run is finished.** Do **not** silently
+     exit "all fixed" (the old bug) and do **not**
      silently restart. **Ask the user** whether to gate more PRs — e.g. "gauntlet run
      <run-id> finished (N merged, M aborted). Gate more PRs? Pass PR numbers (or run gauntlet:review
      first)." A new run needs a `#PR` set, so collect PR numbers (equivalently direct the user to
@@ -518,11 +524,18 @@ the worker returns, and what never moves into it. The steps below are unchanged 
   **CLOSED without merging**, the SAME command performs the terminal close-out: it records the terminal
   `aborted` status and does **no merge and no cleanup** — the branch content never reached `<base>`, so its
   owned worktree/branch are left untouched for the user. Either way `merge.py run` is the single finalizer;
-  Step 1 only ROUTES the absent fact here, it does not finalize it itself.
+  Step 1 only ROUTES the absent fact here, it does not finalize it itself. An absent terminal `aborted`
+  row takes this same route before terminal completion: run the one live verification through
+  `merge.py run`; a CLOSED result stays the existing abort no-op, an OPEN contradiction remains a
+  refusal, and only a verified MERGED result changes the ledger to `merged`.
 
-  **An already-terminal `aborted` row is also resumable when a later live view verifies `MERGED`.** The same
-  command resumes base-sync and owned cleanup, then records `merged`; a later `CLOSED` view remains the
-  already-complete abort no-op.
+  **An already-terminal `aborted` row routed by Step 1 is also resumable when its later live view verifies
+  `MERGED`.** The same command resumes base-sync and owned cleanup, then records `merged`; a later `CLOSED`
+  view remains the already-complete abort no-op. If this run already has `<run-id>.md`, update that existing
+  projection immediately with the safe `carryover.py reconcile-merged --ledger <state.jsonl> --out-dir
+  <repo>/.gauntlet/history --pr <N> --now <iso>` command. It accepts only this one aborted-to-MERGED
+  transition and writes atomically; when the history file does not yet exist, Step 5's normal distill writes
+  the current terminal projection.
 ### Step 5 — Reschedule or exit
 
 #### Primary continuity
@@ -658,10 +671,12 @@ resume. This block OWNS when the loop continues; every other site points here, n
        completion or the nearest protected deadline, then go directly back to step 1 and reconcile.
        Repeat this status/wait/reconcile cycle while non-terminal work remains. Do **not** execute the
        scheduled-host return after the bounded wait.
-   - All this run's PRs `merged` or `aborted` → **distill the run into the carryover ledger** by running
-     **`carryover.py distill`** (it projects this run's own file `.gauntlet/history/<run-id>.md` from the
-     terminal ledger — merged PRs, aborted PRs + why, and declined-API facts — and REFUSES a run with any
-     non-terminal row or an existing file, so it distills exactly once; per-run files never
+   - All this run's PRs `merged` or `aborted`, with no pending terminal-aborted follow-up → **distill the run
+     into the carryover ledger** by running **`carryover.py distill`** (it projects this run's own file
+     `.gauntlet/history/<run-id>.md` from the terminal ledger — merged PRs, aborted PRs + why, and
+     declined-API facts — and REFUSES a run with any non-terminal row or an existing file, so it distills
+     exactly once; the one verified aborted-to-MERGED replacement uses `carryover.py reconcile-merged` in
+     Step 4; per-run files never
      contend, see "Fresh runs and carryover"), **release the run** (delete this run's
      `gauntlet-run-<run-id>` owner label via `gh label delete gauntlet-run-<run-id> --yes`, release
      the lease — `lease.py … release --token <tok>`; then remove the session watchdog nudge
