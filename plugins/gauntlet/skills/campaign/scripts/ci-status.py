@@ -159,6 +159,8 @@ from urllib.parse import quote
 HERE = Path(__file__).resolve().parent
 SHELL_COMMAND_SEPARATORS = frozenset("\n;|&")
 SHELL_COMPOUND_COMMAND_KEYWORDS = frozenset(("if", "while", "until", "then", "else", "do", "elif"))
+SHELL_COMMAND_PREFIXES = frozenset(("command", "env", "python", "python3", "time"))
+SHELL_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
 SHELL_GROUP_DELIMITERS = frozenset("{}")
 SHELL_CASE_PATTERN_DELIMITERS = frozenset(")")
 SNAPSHOT_PY = HERE / "ci-snapshot.py"
@@ -2521,6 +2523,23 @@ def _shell_compound_keyword_before(text: str, index: int) -> bool:
     return keyword in SHELL_COMPOUND_COMMAND_KEYWORDS and _shell_delimiter_before(text, cursor + 1)
 
 
+def _shell_option_wrapper_boundary(text: str, index: int) -> bool:
+    """Return whether option words before ``index`` belong to a supported command wrapper."""
+    cursor = index
+    while True:
+        previous = _shell_previous_significant(text, cursor)
+        if previous < 0 or not (text[previous].isalnum() or text[previous] == "_"):
+            return False
+        word_end = previous + 1
+        word_start = _shell_token_start(text, word_end)
+        word = text[word_start:word_end]
+        if word in SHELL_COMMAND_PREFIXES:
+            return _shell_command_word_boundary(text, word_start)
+        if not word.startswith("-"):
+            return False
+        cursor = word_start
+
+
 def _shell_previous_significant(text: str, index: int) -> int:
     """Return the previous shell-significant character, preserving active newlines."""
     cursor = index - 1
@@ -2660,6 +2679,8 @@ def _shell_command_word_boundary(text: str, index: int) -> bool:
         return _shell_case_pattern_delimiter_is_active(text, previous)
     if previous_char == "`":
         return _backtick_is_opening(text, previous)
+    if previous_char == "!":
+        return _shell_command_word_boundary(text, previous)
     if previous_char in "'\"":
         return False
     if previous_char in "-*+" and _shell_line_continues(text, text.rfind("\n", 0, token_start)):
@@ -2667,8 +2688,11 @@ def _shell_command_word_boundary(text: str, index: int) -> bool:
     if previous_char.isalnum() or previous_char == "_":
         word_end = previous + 1
         word_start = _shell_token_start(text, word_end)
-        if text[word_start:word_end] in {"python", "python3"}:
+        word = text[word_start:word_end]
+        if word in SHELL_COMMAND_PREFIXES or SHELL_ASSIGNMENT_RE.fullmatch(word):
             return _shell_command_word_boundary(text, word_start)
+        if word.startswith("-"):
+            return _shell_option_wrapper_boundary(text, word_start)
         return False
     return _shell_delimiter_before(text, token_start)
 
@@ -2687,13 +2711,13 @@ def _command_token_boundary(text: str, index: int) -> bool:
     """Recognize command starts without treating a filename mention as an executable copy.
 
     A path-qualified executable is valid only when its whole shell word is the segment's command word;
-    path text in an argument, redirection operand, or command-substitution result is not a copy. The
-    documented ``python3 <skill>/scripts/ci-status.py`` wrapper is also a runnable copy when ``python3``
-    begins the segment. Active shell operators, command substitutions, grouped commands, compound-command
-    keywords, and Markdown code delimiters mark executable starts. Operators inside quotes or preceded by an
-    odd number of backslashes are text, not boundaries. An unescaped newline is also a boundary, while an
-    escaped-newline continuation still needs a shell separator before the backslash. A bare space boundary
-    does not: ``foo ci-status.py`` is a filename or an argument, not a copy of the command.
+    path text in an argument, redirection operand, or command-substitution result is not a copy. Supported
+    wrappers and leading assignments are also runnable copies when they precede the command word. Active
+    shell operators, command substitutions, grouped commands, compound-command keywords, and Markdown
+    code delimiters mark executable starts. Operators inside quotes or preceded by an odd number of
+    backslashes are text, not boundaries. An unescaped newline is also a boundary, while an escaped-newline
+    continuation still needs a shell separator before the backslash. A bare space boundary does not:
+    ``foo ci-status.py`` is a filename or an argument, not a copy of the command.
     """
     if index == 0:
         return True
@@ -2725,20 +2749,15 @@ def _command_token_boundary(text: str, index: int) -> bool:
 
 def _command_matches(text: str, subcommand: str):
     """Yield command occurrences whose executable token begins at a shell-aware boundary."""
-    needle = f"ci-status.py {subcommand}"
-    offset = 0
-    while True:
-        index = text.find(needle, offset)
-        if index < 0:
-            return
-        if _command_token_boundary(text, index):
-            yield index
-        offset = index + 1
+    pattern = re.compile(rf"ci-status\.py(?:[ \t]+|['\"][ \t]+){re.escape(subcommand)}(?=[ \t\r\n]|$)")
+    for match in pattern.finditer(text):
+        if _command_token_boundary(text, match.start()):
+            yield match.start()
 
 
 def _next_command_start(text: str, index: int) -> int:
     """Return the next executable ``ci-status.py`` start after ``index``."""
-    for match in re.finditer(r"ci-status\.py(?=[ \t]+\S)", text[index + 1:]):
+    for match in re.finditer(r"ci-status\.py(?:[ \t]+|['\"][ \t]+)\S", text[index + 1:]):
         candidate = index + 1 + match.start()
         if _command_token_boundary(text, candidate):
             return candidate

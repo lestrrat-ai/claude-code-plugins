@@ -1058,6 +1058,10 @@ def command_boundary_cases(ci, tmp: Path) -> list[str]:
             f"foo\\;ci-status.py {valid}",
             f"foo\\&ci-status.py {valid}",
             f"foo\\|ci-status.py {valid}",
+            f"echo 'bin/ci-status.py' {valid}",
+            f'echo "bin/ci-status.py" {valid}',
+            f"> 'bin/ci-status.py' {valid}",
+            f'> "bin/ci-status.py" {valid}',
             f'echo "foo;ci-status.py {valid}"',
             f'echo "foo&ci-status.py {valid}"',
             f'echo "foo|ci-status.py {valid}"',
@@ -1120,6 +1124,21 @@ def command_boundary_cases(ci, tmp: Path) -> list[str]:
                 'case "$item" in ready) ci-status.py required-set --ledger ledger.jsonl;; esac',
             ],
         }[subcommand]
+        missing_invocation = {
+            "derive": "derive --pr 10",
+            "liveness": "liveness --ledger state.jsonl --pr 10",
+            "required-set": "required-set --ledger ledger.jsonl",
+        }[subcommand]
+        missing_flag_commands.extend([
+            f"! ci-status.py {missing_invocation}",
+            f"'bin/ci-status.py' {missing_invocation}",
+            f'"bin/ci-status.py" {missing_invocation}',
+            f"time ci-status.py {missing_invocation}",
+            f"env ci-status.py {missing_invocation}",
+            f"command ci-status.py {missing_invocation}",
+            f"FOO=bar ci-status.py {missing_invocation}",
+            f"python3 -u ci-status.py {missing_invocation}",
+        ])
         (root / "commands.md").write_text("\n\n".join(false_commands + valid_commands + missing_flag_commands) + "\n",
                                             encoding="utf-8")
         found_problems, copies = check(root)
