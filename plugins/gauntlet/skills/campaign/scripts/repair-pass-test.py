@@ -305,8 +305,8 @@ def t_abort_is_terminal_and_leaves_the_pr_open(tmp: Path) -> None:
     check("bailout-and-final-report" in err, f"the abort must route into the EXISTING procedure: {err!r}")
 
 
-def t_abort_decision_disposes_matching_pending_followup(tmp: Path) -> None:
-    """A reassessment abort records its matching pending follow-up disposition before terminal reject."""
+def t_abort_decision_leaves_pending_followup_until_pr_closes(tmp: Path) -> None:
+    """An abort decision leaves a matching rejection pending while its PR remains open."""
     root = tmp / "project"
     run_dir = root / ".gauntlet" / "tmp" / "g1"
     run_dir.mkdir(parents=True)
@@ -327,14 +327,12 @@ def t_abort_decision_disposes_matching_pending_followup(tmp: Path) -> None:
     code, out, err = capture_cli(F.main, ["--file", str(store), "get", "--id", "fu1"])
     check(code == 0, f"get pending follow-up failed: {err!r}")
     entry = json.loads(out)
-    check(entry["rejection"] == F.DISPOSED_REJECTION,
-          f"abort decision did not record the completed follow-up disposition: {entry!r}")
-    code, out, err = capture_cli(F.main, ["--file", str(store), "reject", "--id", "fu1",
-                                          "--at", "2026-07-24T12:00:00Z"])
-    rejected = json.loads(out) if out else {}
-    check(code == 0 and rejected.get("state") == "rejected"
-          and rejected.get("decided") == "2026-07-24T11:00:00Z",
-          f"terminal reject did not consume the abort disposition: {code} {err!r}")
+    check(entry["rejection"] == F.PENDING_REJECTION,
+          f"an OPEN PR's abort disposed its pending rejection: {entry!r}")
+    code, _, err = capture_cli(F.main, ["--file", str(store), "reject", "--id", "fu1",
+                                        "--at", "2026-07-24T12:00:00Z"])
+    check(code == 1 and "disposition is unresolved" in err,
+          f"terminal reject bypassed the missing CLOSED result: {code} {err!r}")
 
 
 # --- the decision is real, recorded, and only for a PR that needs one ----------
@@ -1680,7 +1678,7 @@ CASES = [
     ("unknown-is-external", "an unset origin is EXTERNAL — the fail-safe direction", t_unknown_origin_is_treated_as_external),
     ("budget-spent", "at REPAIR_CAP the only decision left is abort", t_repair_budget_is_spent),
     ("abort-leaves-it-open", "abort is terminal, leaves the PR OPEN, and reuses the existing procedure", t_abort_is_terminal_and_leaves_the_pr_open),
-    ("abort-followup-disposition", "an abort decision records matching pending follow-up disposition before terminal reject", t_abort_decision_disposes_matching_pending_followup),
+    ("abort-followup-disposition", "an OPEN abort leaves the matching rejection pending until PR close-out", t_abort_decision_leaves_pending_followup_until_pr_closes),
     ("only-a-capped-pr", "a PR that never hit a cap cannot be reassessed", t_only_a_capped_pr_may_be_reassessed),
     ("decision-needs-record", "no decision without its reasoning on disk", t_a_decision_needs_a_record),
     ("record-decision-binds", "the record's DECISION field must be well-formed and equal --decision", t_record_decision_must_match_the_argument),

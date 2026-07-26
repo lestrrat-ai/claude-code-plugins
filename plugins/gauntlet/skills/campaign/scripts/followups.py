@@ -660,13 +660,13 @@ def rejection_phase(entry: dict) -> str:
 
 
 def record_completed_rejection_disposition(path: Path, pr: str) -> "tuple[str, ...]":
-    """Record one exact PR's completed abort or close-out on matching pending follow-ups.
+    """Record one exact PR's verified CLOSED close-out on matching pending follow-ups.
 
-    The ledger calls this only after its row made a real non-terminal -> aborted transition. A missing store is
-    normal, and ordinary `in-pr` entries remain untouched. This is the only path that may mark a pending
-    rejection disposed; the `closed-unmerged` CLI transition refuses to do that itself. The callback must be
-    a canonical numeric PR reference, and the stored reference must be that same canonical number. GitHub
-    URLs are not accepted at `open-pr`, and legacy URL records therefore cannot be reduced to a number here.
+    A missing store is normal, and ordinary `in-pr` entries remain untouched. This is the only path that may
+    mark a pending rejection disposed; the `closed-unmerged` CLI transition refuses to do that itself. The
+    callback must be a canonical numeric PR reference, and the stored reference must be that same canonical
+    number. GitHub URLs are not accepted at `open-pr`, and legacy URL records therefore cannot be reduced to
+    a number here.
     The store lock and atomic dump remain its only write path.
     """
     if not path.exists():

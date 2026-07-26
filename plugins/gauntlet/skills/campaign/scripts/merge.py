@@ -577,10 +577,16 @@ def _mark_terminal(ledger: Path, pr: str, status: str) -> None:
         row["status"] = status
         try:
             L.save(ledger, header, rows, activity=True)
-            if status == "aborted":
-                L.record_aborted_followup_disposition(ledger, pr)
         except OSError as exc:
             raise Refusal(f"terminal ledger write failed: {exc}") from exc
+
+
+def _record_closeout_followup(ledger: Path, pr: str) -> None:
+    """Record a pending rejection only after the live PR view proved CLOSED."""
+    try:
+        L.record_completed_rejection_disposition(ledger, pr)
+    except OSError as exc:
+        raise Refusal(f"close-out follow-up disposition failed: {exc}") from exc
 
 
 def execute(ledger: Path, pr: str, project_root: Path, repo: str,
@@ -639,6 +645,7 @@ def execute(ledger: Path, pr: str, project_root: Path, repo: str,
                     require_own_label=merge_initiating)
     if close_out:
         _mark_terminal(ledger, pr, "aborted")
+        _record_closeout_followup(ledger, pr)
         return {"status": "closed-unmerged", "pr": pr, "cleanup": {}}
 
     if row["status"] == "aborted":
@@ -649,6 +656,7 @@ def execute(ledger: Path, pr: str, project_root: Path, repo: str,
         if view["state"] != "CLOSED":
             raise Refusal(
                 f"terminal ledger row says aborted but GitHub state is {view['state']!r}, not CLOSED")
+        _record_closeout_followup(ledger, pr)
         return {"status": "already-complete", "pr": pr, "cleanup": {}}
 
     if row["status"] == "merged":

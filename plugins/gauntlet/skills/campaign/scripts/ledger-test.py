@@ -2374,11 +2374,11 @@ def t_set_cannot_park_a_decided_repair(L: ModuleType, tmp: Path) -> None:
           f"a refused set transition changed the decided repair: {row!r}")
 
 
-def t_aborted_transition_disposes_only_its_existing_pending_followup(L: ModuleType, tmp: Path) -> None:
-    """Only a real non-terminal -> aborted row transition disposes that PR's already-pending rejection.
+def t_aborted_transition_does_not_dispose_pending_followup(L: ModuleType, tmp: Path) -> None:
+    """A local ledger status change never disposes a rejection without a verified CLOSED PR result.
 
-    This is deliberately driven through `set`: a repeat of the same value and an unrelated save both pass
-    through the generic ledger writer. Neither may scan terminal rows and consume a later user ruling.
+    This is deliberately driven through `set`: the first abort, a repeat of the same value, and an unrelated
+    save all pass through the generic ledger writer without proof of GitHub state.
     """
     spec = importlib.util.spec_from_file_location("ledger_test_followups", HERE / "followups.py")
     if spec is None or spec.loader is None:
@@ -2404,10 +2404,13 @@ def t_aborted_transition_disposes_only_its_existing_pending_followup(L: ModuleTy
 
     pending("fu1", "#42")
     code, _, err = cli(L, ["--file", str(ledger_path), "set", "--pr", "42", "--status", "aborted"])
-    check(code == 0, f"terminal transition failed: {err!r}")
+    check(code == 0, f"local status transition failed: {err!r}")
     first = followups.find(followups.load(store), "fu1")
-    check(first is not None and first["rejection"] == followups.DISPOSED_REJECTION,
-          f"the exact terminal transition did not dispose its pending rejection: {first!r}")
+    check(first is not None and first["rejection"] == followups.PENDING_REJECTION,
+          f"a local abort disposed a pending rejection without a CLOSED PR: {first!r}")
+    code, _, err = capture_cli(followups.main, ["--file", str(store), "reject", "--id", "fu1"])
+    check(code == 1 and "disposition is unresolved" in err,
+          f"terminal reject bypassed the missing CLOSED result: {code} {err!r}")
 
     pending("fu2", "#42")
     code, _, err = cli(L, ["--file", str(ledger_path), "set", "--pr", "42", "--status", "aborted"])
@@ -2951,7 +2954,7 @@ CASES = [
     ("unpark-refusals", "unpark refuses not-parked/unanswered/abort/malformed — writing nothing", t_unpark_refusals),
     ("set-status-stays-open", "set may still write the standoff park/unpark transitions — park/unpark can't serve them", t_set_status_transitions_stay_open),
     ("set-decided-repair-guard", "set cannot park a decided repair and strand its dispatch", t_set_cannot_park_a_decided_repair),
-    ("aborted-followup-transition", "only a real non-terminal -> aborted transition disposes that PR's existing pending follow-up", t_aborted_transition_disposes_only_its_existing_pending_followup),
+    ("aborted-followup-transition", "local aborted writes leave pending follow-ups until verified PR close-out", t_aborted_transition_does_not_dispose_pending_followup),
     ("replay-the-record", "the REAL #42/#43 verdict sequences: it fires, never too early, and says what it costs", t_replay_the_real_record),
     ("activity-stamped-on-change", "a value-changing set stamps last_activity; a no-op set does not", t_activity_stamped_on_a_real_change),
     ("verdict-stamps-activity", "a landed verdict stamps last_activity — it always moves review_rounds", t_verdict_stamps_activity),

@@ -51,11 +51,12 @@ def _followup_store_for(path: Path) -> "Path | None":
     return run_dir.parent.parent / "followups.jsonl"
 
 
-def record_aborted_followup_disposition(path: Path, pr: str) -> "tuple[str, ...]":
-    """Record one exact PR's pending follow-up disposition after a real non-terminal -> aborted transition.
+def record_completed_rejection_disposition(path: Path, pr: str) -> "tuple[str, ...]":
+    """Record one exact PR's pending follow-up disposition after verified terminal PR close-out.
 
-    Callers own the transition check. This helper never scans ledger rows, so an unrelated save or repeated
-    `status=aborted` write cannot consume a rejection that was marked pending later.
+    The caller owns proof that GitHub reported the matching PR CLOSED. This helper never scans ledger rows,
+    so a local abort decision, generic status write, or repeated terminal write cannot consume a rejection
+    before that proof exists.
     """
     store = _followup_store_for(path)
     if store is None or not store.exists():
@@ -1175,7 +1176,6 @@ def cmd_set(path: Path, args) -> int:
     updates = _named_field_values(args, creating=False)
     if not updates:
         fail("set requires at least one --<field> <value>")
-    was_terminal = row["status"] in TERMINAL_STATUSES
     # The review-standoff park still uses `set --status awaiting-user`, but a recorded repair decision owns
     # a repairing row's next action. `park` already refuses this transition; keep the same guard at the
     # generic write door so a hand-assembled `set` cannot strand a repair that dispatch-check permits.
@@ -1196,8 +1196,6 @@ def cmd_set(path: Path, args) -> int:
         apply_head_sha(row, updates.pop("head_sha"))
     row.update(updates)  # by NAME — never by column position
     save(path, header, rows, activity=activity)
-    if not was_terminal and row["status"] == "aborted":
-        record_aborted_followup_disposition(path, pr)
     print(json.dumps(row))
     return 0
 

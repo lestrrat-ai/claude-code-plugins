@@ -1117,8 +1117,6 @@ def cmd_decide(path: Path, args) -> int:
         # write abort-<id>.md) — `bailout-and-final-report.md` owns it, and this does not replace it.
         row["status"] = "aborted"
     L.save(path, header, rows, activity=True)
-    if args.decision == "abort":
-        L.record_aborted_followup_disposition(path, pr)
     print(json.dumps({f: row[f] for f in L.ROW_FIELDS}))
 
     if args.decision == "abort":
