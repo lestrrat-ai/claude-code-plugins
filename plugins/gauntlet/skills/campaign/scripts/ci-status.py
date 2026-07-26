@@ -148,7 +148,6 @@ import importlib.util
 import json
 import os
 import re
-import shlex
 import subprocess
 import sys
 import textwrap
@@ -2419,31 +2418,259 @@ def _markdown_indented_code_blocks(text: str) -> list[tuple[int, int]]:
     return blocks
 
 
+_DOC_PLACEHOLDER_RE = re.compile(r"<[^>\r\n]*>")
+
+
 def _join_shell_continuations(span: str) -> str:
     """Join continued shell lines while preserving shell quote semantics."""
+    placeholders: list[str] = []
+
+    def protect_placeholder(match: re.Match[str]) -> str:
+        token = f"__DOC_PLACEHOLDER_{len(placeholders)}__"
+        placeholders.append(match.group(0))
+        return token
+
+    span = _DOC_PLACEHOLDER_RE.sub(protect_placeholder, span)
     joined: list[str] = []
     quote: str | None = None
-    escaped = False
     index = 0
     while index < len(span):
         char = span[index]
-        if char == "\\" and index + 1 < len(span) and span[index + 1] == "\n" and quote != "'":
-            joined.append("")
-            index += 2
-            escaped = False
+        if char == "\\":
+            run_end = index
+            while run_end < len(span) and span[run_end] == "\\":
+                run_end += 1
+            run_length = run_end - index
+            if (run_end < len(span) and span[run_end] == "\n" and quote != "'"
+                    and run_length % 2 == 1):
+                joined.append("\\" * (run_length - 1))
+                index = run_end + 1
+                continue
+            joined.append("\\" * run_length)
+            index = run_end
             continue
         joined.append(char)
+        if char in "'\"":
+            if quote is None:
+                quote = char
+            elif quote == char:
+                quote = None
+        index += 1
+    result = "".join(joined)
+    for placeholder_index, placeholder in enumerate(placeholders):
+        result = result.replace(f"__DOC_PLACEHOLDER_{placeholder_index}__", placeholder)
+    return result
+
+
+class ParsedDocumentedCommand(NamedTuple):
+    """The one shell/argv parse shared by every documented command-copy guard."""
+
+    argv: list[str]
+    command_index: int | None
+    error: str | None
+
+
+def _shell_quote_state(text: str) -> str | None:
+    """Return the quote open at the end of *text*, or ``None``."""
+    text = _DOC_PLACEHOLDER_RE.sub("", text)
+    quote: str | None = None
+    escaped = False
+    for char in text:
+        if quote == "'":
+            if char == "'":
+                quote = None
+            continue
         if escaped:
             escaped = False
-        elif char == "\\" and quote != "'":
+            continue
+        if char == "\\":
             escaped = True
         elif char in "'\"":
             if quote is None:
                 quote = char
             elif quote == char:
                 quote = None
+    return quote
+
+
+def _shell_line_continues(line: str) -> bool:
+    """Whether a physical shell line has an unquoted, odd backslash directly before LF."""
+    if line.endswith("\r"):
+        return False
+    slash_start = len(line)
+    while slash_start > 0 and line[slash_start - 1] == "\\":
+        slash_start -= 1
+    run_length = len(line) - slash_start
+    return (run_length % 2 == 1
+            and _shell_quote_state(line[:slash_start]) != "'")
+
+
+def _parse_documented_command(command: str, subcommand: str) -> ParsedDocumentedCommand:
+    """Parse one documented command with shell quoting, comments, operators, and exact argv tokens."""
+    command = _join_shell_continuations(command)
+    placeholders: list[str] = []
+
+    def protect_placeholder(match: re.Match[str]) -> str:
+        token = f"__DOC_PLACEHOLDER_{len(placeholders)}__"
+        placeholders.append(match.group(0))
+        return token
+
+    protected = _DOC_PLACEHOLDER_RE.sub(protect_placeholder, command)
+    argv: list[str] = []
+    word: list[str] = []
+    quote: str | None = None
+    token_started = False
+    error: str | None = None
+    index = 0
+
+    def restore(value: str) -> str:
+        for placeholder_index, placeholder in enumerate(placeholders):
+            value = value.replace(f"__DOC_PLACEHOLDER_{placeholder_index}__", placeholder)
+        return value
+
+    def flush() -> None:
+        nonlocal token_started
+        if token_started:
+            argv.append(restore("".join(word)))
+            word.clear()
+            token_started = False
+
+    while index < len(protected):
+        char = protected[index]
+        if quote == "'":
+            if char == "'":
+                quote = None
+            else:
+                word.append(char)
+            token_started = True
+            index += 1
+            continue
+        if quote == '"':
+            if char == '"':
+                quote = None
+                token_started = True
+                index += 1
+                continue
+            if char == "\\" and index + 1 < len(protected):
+                next_char = protected[index + 1]
+                if next_char in '\\"$`\n':
+                    word.append(next_char)
+                    token_started = True
+                    index += 2
+                    continue
+                word.append("\\")
+                word.append(next_char)
+                token_started = True
+                index += 2
+                continue
+            word.append(char)
+            token_started = True
+            index += 1
+            continue
+        if char == "\\":
+            if index + 1 >= len(protected):
+                word.append("\\")
+                token_started = True
+                index += 1
+                continue
+            word.append(protected[index + 1])
+            token_started = True
+            index += 2
+            continue
+        if char in "'\"":
+            quote = char
+            token_started = True
+            index += 1
+            continue
+        if char.isspace():
+            flush()
+            index += 1
+            continue
+        if char == "#" and not word:
+            flush()
+            break
+        if char in ";|&<>":
+            flush()
+            if error is None:
+                error = f"shell operator {char!r} is not part of a single documented command"
+            index += 1
+            continue
+        word.append(char)
+        token_started = True
         index += 1
-    return "".join(joined)
+
+    if quote is not None and error is None:
+        error = f"unclosed {quote} quote"
+    flush()
+
+    command_index: int | None = None
+    wrapper_index = 0
+    if wrapper_index < len(argv) and argv[wrapper_index] == "$":
+        wrapper_index += 1
+    if wrapper_index < len(argv) and argv[wrapper_index] == "command":
+        wrapper_index += 1
+    if wrapper_index < len(argv) and argv[wrapper_index] in ("python", "python3"):
+        wrapper_index += 1
+    if wrapper_index >= len(argv) or Path(argv[wrapper_index]).name != "ci-status.py":
+        if error is None:
+            error = "the command does not invoke the supported ci-status.py executable"
+    else:
+        command_index = wrapper_index
+        if wrapper_index + 1 >= len(argv) or argv[wrapper_index + 1] != subcommand:
+            if error is None:
+                error = f"the subcommand is not the exact token {subcommand!r}"
+    return ParsedDocumentedCommand(argv, command_index, error)
+
+
+def _documented_copy_has_arguments(command: str, subcommand: str) -> bool:
+    """Keep prose mentions out while retaining incomplete command copies for the guards to reject."""
+    marker = re.search(rf"{re.escape(subcommand)}(?=$|[ \t\r\n;|&<>])", command)
+    return marker is not None and bool(command[marker.end():].strip())
+
+
+def _documented_option_values(args: list[str], allowed: set[str]) -> tuple[dict[str, str], str | None]:
+    """Parse long options once for all three documentation consumers."""
+    values: dict[str, str] = {}
+    index = 0
+    while index < len(args):
+        token = args[index]
+        option: str
+        value: str
+        if token in allowed:
+            option = token
+            if index + 1 >= len(args) or args[index + 1].startswith("-"):
+                return {}, f"option {option!r} is missing its value"
+            value = args[index + 1]
+            index += 2
+        elif "=" in token and token.split("=", 1)[0] in allowed:
+            option, value = token.split("=", 1)
+            if not value:
+                return {}, f"option {option!r} is missing its value"
+            index += 1
+        elif token.startswith("--"):
+            return {}, f"unsupported option {token!r}"
+        else:
+            return {}, f"unexpected positional argument {token!r}"
+        if option in values:
+            return {}, f"option {option!r} is duplicated"
+        values[option] = value
+    return values, None
+
+
+def _valid_documented_ledger_path(value: str) -> bool:
+    """Require the documented ledger marker to name a file-shaped, shell-safe state.jsonl path."""
+    if not value or any(char.isspace() or ord(char) < 32 for char in value):
+        return False
+    directory_suffixes = (os.sep, os.sep + ".", os.sep + "..")
+    return (not value.endswith(directory_suffixes)
+            and not Path(value).is_dir()
+            and Path(value).name == "state.jsonl")
+
+
+def _command_args(parsed: ParsedDocumentedCommand) -> list[str] | None:
+    if parsed.command_index is None or parsed.command_index + 1 >= len(parsed.argv):
+        return None
+    return parsed.argv[parsed.command_index + 2:]
 
 
 def documented_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, str]]:
@@ -2451,13 +2678,13 @@ def documented_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path,
 
     The command-copy guard owns two documentation forms. Inline code spans carry a complete command, even
     when Markdown wraps the literal or uses a multi-backtick delimiter. Fenced shell blocks carry one shell
-    command, optionally prefixed by ``$`` or ``command``, whose continued lines end in ``\\``; fences nested
-    in list-item containers are included too. Indented code blocks and other Markdown constructs are
-    deliberately outside this guard's scope.
+    command, optionally prefixed by ``$`` or ``command``; the shared parser decides which physical lines
+    belong to that command and validates its shell argv. Fences nested in list-item containers are included
+    too. Indented code blocks and other Markdown constructs are deliberately outside this guard's scope.
     """
     supported_command = (
         rf"[ \t]*(?:\$[ \t]+)?(?:command[ \t]+)?(?:python3?[ \t]+)?(?:\S*/)?ci-status\.py\s+"
-        rf"{re.escape(subcommand)}\b"
+        rf"{re.escape(subcommand)}(?=$|[ \t\r\n;|&<>])"
     )
     inline_command = re.compile(rf"^{supported_command}")
     fenced_command = re.compile(rf"(?m)^{supported_command}")
@@ -2489,13 +2716,22 @@ def documented_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path,
                 if line_end < 0:
                     line_end = len(body)
                 command_end = line_end
-                while body[command_end - 1:command_end].rstrip().endswith("\\"):
-                    next_end = body.find("\n", command_end + 1)
+                line_start = match.start()
+                while True:
+                    line = body[line_start:command_end]
+                    quote = _shell_quote_state(body[match.start():command_end])
+                    if quote is None and not _shell_line_continues(line):
+                        break
+                    next_start = command_end + 1
+                    if next_start > len(body):
+                        break
+                    next_end = body.find("\n", next_start)
                     if next_end < 0:
                         command_end = len(body)
                         break
+                    line_start = next_start
                     command_end = next_end
-                span = body[match.start():command_end]
+                span = body[match.start():command_end].rstrip("\r")
                 copies.append((md, text.count("\n", 0, body_start + match.start()) + 1,
                                _join_shell_continuations(span)))
     return copies
@@ -2512,25 +2748,49 @@ def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]
     `,headRefOid` from the rollup fetch.
 
     A copy is a command in an inline code span or a fenced shell block. Inline spans may use a multi-backtick
-    delimiter and wrap across Markdown lines; fenced shell commands may wrap with a trailing `\\`, including
-    fences nested in list-item containers. Indented code blocks and other prose are not invocations, so this
-    guard does not parse them.
+    delimiter and wrap across Markdown lines; fenced shell commands are parsed by the shared shell/argv
+    chokepoint, including fences nested in list-item containers. Indented code blocks and other prose are not
+    invocations, so this guard does not parse them.
 
     FINDING ZERO COPIES IS A FAILURE: the command is prescribed by at least `stage-2-ci.md` and
     `critical-rules.md`, and a check that cannot find its subject never passes.
     """
     problems, copies = [], []
     for md, line, command in documented_ci_status_copies(root or HERE.parent, "derive"):
-        if "--pr" not in command:
+        if not _documented_copy_has_arguments(command, "derive"):
             continue  # prose that NAMES the command, not a copy of it
         copies.append(f"{md.name}:{line}")
-        if "--ledger" not in command and "--required-set" not in command:
+        parsed = _parse_documented_command(command, "derive")
+        args = _command_args(parsed)
+        if parsed.error:
+            problems.append(f"{md.name}:{line} does not contain one runnable `ci-status.py derive` command — "
+                            f"{parsed.error}")
+            continue
+        if args is None:
+            problems.append(f"{md.name}:{line} does not contain one runnable `ci-status.py derive` command — "
+                            f"the command has no argv after `derive`")
+            continue
+        option_values, option_error = _documented_option_values(
+            args, {"--pr", "--head-sha", "--rundir", "--repo", "--ledger", "--required-set"})
+        if option_error:
+            problems.append(f"{md.name}:{line} does not contain one runnable `ci-status.py derive` command — "
+                            f"{option_error}")
+            continue
+        if "--pr" not in option_values:
+            problems.append(f"{md.name}:{line} runs `ci-status.py derive` WITHOUT `--pr` — the command's "
+                            f"PR argument must be an argv option, not prose or a shell comment")
+            continue
+        if "--ledger" not in option_values and "--required-set" not in option_values:
             problems.append(
                 f"{md.name}:{line} runs `ci-status.py derive` WITHOUT `--ledger` OR `--required-set` — the "
                 f"flag that makes `green` mean the REQUIRED SET passed. A reader following this copy "
                 f"issues a command the tool refuses; a reader who 'fixes' it by dropping the set gets a "
                 f"verdict about the rows that showed up, which is the registration gap, reopened by a recap."
             )
+            continue
+        if "--ledger" in option_values and not _valid_documented_ledger_path(option_values["--ledger"]):
+            problems.append(f"{md.name}:{line} names a `--ledger` value that is not a shell-safe "
+                            f"`state.jsonl` file path")
     if not copies:
         problems.append(
             "ZERO copies of `ci-status.py derive` were found in the skill's docs — the command is "
@@ -2544,24 +2804,51 @@ def check_liveness_copies(root: Path | None = None) -> tuple[list[str], list[str
     """Every runnable liveness copy carries `--machine-action` — the judgment flag a recap must not drop.
 
     The supported forms are the inline code span and fenced shell command forms owned by
-    `documented_ci_status_copies`. Multi-backtick spans and list-contained fences are included; indented
-    code blocks and other prose are not invocations. A copy without the flag is a command the tool refuses,
-    and a reader who "fixes" it by inventing a default
+    `documented_ci_status_copies`; every form uses the shared shell/argv chokepoint. Multi-backtick spans
+    and list-contained fences are included; indented code blocks and other prose are not invocations. A
+    copy without the flag is a command the tool refuses, and a reader who "fixes" it by inventing a default
     answers the one question the tool deliberately asks.
     """
     problems, copies = [], []
     for md, line, command in documented_ci_status_copies(root or HERE.parent, "liveness"):
-        # `--ledger`, not `--pr`, is the runnable-copy gate: prose can name a PR without spelling the
-        # ledger input that makes liveness runnable.
-        if "--ledger" not in command:
-            continue  # prose that names the subcommand, not a runnable copy
+        if not _documented_copy_has_arguments(command, "liveness"):
+            continue  # prose that NAMES the command, not a copy of it
         copies.append(f"{md.name}:{line}")
-        if "--machine-action" not in command:
+        parsed = _parse_documented_command(command, "liveness")
+        args = _command_args(parsed)
+        if parsed.error:
+            problems.append(f"{md.name}:{line} does not contain one runnable `ci-status.py liveness` command — "
+                            f"{parsed.error}")
+            continue
+        if args is None:
+            problems.append(f"{md.name}:{line} does not contain one runnable `ci-status.py liveness` command — "
+                            f"the command has no argv after `liveness`")
+            continue
+        option_values, option_error = _documented_option_values(
+            args, {"--ledger", "--pr", "--derive-json", "--machine-action", "--now"})
+        if option_error:
+            problems.append(f"{md.name}:{line} does not contain one runnable `ci-status.py liveness` command — "
+                            f"{option_error}")
+            continue
+        if "--ledger" not in option_values:
+            problems.append(
+                f"{md.name}:{line} runs `ci-status.py liveness` WITHOUT `--ledger` — the ledger makes the "
+                f"documented invocation runnable"
+            )
+            continue
+        if not _valid_documented_ledger_path(option_values["--ledger"]):
+            problems.append(f"{md.name}:{line} names a `--ledger` value that is not a shell-safe "
+                            f"`state.jsonl` file path")
+        machine_action = option_values.get("--machine-action")
+        if machine_action is None:
             problems.append(
                 f"{md.name}:{line} runs `ci-status.py liveness` WITHOUT `--machine-action` — the one "
                 f"judgment the command asks of its caller. The tool refuses the invocation; a reader "
                 f"who drops the flag's question strikes the very PR a fix is about to move."
             )
+        elif machine_action not in MACHINE_ACTIONS and machine_action != "<due | in-flight | none>":
+            problems.append(f"{md.name}:{line} passes `--machine-action {machine_action}`, which is not one "
+                            f"of {', '.join(MACHINE_ACTIONS)}")
     if not copies:
         problems.append(
             "ZERO runnable copies of `ci-status.py liveness` were found in the skill's docs — the command "
@@ -2571,49 +2858,21 @@ def check_liveness_copies(root: Path | None = None) -> tuple[list[str], list[str
 
 
 def check_required_set_copies(root: Path | None = None) -> tuple[list[str], list[str]]:
-    """Every supported required-set command copy has the complete runnable argv."""
+    """Every supported required-set command copy has the complete runnable argv from the shared parser."""
     problems, copies = [], []
     for md, line, command in documented_ci_status_copies(root or HERE.parent, "required-set"):
         copies.append(f"{md.name}:{line}")
-        try:
-            argv = shlex.split(command, comments=True)
-        except ValueError:
-            argv = []
-        subcommand_positions = [index for index, token in enumerate(argv) if token == "required-set"]
-        args = argv[subcommand_positions[0] + 1:] if len(subcommand_positions) == 1 else []
+        parsed = _parse_documented_command(command, "required-set")
+        args = _command_args(parsed) or []
         # The stage-2 command uses `[--repo <owner>/<repo>]` to show its optional argument. Normalize that
         # documentation notation before validating the same options the real CLI accepts.
         if (len(args) >= 2 and args[-2] == "[--repo" and args[-1].endswith("]")):
             args = args[:-2] + ["--repo", args[-1][:-1]]
-        values: dict[str, str] = {}
-        index = 0
-        while args and index < len(args):
-            token = args[index]
-            if token in ("--ledger", "--repo"):
-                if (index + 1 >= len(args) or args[index + 1].startswith("-")
-                        or token in values):
-                    values = {}
-                    break
-                values[token] = args[index + 1]
-                index += 2
-            elif token.startswith("--ledger=") or token.startswith("--repo="):
-                option, value = token.split("=", 1)
-                if not value or option in values:
-                    values = {}
-                    break
-                values[option] = value
-                index += 1
-            else:
-                values = {}
-                break
+        values, option_error = ({}, parsed.error) if parsed.error else _documented_option_values(
+            args, {"--ledger", "--repo"})
         ledger = values.get("--ledger")
         repo = values.get("--repo")
-        directory_suffixes = (os.sep, os.sep + ".", os.sep + "..")
-        valid_ledger = (ledger is not None
-                        and not (ledger.endswith(directory_suffixes) or Path(ledger).is_dir())
-                        and Path(ledger).name == "state.jsonl")
-        if len(subcommand_positions) != 1:
-            valid_ledger = False
+        valid_ledger = option_error is None and ledger is not None and _valid_documented_ledger_path(ledger)
         if not valid_ledger:
             problems.append(
                 f"{md.name}:{line} does not run `ci-status.py required-set` with only its supported options "

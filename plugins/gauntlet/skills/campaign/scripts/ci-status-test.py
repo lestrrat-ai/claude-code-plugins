@@ -1236,9 +1236,9 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
     found_problems, checked = ci.check_required_set_copies(root)
     expected_command = f'ci-status.py required-set --ledger "    {indented_ledger}"'
     if (len(copies) != 1 or copies[0][2] != expected_command
-            or checked != ["commands.md:2"] or found_problems):
+            or checked != ["commands.md:2"] or len(found_problems) != 1):
         problems.append(
-            f"[command copy required-set] indented double-quoted ledger path was changed: "
+            f"[command copy required-set] indented double-quoted ledger path was accepted: "
             f"copies={copies!r}, problems={found_problems!r}"
         )
 
@@ -1391,6 +1391,124 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
             f"[command copy required-set] indented code was treated as a command copy: "
             f"copies={copies!r}, problems={found_problems!r}, checked={checked!r}"
         )
+
+    # The three guards must consume one shell-accurate argv parse. These cases cover the mapped
+    # extractor, separator, continuation, comment, option-boundary, and complete-argv gaps together.
+    slash = chr(92)
+    valid_commands = {
+        "derive": "ci-status.py derive --pr 1 --head-sha abc --rundir run --ledger run/state.jsonl",
+        "liveness": "ci-status.py liveness --ledger run/state.jsonl --machine-action none",
+        "required-set": "ci-status.py required-set --ledger run/state.jsonl",
+    }
+    guards = {
+        "derive": ci.check_derive_copies,
+        "liveness": ci.check_liveness_copies,
+        "required-set": ci.check_required_set_copies,
+    }
+
+    def parser_case(name: str, subcommand: str, body: str, expected_copies: int = 1,
+                    expected_problems: int = 1, needle: str | None = None,
+                    raw: bool = False) -> None:
+        case_root = tmp / f"command-copy-parser-{name}"
+        case_root.mkdir()
+        case_file = case_root / "commands.md"
+        if raw:
+            case_file.write_bytes(body.encode("utf-8"))
+        else:
+            case_file.write_text(body, encoding="utf-8")
+        extracted = ci.documented_ci_status_copies(case_root, subcommand)
+        found, checked = guards[subcommand](case_root)
+        if len(extracted) != expected_copies or len(found) != expected_problems:
+            problems.append(
+                f"[command parser {name}] expected {expected_copies} extracted/{expected_problems} "
+                f"problems, got extracted={extracted!r}, checked={checked!r}, problems={found!r}"
+            )
+        if needle is not None and not any(needle in problem for problem in found):
+            problems.append(f"[command parser {name}] missing diagnostic {needle!r}: {found!r}")
+
+    def fenced(command: str) -> str:
+        return f"```sh\n{command}\n```\n"
+
+    for subcommand, command in valid_commands.items():
+        for wrapper_name, wrapped in (
+                ("prompt", "$ " + command),
+                ("command", "command " + command),
+                ("python-path", "python3 <skill>/scripts/" + command)):
+            parser_case(f"valid-wrapper-{subcommand}-{wrapper_name}", subcommand, fenced(wrapped),
+                        expected_problems=0)
+
+        for suffix in ("-extra", "=other", "/foo"):
+            parser_case(f"exact-boundary-{subcommand}{suffix.replace('-', 'minus').replace('=', 'equals').replace('/', 'slash')}",
+                        subcommand, fenced(command.replace(subcommand, subcommand + suffix, 1)),
+                        expected_copies=0, needle="ZERO")
+
+        for operator in (";", "&&", "|", ">"):
+            parser_case(f"operator-{subcommand}-{operator.replace('&', 'and').replace(';', 'semicolon').replace('|', 'pipe').replace('>', 'redirect')}",
+                        subcommand, fenced(command + operator + " echo later"),
+                        needle=None if subcommand == "required-set" else "single documented command")
+
+        parser_case(f"continued-extra-{subcommand}", subcommand,
+                    fenced(command + slash + "\nextra-argument"))
+        parser_case(f"continued-no-separator-{subcommand}", subcommand,
+                    fenced(command + slash + "\n--repo owner/repo"))
+        parser_case(f"continued-with-spaces-{subcommand}", subcommand,
+                    fenced(command + slash + "   \nextra-argument"))
+        parser_case(f"continued-even-slashes-{subcommand}", subcommand,
+                    fenced(command + slash * 2 + "\nextra-argument"))
+        parser_case(f"continued-crlf-{subcommand}", subcommand,
+                    "```sh\r\n" + command + slash + "\r\nextra-argument\r\n```\r\n",
+                    raw=True)
+
+    parser_case("single-quoted-continuation-derive", "derive",
+                fenced("ci-status.py derive --pr 1 --head-sha abc --rundir run --ledger 'state.jsonl"
+                        + slash + "\n'"), needle="state.jsonl")
+    parser_case("single-quoted-continuation-liveness", "liveness",
+                fenced("ci-status.py liveness --ledger 'state.jsonl" + slash
+                        + "\n' --machine-action none"), needle="state.jsonl")
+    parser_case("single-quoted-continuation-required-set", "required-set",
+                fenced("ci-status.py required-set --ledger 'state.jsonl" + slash + "\n'"),
+                needle="state.jsonl")
+
+    parser_case("required-set-unquoted-hash", "required-set",
+                fenced("ci-status.py required-set --ledger state.jsonl#bad"), needle="state.jsonl")
+    parser_case("required-set-quoted-hash", "required-set",
+                fenced('ci-status.py required-set --ledger "state.jsonl#bad"'), needle="state.jsonl")
+    parser_case("required-set-escaped-hash", "required-set",
+                fenced("ci-status.py required-set --ledger state.jsonl" + slash + "#bad"), needle="state.jsonl")
+
+    parser_case("derive-missing-pr-copy", "derive",
+                fenced("ci-status.py derive --pr 1 --head-sha abc --rundir run --ledger run/state.jsonl\n"
+                        "ci-status.py derive --head-sha abc --rundir run --ledger run/state.jsonl"),
+                expected_copies=2, needle="WITHOUT `--pr`")
+    parser_case("derive-pr-in-comment", "derive",
+                fenced("ci-status.py derive --head-sha abc --rundir run --ledger run/state.jsonl # --pr 1"),
+                needle="WITHOUT `--pr`")
+    parser_case("derive-pr-in-quoted-value", "derive",
+                fenced('ci-status.py derive --head-sha abc --rundir run --ledger run/state.jsonl "contains --pr"'),
+                needle="unexpected positional")
+    parser_case("derive-near-prefix", "derive",
+                fenced("ci-status.py derive --problem 1 --head-sha abc --rundir run --ledger run/state.jsonl"),
+                needle="unsupported option")
+    parser_case("derive-bare-ledger", "derive",
+                fenced("ci-status.py derive --pr 1 --head-sha abc --rundir run --ledger"),
+                needle="missing its value")
+
+    parser_case("liveness-missing-ledger-copy", "liveness",
+                fenced("ci-status.py liveness --pr 1 --derive-json out --machine-action none"),
+                needle="WITHOUT `--ledger`")
+    parser_case("liveness-action-in-comment", "liveness",
+                fenced("ci-status.py liveness --ledger run/state.jsonl --pr 1 --derive-json out # "
+                        "--machine-action none"), needle="WITHOUT `--machine-action`")
+    parser_case("liveness-ledger-in-quoted-value", "liveness",
+                fenced('ci-status.py liveness --pr 1 --derive-json out --machine-action none "contains --ledger"'),
+                needle="unexpected positional")
+    parser_case("liveness-near-prefix", "liveness",
+                fenced("ci-status.py liveness --ledgerish run/state.jsonl --machine-actions none"),
+                needle="unsupported option")
+    parser_case("liveness-invalid-action", "liveness",
+                fenced("ci-status.py liveness --ledger run/state.jsonl --machine-action bad"),
+                needle="not one of")
+
     return problems
 
 
