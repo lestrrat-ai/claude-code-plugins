@@ -60,19 +60,44 @@ WATCH_MAINTENANCE_VERBS = r"(?:keep|maintain|start|launch|relaunch|ensure)(?:s|e
 WATCH_STATUS_VALUES = r"(?:pending|red|green|unknown|unusable|unverifiable)"
 WATCH_STATUS_CONDITION = (
     r"\b(?:ci(?:\s+status)?|status)\b\s*(?:is|=|==|:)\s*"
+    r"(?:[`\"']\s*)?(?:quoted\s+)?"
     + WATCH_STATUS_VALUES
+    + r"\b\s*[`\"']?(?=\s|[.!?;|,)\]}]|$)"
+)
+WATCH_ACTIVE_MAINTENANCE_ACTION = (
+    r"\b"
+    + WATCH_MAINTENANCE_VERBS
+    + r"\b(?:\s+[\w-]+){0,8}\s+\bwatch(?:es|ed|ing)?\b"
+)
+WATCH_PASSIVE_MAINTENANCE_ACTION = (
+    r"\bwatch(?:es|ed|ing)?\b"
+    r"(?:\s+(?:should|must|may|can|will|is|are|be)){0,3}\s+"
+    + WATCH_MAINTENANCE_VERBS
     + r"\b"
 )
 WATCH_MAINTENANCE_ACTION = (
-    r"\b"
-    + WATCH_MAINTENANCE_VERBS
-    + r"\b(?:\s+\w+){0,6}\s+\bwatch(?:es|ed|ing)?\b"
+    rf"(?:{WATCH_ACTIVE_MAINTENANCE_ACTION}|{WATCH_PASSIVE_MAINTENANCE_ACTION})"
 )
-STATUS_WATCH_MAINTENANCE = re.compile(
-    rf"(?:{WATCH_MAINTENANCE_ACTION}[^.!?;|]{{0,120}}{WATCH_STATUS_CONDITION}|"
-    rf"{WATCH_STATUS_CONDITION}[^.!?;|]{{0,120}}{WATCH_MAINTENANCE_ACTION})",
+WATCH_STATUS_CONDITION_RE = re.compile(WATCH_STATUS_CONDITION, re.IGNORECASE)
+WATCH_MAINTENANCE_ACTION_RE = re.compile(WATCH_MAINTENANCE_ACTION, re.IGNORECASE)
+WATCH_WARRANTED_TRUE_GUARD_RE = re.compile(
+    r"\b(?:only\s+)?(?:when|if|provided(?:\s+that)?|as\s+long\s+as)\s+"
+    r"(?:(?:the|a)\s+)?(?:returned\s+)?"
+    r"(?:liveness\s+result\s+(?:has|reports?)\s+)?"
+    r"`?watch_warranted`?\s*(?:is|=|==|:)\s*`?true`?\b",
     re.IGNORECASE,
 )
+WATCH_NEGATED_ACTION_RE = re.compile(
+    r"\b(?:never|do\s+not|don't|doesn't|no\s+need\s+to|"
+    r"unnecessary\s+to|not\s+(?:required|necessary)\s+to)\b",
+    re.IGNORECASE,
+)
+WATCH_NEGATED_AFTER_ACTION_RE = re.compile(
+    r"\b(?:is|are|becomes?|seems?)\s+(?:unnecessary|"
+    r"not\s+(?:required|necessary))\b",
+    re.IGNORECASE,
+)
+WATCH_QUOTED_SPAN_RE = re.compile(r"`[^`\n]*`|\"[^\"\n]*\"|“[^”\n]*”|‘[^’\n]*’")
 MARKDOWN_LIST_ITEM = re.compile(
     r"^(?P<prefix>[ \t>]*)(?:[-*+]|\d+[.)]) "
 )
@@ -355,29 +380,84 @@ def check_watch_consumers(adoption: str, loop_control: str) -> None:
                 f"{name} lost the liveness/watch_warranted gate")
 
 
+def markdown_watch_clauses(body: str) -> list[tuple[str, int]]:
+    """Return sentence-sized Markdown blocks without crossing list-item boundaries."""
+    blocks: list[tuple[str, int]] = []
+    current: list[str] = []
+    current_line = 0
+
+    def flush() -> None:
+        nonlocal current, current_line
+        if current:
+            blocks.append((" ".join(current), current_line))
+        current = []
+        current_line = 0
+
+    for line_number, line in enumerate(body.splitlines(), start=1):
+        item = MARKDOWN_LIST_ITEM.match(line)
+        if item is not None:
+            flush()
+            current = [line[item.end():].strip()]
+            current_line = line_number
+        elif not line.strip():
+            flush()
+        else:
+            if not current:
+                current_line = line_number
+            current.append(line.strip())
+    flush()
+
+    clauses: list[tuple[str, int]] = []
+    for block, line_number in blocks:
+        clauses.extend(
+            (clause.strip(), line_number)
+            for clause in re.split(r"(?<=[.!?;|])\s+", block)
+            if clause.strip()
+        )
+    return clauses
+
+
+def watch_action_is_quoted(clause: str, action: re.Match[str]) -> bool:
+    return any(
+        quoted.start() < action.start() and action.end() <= quoted.end()
+        for quoted in WATCH_QUOTED_SPAN_RE.finditer(clause)
+    )
+
+
+def watch_action_is_negated(clause: str, action: re.Match[str]) -> bool:
+    before = clause[:action.start()]
+    after = clause[action.end():]
+    return (
+        WATCH_NEGATED_ACTION_RE.search(before) is not None
+        or WATCH_NEGATED_AFTER_ACTION_RE.search(after) is not None
+    )
+
+
+def watch_action_has_true_warrant_guard(
+    clause: str,
+    action: re.Match[str],
+) -> bool:
+    return any(
+        guard.end() <= action.start() or action.end() <= guard.start()
+        for guard in WATCH_WARRANTED_TRUE_GUARD_RE.finditer(clause)
+    )
+
+
 def check_status_watch_maintenance_docs(root: Path = ROOT) -> list[str]:
-    """Reject status-conditioned watch maintenance that does not use `watch_warranted`."""
+    """Reject status-conditioned watch maintenance without a true `watch_warranted` guard."""
     problems: list[str] = []
     for document in sorted(root.rglob("*.md")):
         text = document.read_text(encoding="utf-8")
-        for match in STATUS_WATCH_MAINTENANCE.finditer(text):
-            clause_start = max(text.rfind(boundary, 0, match.start())
-                               for boundary in ".!?;|") + 1
-            clause_end_candidates = [text.find(boundary, match.end())
-                                     for boundary in ".!?;|"
-                                     if text.find(boundary, match.end()) >= 0]
-            clause_end = min(clause_end_candidates) if clause_end_candidates else len(text)
-            clause = text[clause_start:clause_end]
-            action = re.search(WATCH_MAINTENANCE_ACTION, clause, re.IGNORECASE)
-            if action is None:
+        for clause, line in markdown_watch_clauses(text):
+            if WATCH_STATUS_CONDITION_RE.search(clause) is None:
                 continue
-            if re.search(r"\b(?:never|do not|don't|not)\b", clause[:action.start()], re.IGNORECASE):
+            action = WATCH_MAINTENANCE_ACTION_RE.search(clause)
+            if action is None or watch_action_is_quoted(clause, action):
                 continue
-            if re.search(r"\bLIVELOCKS\b", clause, re.IGNORECASE):
+            if watch_action_is_negated(clause, action):
                 continue
-            if "watch_warranted" in clause:
+            if watch_action_has_true_warrant_guard(clause, action):
                 continue
-            line = text.count("\n", 0, match.start()) + 1
             relative = document.relative_to(root).as_posix()
             problems.append(
                 f"{relative}:{line} adds status-based watch maintenance without `watch_warranted`"
@@ -414,6 +494,61 @@ def run_watch_action_fixtures() -> None:
                 and "status-based watch maintenance" in problem
                 for problem in problems
             )
+            require(found is expected,
+                    f"{name} status-based watch maintenance fixture had the wrong result")
+
+    parser_fixtures = (
+        (
+            "unguarded-watch-warranted-token",
+            "CI status is pending, ensure a watch, and read watch_warranted from liveness.",
+            True,
+        ),
+        (
+            "unguarded-true-watch-warranted-token",
+            "CI status is pending, ensure a watch, and watch_warranted is true.",
+            True,
+        ),
+        (
+            "unguarded-livelocks-token",
+            "CI status is pending, ensure a watch, and investigate LIVELOCKS.",
+            True,
+        ),
+        (
+            "true-watch-warranted-guard",
+            "Ensure a watch when CI status is pending only when returned watch_warranted is true.",
+            False,
+        ),
+        (
+            "guard-before-action",
+            "When watch_warranted is true, ensure a watch when CI status is pending.",
+            False,
+        ),
+        ("passive-action", "A watch should be launched when CI status is pending.", True),
+        ("hyphenated-action", "Keep a long-running watch alive when CI status is pending.", True),
+        ("quoted-status", 'Ensure a watch when CI status is "pending".', True),
+        ("code-status", "Ensure a watch when CI status is `pending`.", True),
+        ("quoted-word-status", "Ensure a watch when CI status is quoted pending.", True),
+        ("no-need-negation", "No need to keep a watch when CI status is pending.", False),
+        (
+            "unnecessary-negation",
+            "It is unnecessary to ensure a watch when CI status is pending.",
+            False,
+        ),
+        (
+            "not-required-negation",
+            "It is not required to keep a watch when CI status is pending.",
+            False,
+        ),
+        ("separate-list-items", "- CI status is pending\n- Keep a watch.", False),
+        ("separate-sentences", "CI status is pending. Keep a watch.", False),
+        ("same-list-item", "- CI status is pending and keep a watch.", True),
+    )
+    for name, fixture, expected in parser_fixtures:
+        with tempfile.TemporaryDirectory(dir=fixture_parent) as temporary:
+            fixture_root = Path(temporary) / "campaign"
+            fixture_root.mkdir()
+            (fixture_root / "fixture.md").write_text(fixture + "\n", encoding="utf-8")
+            found = bool(check_status_watch_maintenance_docs(fixture_root))
             require(found is expected,
                     f"{name} status-based watch maintenance fixture had the wrong result")
 
