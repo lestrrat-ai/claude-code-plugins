@@ -1282,8 +1282,8 @@ def verdict_doc_cases(ci) -> list[str]:
 
 
 def watch_action_owner_cases(ci, tmp: Path) -> list[str]:
-    """Every registry entry rejects deletion and a direct unconditional-watch mutation."""
-    problems = []
+    """Pin complete ownership, every unsafe syntax family, owner boundaries, and selected-doc routing."""
+    problems: list[str] = []
     owners = ci.WATCH_ACTION_CONSUMERS
     source = ci.HERE.parent
 
@@ -1293,10 +1293,20 @@ def watch_action_owner_cases(ci, tmp: Path) -> list[str]:
     if len(checked) != len(owners):
         problems.append("[watch owners] current registry did not check every entry")
 
+    missing_all, _ = ci.check_watch_action_docs(owners=())
+    if not any("registry omits" in problem for problem in missing_all):
+        problems.append("[watch owners] an empty selected registry was treated as complete")
+
+    def copy_docs(root: Path) -> None:
+        for path in source.rglob("*.md"):
+            destination = root / path.relative_to(source)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+
     for index, owner in enumerate(owners):
         format_name, relative, anchor, condition = owner
         retained = tuple(candidate for candidate in owners if candidate != owner)
-        removed, _ = ci.check_watch_action_docs(owners=retained, required_owners=owners)
+        removed, _ = ci.check_watch_action_docs(owners=retained)
         if not any("registry omits" in problem and relative in problem and anchor in problem
                    for problem in removed):
             problems.append(f"[watch owners] removing {relative}:{anchor} was accepted")
@@ -1327,7 +1337,7 @@ def watch_action_owner_cases(ci, tmp: Path) -> list[str]:
                     rf"only when\s+returned\s+{tick}watch_warranted{tick}\s+is\s+{tick}true{tick}"
                 )
                 replacement = "unconditionally"
-            elif format_name == "summary":
+            elif format_name in ("summary", "formula"):
                 pattern = r"\s+".join(re.escape(part) for part in condition.split())
                 replacement = "CI watches launch unconditionally"
             else:
@@ -1346,6 +1356,97 @@ def watch_action_owner_cases(ci, tmp: Path) -> list[str]:
         )
         if not mutated:
             problems.append(f"[watch owners] unconditional action at {relative}:{anchor} was accepted")
+
+        owner_span = ci.watch_action_owner_span(owner, source)
+        if owner_span is None:
+            problems.append(f"[watch owners] {relative}:{anchor} lost its owner span")
+            continue
+        owner_start, owner_end = owner_span
+        source_text = (source / relative).read_text(encoding="utf-8")
+        if format_name == "mermaid":
+            insertion = "\nStart a CI watch anyway."
+            closing = source_text.rfind("\n```", owner_start, owner_end)
+            extra_changed = source_text[:closing] + insertion + source_text[closing:]
+        else:
+            extra_changed = source_text[:owner_end] + " Start a CI watch anyway." + source_text[owner_end:]
+        extra_root = tmp / f"watch-owner-{index}-extra"
+        extra_path = extra_root / relative
+        extra_path.parent.mkdir(parents=True, exist_ok=True)
+        extra_path.write_text(extra_changed, encoding="utf-8")
+        extra, _ = ci.check_watch_action_docs(
+            extra_root, owners=(owner,), required_owners=(owner,)
+        )
+        if not any("positive watch action" in problem for problem in extra):
+            problems.append(f"[watch owners] extra action at {relative}:{anchor} was accepted")
+
+    for format_name in ("mermaid", "policy"):
+        owner = next(candidate for candidate in owners if candidate[0] == format_name)
+        relative, anchor, condition = owner[1:]
+        source_text = (source / relative).read_text(encoding="utf-8")
+        owner_start, owner_end = ci.watch_action_owner_span(owner, source)
+        owner_text = source_text[owner_start:owner_end]
+        relocated_owner = owner_text.replace(condition, "", 1)
+        if relocated_owner == owner_text:
+            problems.append(f"[watch owners] {relative}:{anchor} lost its relocation target")
+            continue
+        changed = source_text[:owner_start] + relocated_owner + source_text[owner_end:]
+        changed += "\n" + condition + "\n"
+        fixture_root = tmp / f"watch-owner-{format_name}-relocated"
+        fixture_path = fixture_root / relative
+        fixture_path.parent.mkdir(parents=True, exist_ok=True)
+        fixture_path.write_text(changed, encoding="utf-8")
+        relocated, _ = ci.check_watch_action_docs(
+            fixture_root, owners=(owner,), required_owners=(owner,)
+        )
+        if not any("omits" in problem and relative in problem for problem in relocated):
+            problems.append(f"[watch owners] relocated {format_name} condition was accepted")
+
+    unregistered = (
+        "If ci == pending, launch a watch anyway.",
+        "Relaunch the watch because ci == pending.",
+        "Pending CI warrants a watch.",
+        "If buckets.RUNNING > 0, launch a watch.",
+        "Start a CI watch without running liveness first.",
+        "The watch rule is `ci = pending` → relaunch the watch.",
+        "Ensure that a live CI watch is present.",
+    )
+    for index, suffix in enumerate(unregistered):
+        fixture_root = tmp / f"watch-unregistered-{index}"
+        copy_docs(fixture_root)
+        fixture_path = fixture_root / "references/stage-2-review-gate.md"
+        fixture_path.write_text(
+            fixture_path.read_text(encoding="utf-8") + "\n\n" + suffix + "\n",
+            encoding="utf-8",
+        )
+        found, _ = ci.check_watch_action_docs(fixture_root)
+        if not any("unregistered" in problem and "stage-2-review-gate.md" in problem for problem in found):
+            problems.append(f"[watch owners] unregistered action form was accepted: {suffix}")
+
+    for name, relative, replacement, needle in (
+        ("driver", "references/stage-2-ci.md", "Ensure a watch immediately", "positive watch action"),
+        ("spec", "references/ci-derivation-spec.md", "`watch_warranted` is `false`",
+         "omits its registered true-warrant condition"),
+    ):
+        override_root = tmp / f"watch-doc-override-{name}"
+        override_root.mkdir(parents=True, exist_ok=True)
+        spec_doc = override_root / "ci-derivation-spec.md"
+        driver_doc = override_root / "stage-2-ci.md"
+        spec_doc.write_text((source / "references/ci-derivation-spec.md").read_text(encoding="utf-8"), encoding="utf-8")
+        driver_doc.write_text((source / "references/stage-2-ci.md").read_text(encoding="utf-8"), encoding="utf-8")
+        target = driver_doc if name == "driver" else spec_doc
+        original = target.read_text(encoding="utf-8")
+        old = ("When it is **true and no watch task is alive**, ensure one"
+               if name == "driver" else "`watch_warranted` is `true`")
+        changed = original.replace(old, replacement, 1)
+        if changed == original:
+            problems.append(f"[doc-check overrides] {name} mutation target was not found")
+            continue
+        target.write_text(changed, encoding="utf-8")
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            result = ci.doc_check(spec_doc, driver_doc)
+        if result == 0 or needle not in output.getvalue():
+            problems.append(f"[doc-check overrides] selected {name} document mutation was accepted")
     return problems
 
 def run(ci, tmp: Path) -> int:

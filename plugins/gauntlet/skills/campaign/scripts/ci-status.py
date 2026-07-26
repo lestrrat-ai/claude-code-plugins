@@ -169,7 +169,8 @@ FIXTURES = HERE / "fixtures" / "ci-status"
 
 # Every driver-facing site that launches or relaunches a CI watch. The tuple is the complete registry;
 # `doc-check` asserts each listed site directly and the fixture suite mutates every entry. Each entry is
-# `(format, relative path, unique anchor, required condition)`.
+# `(format, relative path, unique anchor, required condition)`. Formula owners are direct consumers whose
+# paragraph states the liveness condition without repeating item 21's complete wording.
 WATCH_ACTION_CONSUMERS = (
     ("mermaid", "README.md", 'R -- "pending / unreadable" --> CM[run liveness] --> WW{watch_warranted?}',
      "WW -- true --> CW[keep a CI watch alive<br/>relaunch it if it exited] --> M"),
@@ -202,14 +203,96 @@ WATCH_ACTION_CONSUMERS = (
      "`watch_warranted` is `true`"),
     ("markdown", "references/loop-control.md", "- **CI watch action.**",
      "`watch_warranted` is `true`"),
+    ("formula", "references/loop-control.md", "Then **adopt** each PR",
+     "returned `watch_warranted` is `true`"),
     ("markdown", "references/pr-adoption.md", "**CI watch action.**",
+     "`watch_warranted` is `true`"),
+    ("formula", "references/pr-adoption.md",
+     "Adoption produces only the registered, labelled row and the CI watch action:",
      "`watch_warranted` is `true`"),
     ("markdown", "references/stage-2-review-gate.md", "**Held-PR watch action.**",
      "`watch_warranted` is `true`"),
 )
+# Independent owner identities. `check_watch_action_docs` compares its selected registry to this set;
+# callers cannot make an incomplete registry complete by passing that same subset as both arguments.
+REQUIRED_WATCH_ACTION_KEYS = (
+    ("README.md", 'R -- "pending / unreadable" --> CM[run liveness] --> WW{watch_warranted?}'),
+    ("SKILL.md", "**Due-work dispatch.**"),
+    ("SKILL.md", "21. **CI watch action.**"),
+    ("references/ci-derivation-spec.md", "**CI watch action.**"),
+    ("references/stage-2-ci.md", "#### WATCH ONLY WHAT CAN MOVE — the relaunch is not free"),
+    ("references/stage-3-merge.md", "**Held-PR watch action.**"),
+    ("references/stage-3-merge.md", "**Clean-rebase watch action.**"),
+    ("references/stage-3-merge.md", "**Judgment-rebase watch action.**"),
+    ("references/critical-rules.md", "- **CI watch action.**"),
+    ("references/critical-rules.md", "**Held-PR watch action.**"),
+    ("references/critical-rules.md", "**Refutation CI watch action.**"),
+    ("references/critical-rules.md", "**Campaign-commit CI watch action.**"),
+    ("references/finding-audit.md", "**Refutation CI watch action.**"),
+    ("references/files-and-ledger.md", "**Held-PR watch action.**"),
+    ("references/loop-control.md", "**Held-PR watch action.**"),
+    ("references/loop-control.md", "- **CI watch action.**"),
+    ("references/loop-control.md", "Then **adopt** each PR"),
+    ("references/pr-adoption.md", "**CI watch action.**"),
+    ("references/pr-adoption.md",
+     "Adoption produces only the registered, labelled row and the CI watch action:"),
+    ("references/stage-2-review-gate.md", "**Held-PR watch action.**"),
+)
 README_ADOPTION_WATCH_ACTION = (
     'C[adopt each PR: ledger row + run label,<br/>run liveness<br/>act on watch_warranted]'
 )
+PARKED_WATCH_RULE = "Parked status does not override that result."
+STATUS_SUBJECT_PATTERN = r"(?:`(?:ci|status)`|(?<!\w)(?:ci|status)(?!\w))"
+STATUS_CONDITION_CONNECTORS = r"(?:if|when|while)"
+STATUS_CAUSAL_CONNECTORS = r"(?:because|as|since|due to)"
+STATUS_WATCH_CONNECTORS = r"(?:if|when|while|because|as|since|due to)"
+WATCH_ACTION_WORDS = r"(?:watch|launch|relaunch|ensure|warrant)"
+WATCH_ACTION_STATUS_WORDS = WATCH_ACTION_WORDS + r"(?:es|s|ed|ing)?"
+WATCH_ACTION_VERBS = r"(?:launch|relaunch|ensure)"
+WATCH_ACTION_STATUS_VERBS = r"(?:launch|relaunch|ensure|warrant)(?:es|s|ed|ing)?"
+WATCH_ACTION_START_VERBS = r"(?:start|launch|relaunch|ensure)(?:s|ed|ing)?"
+STATUS_EQUALITY_ARROWS = r"(?:->|→)"
+POSITIVE_WATCH_ACTION = re.compile(
+    r"\b" + WATCH_ACTION_START_VERBS + r"\b(?:\s+\w+){0,6}\s+\bwatch\b",
+    re.IGNORECASE,
+)
+WATCH_ACTION_CONTRADICTIONS = (
+    ("ci/status-based", re.compile(
+        r"(?:\b" + STATUS_CONDITION_CONNECTORS + r"\s+"
+        r"(?:(?:the|row(?:'s)?|value\s+of)\s+)*(?:(?:[\w-]+\s+){0,2})"
+        + STATUS_SUBJECT_PATTERN + r"[^.!?]*\b" + WATCH_ACTION_STATUS_WORDS + r"\b|"
+        r"\b" + STATUS_CAUSAL_CONNECTORS + r"\s+"
+        r"(?:(?:the|row(?:'s)?|value\s+of)\s+)*(?:(?:[\w-]+\s+){0,2})"
+        + STATUS_SUBJECT_PATTERN + r"[^.!?]*\b" + WATCH_ACTION_STATUS_VERBS
+        + r"\b[^.!?]*\bwatch\b|"
+        r"\b(?:[\w-]+\s+){0,2}" + STATUS_SUBJECT_PATTERN + r"\s+"
+        + WATCH_ACTION_STATUS_VERBS + r"\b[^.!?]*\bwatch\b|"
+        r"\b" + WATCH_ACTION_VERBS + r"\b[^.!?]*\b" + STATUS_WATCH_CONNECTORS
+        + r"\s+(?:(?:the|row(?:'s)?|value\s+of)\s+)*" + STATUS_SUBJECT_PATTERN + r"|"
+        + STATUS_SUBJECT_PATTERN + r"\s*(?:==|=|is)\s*[^.!?]*?" + STATUS_EQUALITY_ARROWS
+        + r"\s*\b" + WATCH_ACTION_STATUS_WORDS + r"\b|"
+        r"`(?:ci|status)\s*(?:==|=|is)\s*[^`]+`(?![^.!?]*\bLIVELOCKS\b)\s*"
+        + STATUS_EQUALITY_ARROWS + r"\s*[^.!?]*?[\"']?\b" + WATCH_ACTION_STATUS_WORDS + r"\b|"
+        + STATUS_SUBJECT_PATTERN + r"[^.!?]*\b(?:means|triggers?|causes?|controls?)\b[^.!?]*\b"
+        + WATCH_ACTION_STATUS_WORDS + r"\b|"
+        + STATUS_SUBJECT_PATTERN + r"\s*--[^.!?]*?-->\s*[^.!?]*\b"
+        + WATCH_ACTION_STATUS_WORDS + r"\b)",
+        re.IGNORECASE,
+    )),
+    ("unconditional", re.compile(
+        r"(?:\b" + WATCH_ACTION_STATUS_WORDS + r"\b[^.!?]*"
+        r"\b(?:unconditionally|regardless|anyway|always)\b|"
+        r"\b(?:unconditionally|regardless|anyway|always)\b[^.!?]*\b"
+        + WATCH_ACTION_STATUS_WORDS + r"\b)",
+        re.IGNORECASE,
+    )),
+)
+BUCKET_RUNNING_FORMULA = r"`?buckets\.RUNNING`?\s*>\s*0\b"
+BUCKET_WATCH_ACTION_CONTRADICTION = ("bucket-based", re.compile(
+    r"(?:\b" + WATCH_ACTION_STATUS_WORDS + r"\b[^.!?;]*?" + BUCKET_RUNNING_FORMULA
+    + r"|" + BUCKET_RUNNING_FORMULA + r"[^.!?;]*?\b" + WATCH_ACTION_STATUS_WORDS + r"\b)",
+    re.IGNORECASE,
+))
 
 # A git object id, as GitHub returns it: 40 LOWERCASE hex. Same rule, same reason, as `ci-snapshot.py` —
 # a `--head-sha` of any other shape makes every comparison downstream unfalsifiable, so it is an OPERATOR
@@ -2403,25 +2486,145 @@ def owner_block(text: str, anchor: str) -> tuple[int, str] | None:
     return start, text[start:end if end >= 0 else len(text)]
 
 
-def watch_action_owner_problems(owner: tuple[str, str, str, str], base: Path) -> list[str]:
-    """Check one registered watch-action owner with the syntax that owner actually uses."""
+def watch_action_contradiction_matches(
+        plain: str, *, include_bucket_formulas: bool = False
+) -> list[tuple[str, re.Match[str]]]:
+    """Return unnegated watch rules that bypass liveness's returned warrant."""
+    patterns = WATCH_ACTION_CONTRADICTIONS
+    if include_bucket_formulas:
+        patterns += (BUCKET_WATCH_ACTION_CONTRADICTION,)
+    matches = []
+    for kind, pattern in patterns:
+        for match in pattern.finditer(plain):
+            clause_start = max(plain.rfind(boundary, 0, match.start()) for boundary in ".!?;,|")
+            prefix = plain[clause_start + 1:match.start()]
+            if not re.search(r"\b(?:never|do not|don't|not)\b", prefix, re.IGNORECASE):
+                matches.append((kind, match))
+    return matches
+
+
+def positive_watch_action_matches(plain: str) -> list[re.Match[str]]:
+    """Return unnegated positive watch actions, excluding quoted examples and negated clauses."""
+    matches = []
+    for match in POSITIVE_WATCH_ACTION.finditer(plain):
+        if match.start() and plain[match.start() - 1] in "\"'`“‘":
+            continue
+        clause_start = max(plain.rfind(boundary, 0, match.start()) for boundary in ".!?;|")
+        prefix = plain[clause_start + 1:match.start()]
+        if not re.search(r"\b(?:never|do not|don't|not)\b", prefix, re.IGNORECASE):
+            matches.append(match)
+    return matches
+
+
+def watch_action_clause_start(plain: str, position: int) -> int:
+    """Return the punctuation-delimited clause containing one watch action."""
+    return max(plain.rfind(boundary, 0, position) for boundary in ".!?;|")
+
+
+def positive_watch_action_problems(
+        relative: str, line: int, plain: str, condition: str, *, require_action: bool = False
+) -> list[str]:
+    """Keep positive watch actions in the clause that carries their registered warrant."""
+    positive_matches = positive_watch_action_matches(plain)
+    problems = []
+    if require_action and not positive_matches:
+        problems.append(f"{relative}:{line} omits the positive watch action")
+    condition_starts = [match.start() for match in re.finditer(re.escape(condition), plain)]
+    for match in positive_matches:
+        if not any(
+                watch_action_clause_start(plain, match.start())
+                == watch_action_clause_start(plain, condition_start)
+                for condition_start in condition_starts
+        ):
+            problems.append(f"{relative}:{line} adds a positive watch action outside its registered warrant")
+    return problems
+
+
+def watch_action_document_path(
+        relative: str, base: Path, document_overrides: dict[str, Path] | None
+) -> Path:
+    return (document_overrides or {}).get(relative, base / relative)
+
+
+def watch_action_owner_span(
+        owner: tuple[str, str, str, str], base: Path,
+        document_overrides: dict[str, Path] | None = None,
+) -> tuple[int, int] | None:
+    """Return the source span owned by one registry entry, or None when its anchor is malformed."""
+    format_name, relative, anchor, _ = owner
+    path = watch_action_document_path(relative, base, document_overrides)
+    if not path.exists():
+        return None
+    text = path.read_text(encoding="utf-8")
+    positions = [match.start() for match in re.finditer(re.escape(anchor), text)]
+    if len(positions) != 1:
+        return None
+    start = positions[0]
+    if format_name == "mermaid":
+        fence_start = text.rfind("```mermaid", 0, start)
+        fence_end = text.find("\n```", start)
+        if fence_start < 0 or fence_end < 0:
+            return None
+        return fence_start, fence_end + len("\n```")
+    if format_name == "policy":
+        next_heading = re.search(r"(?m)^#{1,6}\s", text[start + len(anchor):])
+        end = start + len(anchor) + next_heading.start() if next_heading else len(text)
+        return start, end
+    selected = owner_block(text, anchor)
+    if selected is None:
+        return None
+    owner_start, block = selected
+    return owner_start, owner_start + len(block)
+
+
+def watch_action_owner_problems(
+        owner: tuple[str, str, str, str], base: Path,
+        document_overrides: dict[str, Path] | None = None,
+) -> list[str]:
+    """Check one registered watch-action owner through its complete owned source span."""
     format_name, relative, anchor, condition = owner
-    path = base / relative
+    path = watch_action_document_path(relative, base, document_overrides)
     if not path.exists():
         return [f"{relative}:{anchor!r} is missing - the registered watch action has no subject"]
     text = path.read_text(encoding="utf-8")
 
     if format_name == "mermaid":
+        selected = watch_action_owner_span(owner, base, document_overrides)
+        if selected is None:
+            return [f"{relative}:{anchor!r} must occur exactly once within its Mermaid owner span"]
+        owner_start, owner_end = selected
+        owner_text = text[owner_start:owner_end]
         required = (anchor, condition, "WW -- false --> CB{still within its bounds?}",
                     README_ADOPTION_WATCH_ACTION)
-        return [f"{relative} omits {item!r} from the CI watch flowchart"
-                for item in required if text.count(item) != 1]
+        problems = [f"{relative} omits {item!r} from the CI watch flowchart"
+                    for item in required if owner_text.count(item) != 1]
+        owner_line = text.count("\n", 0, owner_start) + 1
+        for offset, raw_line in enumerate(owner_text.splitlines()):
+            problems += positive_watch_action_problems(
+                relative, owner_line + offset, " ".join(raw_line.split()), condition
+            )
+        return problems
 
     if format_name == "policy":
+        selected = watch_action_owner_span(owner, base, document_overrides)
+        if selected is None:
+            return [f"{relative}:{anchor!r} must occur exactly once within its policy owner span"]
+        owner_start, owner_end = selected
+        owner_text = text[owner_start:owner_end]
         required = (anchor, "The watch decision is **`liveness`'s `watch_warranted` field**", condition,
                     "when it is **false**, never launch or relaunch")
-        return [f"{relative} omits {item!r} from the CI watch policy"
-                for item in required if text.count(item) != 1]
+        problems = [f"{relative} omits {item!r} from the CI watch policy"
+                    for item in required if owner_text.count(item) != 1]
+        owner_line = text.count("\n", 0, owner_start) + 1
+        for offset, raw_line in enumerate(owner_text.splitlines()):
+            stripped = raw_line.lstrip()
+            if stripped.startswith(("#", "|")):
+                continue
+            without_quotes = re.sub(r'"[^"\n]*"', "", raw_line)
+            problems += positive_watch_action_problems(
+                relative, owner_line + offset, " ".join(without_quotes.split()), condition
+            )
+        return problems
 
     selected = owner_block(text, anchor)
     if selected is None:
@@ -2430,9 +2633,17 @@ def watch_action_owner_problems(owner: tuple[str, str, str, str], base: Path) ->
     line = text.count("\n", 0, start) + 1
     plain = " ".join(block.split())
     if format_name == "summary":
+        problems = []
         if condition not in plain:
-            return [f"{relative}:{line} does not dispatch CI watches from item 21's returned warrant"]
-        return []
+            problems.append(f"{relative}:{line} does not dispatch CI watches from item 21's returned warrant")
+        problems += positive_watch_action_problems(relative, line, plain, condition)
+        return problems
+    if format_name == "formula":
+        problems = []
+        if condition not in plain:
+            problems.append(f"{relative}:{line} does not dispatch CI watches from its registered warrant")
+        problems += positive_watch_action_problems(relative, line, plain, condition, require_action=True)
+        return problems
     if format_name != "markdown":
         return [f"{relative}:{line} has unknown watch-action format {format_name!r}"]
 
@@ -2446,6 +2657,54 @@ def watch_action_owner_problems(owner: tuple[str, str, str, str], base: Path) ->
         problems.append(f"{relative}:{line} does not make the watch action depend on liveness's returned warrant")
     if condition not in plain:
         problems.append(f"{relative}:{line} omits its registered true-warrant condition")
+    if PARKED_WATCH_RULE not in plain:
+        problems.append(f"{relative}:{line} omits the parked-status watch rule")
+    problems += positive_watch_action_problems(relative, line, plain, condition)
+    return problems
+
+
+def unregistered_watch_action_problems(
+        base: Path, owners: tuple[tuple[str, str, str, str], ...],
+        document_overrides: dict[str, Path] | None = None,
+) -> list[str]:
+    """Reject unnegated status, bucket, and positive watch instructions outside registered owner spans."""
+    documents = {
+        path.relative_to(base).as_posix(): path for path in base.rglob("*.md")
+    }
+    documents.update(document_overrides or {})
+    spans_by_path: dict[str, list[tuple[int, int]]] = {}
+    for owner in owners:
+        span = watch_action_owner_span(owner, base, document_overrides)
+        if span is not None:
+            spans_by_path.setdefault(owner[1], []).append(span)
+
+    problems = []
+    for relative, path in sorted(documents.items()):
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8")
+        masked = list(text)
+        for start, end in spans_by_path.get(relative, []):
+            for index in range(start, end):
+                if masked[index] != "\n":
+                    masked[index] = "."
+        masked_text = "".join(masked)
+        for kind, match in watch_action_contradiction_matches(masked_text, include_bucket_formulas=True):
+            line = text.count("\n", 0, match.start()) + 1
+            problems.append(f"{relative}:{line} adds an unregistered {kind} watch rule")
+        for match in positive_watch_action_matches(masked_text):
+            clause_start = watch_action_clause_start(masked_text, match.start())
+            clause_end_candidates = [masked_text.find(boundary, match.end()) for boundary in ".!?;|"
+                                     if masked_text.find(boundary, match.end()) >= 0]
+            clause_end = min(clause_end_candidates) if clause_end_candidates else len(masked_text)
+            clause = masked_text[clause_start + 1:clause_end]
+            # Existing prose may summarize the owner in a table or transition paragraph. It is safe
+            # only when that same clause ties the action to liveness. "without running liveness" is
+            # explicitly unsafe even though it mentions liveness in the same clause.
+            if (not re.search(r"\bliveness\b", clause, re.IGNORECASE)
+                    or re.search(r"\bwithout\b", clause, re.IGNORECASE)):
+                line = text.count("\n", 0, match.start()) + 1
+                problems.append(f"{relative}:{line} adds an unregistered positive watch action")
     return problems
 
 
@@ -2453,23 +2712,29 @@ def check_watch_action_docs(
         root: Path | None = None,
         owners: tuple[tuple[str, str, str, str], ...] | None = None,
         required_owners: tuple[tuple[str, str, str, str], ...] | None = None,
+        document_overrides: dict[str, Path] | None = None,
 ) -> tuple[list[str], list[str]]:
-    """Every named owner acts on liveness's returned warrant; no owner is silently skipped."""
+    """Validate every registered owner and every unregistered watch action through one chokepoint."""
     base = root or HERE.parent
-    selected = owners if owners is not None else WATCH_ACTION_CONSUMERS
-    required = required_owners if required_owners is not None else WATCH_ACTION_CONSUMERS
+    selected = WATCH_ACTION_CONSUMERS if owners is None else owners
+    # Keep the expected set independent of a caller's selected subset. A fixture can select one owner,
+    # but production always checks the complete registry and never treats that subset as complete.
+    required_keys = (REQUIRED_WATCH_ACTION_KEYS if required_owners is None
+                     else tuple((owner[1], owner[2]) for owner in required_owners))
+    selected_keys = {(owner[1], owner[2]) for owner in selected}
     problems, checked = [], []
 
     if len(set(selected)) != len(selected):
         problems.append("the CI watch owner registry repeats an entry")
-    for owner in required:
-        if owner not in selected:
-            problems.append(f"the CI watch owner registry omits {owner[1]}:{owner[2]}")
+    for relative, anchor in required_keys:
+        if (relative, anchor) not in selected_keys:
+            problems.append(f"the CI watch owner registry omits {relative}:{anchor}")
     for owner in selected:
-        found = watch_action_owner_problems(owner, base)
+        found = watch_action_owner_problems(owner, base, document_overrides)
         problems += found
         if not found:
             checked.append(f"{owner[1]}:{owner[2]}")
+    problems += unregistered_watch_action_problems(base, selected, document_overrides)
     return problems, checked
 
 def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) -> int:
@@ -2646,7 +2911,11 @@ def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) 
     if not liveness_problems:
         held.append(f"{'the liveness invocations':32} {len(liveness_copies)} runnable copies, every one "
                     f"answering --machine-action")
-    watch_problems, watch_blocks = check_watch_action_docs()
+    watch_overrides = {
+        "references/ci-derivation-spec.md": spec_doc,
+        "references/stage-2-ci.md": driver_doc,
+    }
+    watch_problems, watch_blocks = check_watch_action_docs(document_overrides=watch_overrides)
     problems += watch_problems
     if not watch_problems:
         held.append(f"{'the CI watch actions':32} {len(watch_blocks)} registered owners act on returned "
