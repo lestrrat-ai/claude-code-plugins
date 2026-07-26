@@ -782,7 +782,10 @@ def t_aborted_row_resumes_after_later_verified_merge():
         f.state = "MERGED"
         before = len(f.calls)
         second, result, err = invoke(f, led, root)
-        check(second == 0 and result is not None and result["status"] == "merged",
+        if second != 0 or result is None:
+            raise M.SelfTestFailure(
+                f"later verified MERGED result did not finalize the aborted row: {err}")
+        check(result["status"] == "merged",
               f"later verified MERGED result did not finalize the aborted row: {err}")
         check(status(led) == "merged", "later verified MERGED result did not update the terminal row")
         check(result["cleanup"] == {"worktree": "removed", "branch": "removed"},
