@@ -62,8 +62,14 @@ TERMINAL_STATUSES = ("merged", "aborted")
 # The per-section projections. KEYS ARE LEDGER FIELD NAMES (`ledger.py` ROW_FIELDS) so there is no
 # translation layer to drift — a reader greps the history file with the same field name it greps the
 # ledger with. Each section answers one thing a future run needs (`carryover.md`):
-#   merged        — de-dup against work that SHIPPED: which PR, its slug, the SHA it merged at, its tier
-#                   and how many review rounds it took.
+#   merged        — de-dup against work that SHIPPED: which PR, its slug, the head this RUN reviewed, its
+#                   tier and the review rounds this run spent. For every PR the RUN merged, that reviewed
+#                   head IS the SHA that merged — `merge.py` pins the merge to it with
+#                   `--match-head-commit`. The ONE exception is a row the run ABORTED that GitHub later
+#                   reported MERGED: `merge.py`'s aborted-later-merged record writes the terminal status
+#                   and NOTHING else (by design — the abort handed those resources back), so the row keeps
+#                   its ABORT-time `head_sha` and `review_rounds` and the SHA the user's own later merge
+#                   landed is not recorded anywhere. `render` below states that in the artifact itself.
 #   aborted       — the durable WHY a PR could not clear the bar: `ci_reason` (the machine blocker) and
 #                   `blocker_ruling` (the user's answer, e.g. abort@<iso>).
 #   api-declined  — the parked API fact to remind the user about: the PR and its `api_approval` verdict.
@@ -129,7 +135,12 @@ def render(run_id: str, base_branches: "list[str]", now: str,
     out.append("aborted-to-MERGED reconciliation is owned by `carryover.py reconcile-merged`. Object keys are")
     out.append("ledger field names (scripts/ledger.py ROW_FIELDS).")
     out.append("Each `## <section>` heading is followed by zero or more rows, one JSON object per PR:")
-    out.append("  merged        pr, slug, head_sha (at merge), tier, review_rounds, base_branch")
+    out.append("  merged        pr, slug, head_sha, tier, review_rounds, base_branch — AS THIS RUN RECORDED")
+    out.append("                THEM. `head_sha` is the head the run REVIEWED; for a PR the run merged that")
+    out.append("                is also the SHA that merged (the merge is pinned to it). A row the run")
+    out.append("                ABORTED that GitHub later reported MERGED keeps its ABORT-time `head_sha`")
+    out.append("                and `review_rounds` — that merge was the user's own later work, and the SHA")
+    out.append("                it landed is not recorded here.")
     out.append("  aborted       pr, slug, ci_reason, blocker_ruling, base_branch  (the durable why it stopped)")
     out.append("  api-declined  pr, slug, api_approval, base_branch. A declined non-merged PR is ALSO aborted,")
     out.append("                appears in BOTH sections — this is a reminder projection, not double-counting.")

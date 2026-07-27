@@ -347,6 +347,40 @@ def t_aborted_to_merged_reconciliation_refuses_unrelated_change() -> None:
               "a refused unrelated reconciliation leaves the old history byte-for-byte unchanged")
 
 
+def t_aborted_to_merged_projection_is_documented_as_abort_time() -> None:
+    # `merge.py`'s aborted-later-merged record writes the terminal STATUS and nothing else, so the row that
+    # reaches this projection still carries the head this run REVIEWED and the review rounds it spent — the
+    # SHA the user's own later merge landed is recorded nowhere. The history file is read by a FRESH RUN's
+    # agent, so the file's self-describing header must say that outright: a header presenting the field as
+    # the SHA the PR merged at would make the artifact assert a merge that never happened at that SHA.
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        header = _header()
+        aborted = _row("41", slug="user-merged-later", status="aborted", head_sha=SHA_A, tier="HIGH",
+                       review_rounds="2", ci_reason="required check absent",
+                       blocker_ruling="abort@2026-07-04T17:00:00Z")
+        code, _out, err, out_dir = _distill(tmp, header, [aborted])
+        check(code == 0, f"the initial aborted ledger distills; stderr={err!r}")
+
+        # Exactly what the terminal write produces: `status` flipped, every other field untouched.
+        _write_ledger(tmp / "state.jsonl", header, [dict(aborted, status="merged")])
+        code, _out, err = capture_cli(
+            C.main, ["reconcile-merged", "--ledger", str(tmp / "state.jsonl"),
+                     "--out-dir", str(out_dir), "--pr", "41", "--now", "2026-07-04T19:00:00Z"])
+        check(code == 0, f"the verified aborted-to-MERGED transition rewrites history; stderr={err!r}")
+
+        text = (out_dir / "g260704-0915-a3f29c1b.md").read_text(encoding="utf-8")
+        merged = _parse_sections(text)["merged"][0]
+        check(merged["head_sha"] == SHA_A and merged["review_rounds"] == "2",
+              f"the reconciled object keeps this run's abort-time head and rounds: {merged}")
+        # The header wraps, so compare against the whitespace-normalized text.
+        gloss = " ".join(text.split())
+        check("`head_sha` is the head the run REVIEWED" in gloss,
+              "the merged-section gloss must define head_sha as the head this run reviewed")
+        check("keeps its ABORT-time `head_sha` and `review_rounds`" in gloss,
+              "the merged-section gloss must name the aborted-later-merged row's abort-time values")
+
+
 # --- refusal: a malformed ledger (the loader's strictness is reused) ----------
 
 def t_malformed_ledger_is_refused() -> None:
@@ -444,6 +478,8 @@ CASES = [
      t_aborted_to_merged_reconciliation_rewrites_history),
     ("aborted-to-merged-guard", "an aborted-to-MERGED reconciliation refuses unrelated ledger changes and preserves history",
      t_aborted_to_merged_reconciliation_refuses_unrelated_change),
+    ("aborted-to-merged-abort-time", "the reconciled merged object keeps this run's abort-time head and rounds, and the file's own header says so",
+     t_aborted_to_merged_projection_is_documented_as_abort_time),
     ("malformed-refused", "a malformed ledger is refused (the loader's strictness)",
      t_malformed_ledger_is_refused),
     ("no-run-identity", "a header with no run_id is refused",

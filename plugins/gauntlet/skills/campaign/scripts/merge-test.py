@@ -845,6 +845,16 @@ def t_aborted_row_records_later_verified_merge():
             check(f.merged_calls == 0, f"{label}: recording the disposition issued a merge")
             check(f.worktree_present and f.branch_present,
                   f"{label}: recording the disposition destroyed the user's returned resources")
+            # The terminal write touches `status` and NOTHING else — including under a MOVED head, where
+            # the live `headRefOid` differs from the row. So the row keeps the head this run REVIEWED and
+            # the review rounds it spent, and the SHA the user's own later merge landed is recorded
+            # nowhere. That is not a silent gap: `carryover.py`'s merged-section gloss (the history file
+            # is agent-consumed) states it in the artifact, so the two must not drift apart.
+            recorded = L.find_row(L.load(led)[1], "9")
+            check(recorded is not None and recorded["head_sha"] == SHA
+                  and recorded["review_rounds"] == "0",
+                  f"{label}: the terminal write changed more than `status`; the row must keep the "
+                  f"reviewed head and this run's review rounds: {recorded}")
         finally:
             finish(td, real)
 

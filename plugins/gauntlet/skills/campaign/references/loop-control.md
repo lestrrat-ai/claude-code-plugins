@@ -41,7 +41,9 @@ the worker returns, and what never moves into it. The steps below are unchanged 
      this run may take the finished branch: fetch the canonical snapshot, route each absent terminal-aborted
      fact through Step 4, and only then decide whether the run is finished. An OPEN or CLOSED verification
      keeps the abort as a terminal no-op; a verified MERGED result updates the row and any existing carryover
-     projection. Three cases:
+     projection; a refusal this run cannot correct is discharged by reporting it. **Step 4 owns that whole
+     outcome set — including that nothing persists a discharge, so a later pass routes the fact again.**
+     Three cases:
 
    - **This run has live work → resume.** Resolve a dead review pass — no verdict, no live task — from its
      highest-numbered `launch_attempt` through `runtime-adapter.md`, **Review preparation mapping**, **NOT
@@ -554,8 +556,19 @@ the worker returns, and what never moves into it. The steps below are unchanged 
   waits on a human. If the cause genuinely cannot be corrected, **record it in the final report and leave
   the row `aborted`**: the follow-up is then discharged as reported-unresolved, the row is already terminal,
   and the run may take the finished branch (`no pending terminal-aborted follow-up` is satisfied by a
-  discharged follow-up, not only by a `merged` one). **Never re-route the same unfixable fact forever** —
-  a fact that survives one correction attempt and one report is done, not pending.
+  discharged follow-up, not only by a `merged` one).
+
+  **The discharge is scoped to the PASS that made it, and nothing persists it — so expect the same fact
+  back.** `reconcile.py detect` re-emits `terminal: aborted` + `absent_from_snapshot` for that row from
+  the ledger and the snapshot alone; no ledger field, run-dir file, or lease field records that a
+  correction was attempted and reported, and every heartbeat is a fresh amnesiac instance. So a later
+  pass — and a later bare invocation of the kept `<rundir>` (`files-and-ledger.md`, the `<rundir>/` row)
+  — WILL route it again. **That repetition is expected and harmless, not a wedge:** the re-route costs one
+  `gh pr view`, re-reaches the same named refusal, and discharges it again, and the run takes the finished
+  branch each time. **What must never repeat is the routing WITHIN one pass:** route the fact once, make
+  one correction attempt, report it, and move on — do **not** re-run `merge.py run` on the same refusal
+  hoping for a different answer, and do **not** hold the pass open waiting for one. A fact that has been
+  attempted and reported **in this pass** is done for this pass.
 ### Step 5 — Reschedule or exit
 
 #### Primary continuity

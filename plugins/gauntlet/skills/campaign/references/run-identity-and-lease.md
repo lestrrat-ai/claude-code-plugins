@@ -207,7 +207,10 @@ the verdict the tool prints.
      - only **finished** → first take the run and perform the terminal-aborted follow-up in Loop control
        Step 1/Step 4 for every terminal `aborted` row whose PR is absent from the canonical snapshot. An
        OPEN or CLOSED verification keeps the abort and a verified MERGED result updates the row and
-       carryover; only after those checks may the finished-run prompt be shown, per run;
+       carryover; a refusal this run cannot correct is discharged by reporting it, and the prompt is still
+       shown. **Loop control Step 4 owns that whole outcome set — including that nothing persists a
+       discharge, so the NEXT bare invocation performs the same check again.** Only after those checks may
+       the finished-run prompt be shown, per run;
      - **none at all** (idle — nothing to drive) → **prompt**: "No PRs under a campaign. Run
        `gauntlet:review` to find issues, or pass PR numbers to gate." (This wording is **CANONICAL** —
        every other site shows the idle prompt by pointing here, not by retyping it.) Campaign never

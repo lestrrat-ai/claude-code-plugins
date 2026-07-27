@@ -200,7 +200,10 @@ flowchart TD
     U --> V[confirmed merged; reused local resources left in place<br/>no --delete-branch]
     V --> W{all PRs merged or aborted?}
     W -- no --> M
-    W -- yes --> X[write carryover ledger + final report] --> X2([done])
+    W -- yes --> WA{any aborted row whose PR<br/>left the run snapshot?}
+    WA -- yes --> WB[merge.py run: one live verification<br/>open/closed keeps the abort, merged records merged<br/>+ reconciles carryover, uncorrectable refusal is reported<br/>rules: references/loop-control.md step 4]
+    WB --> WA
+    WA -- no --> X[write carryover ledger + final report] --> X2([done])
 
     M -. 1h cap exceeded .-> Y{first attempt?}
     Y -. yes .-> Z[retry once in fresh worktree]
