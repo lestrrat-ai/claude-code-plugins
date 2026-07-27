@@ -26,7 +26,13 @@ from typing import NoReturn
 from _gauntlet.atomic import replace_text
 from _gauntlet.jsonl import JsonlError, object_lines
 from _gauntlet.table import config_lines, escape_cell as _shared_escape_cell, grid_lines
-from _gauntlet.table import hidden_notice as _shared_hidden_notice
+# Re-exported WITHOUT a default, because no one-argument default can be right: the notice names the
+# statuses a render ACTUALLY dropped (`hidden_statuses()`), never the configured set, and
+# `TABLE_HIDDEN_STATUSES` holds two — a defaulted `hidden_notice(1)` would announce a hidden `aborted`
+# row on a ledger holding none. Every `hidden_notice` call in the tree passes its own status tuple, so
+# nothing reaches the missing default. The "Compatibility export" below scopes to `escape_cell` alone;
+# this name carries no such promise.
+from _gauntlet.table import hidden_notice
 
 # Compatibility export for existing test and script consumers. New consumers import `_gauntlet.table`.
 escape_cell = _shared_escape_cell
@@ -426,7 +432,9 @@ HELD_STATUSES = ("awaiting-api", "awaiting-user", REPAIR_STATUS)
 
 # TERMINAL — the statuses in which a row is DONE and out of the live gate: `merged` finished successfully,
 # `aborted` gave up. Named ONCE so any check asking "is this row still ACTIVE?" reads the set instead of
-# retyping the pair (`cmd_park` and the `default_non_goals` broadening guard both resolve through it).
+# retyping the pair; every such check resolves through it (grep the name for today's readers rather than
+# trusting a list here, which goes stale the next time one is added). `TABLE_HIDDEN_STATUSES` IS this
+# tuple, so its ORDER is also the order the table's hidden-count notice names them in.
 TERMINAL_STATUSES = ("merged", "aborted")
 
 
@@ -1559,26 +1567,41 @@ TABLE_SHA_WIDTH = 8
 #
 # The two EMPTY-GRID markers are deliberately DIFFERENT LINES, because they are different facts and a
 # reader acts differently on each: an empty ledger has adopted nothing, while an all-hidden ledger has
-# finished everything. Printing `# (no rows)` for the second would be the exact lie this file exists to
-# prevent — a table saying something the ledger never did — and "every PR is merged" is a REAL end-of-run
-# state, not a corner case.
+# reached a terminal state on everything. Printing `# (no rows)` for the second would be the exact lie this
+# file exists to prevent — a table saying something the ledger never did — and "every PR is terminal" is a
+# REAL end-of-run state, not a corner case.
 TABLE_EMPTY_MARKER = "# (no rows)"
 TABLE_ALL_HIDDEN_MARKER = "# (no rows shown — the ledger is NOT empty; every row it holds is hidden)"
 
-# What the DEFAULT view hides. ONLY `merged` — and that is a deliberate call, not a synonym for
-# "terminal". A merged PR is DONE: nothing in the run and nobody reading the table has anything left to do
-# about it, and in a long run these rows are most of the ledger, crowding out the PRs still in play.
-# `aborted` is terminal too, but it is the OPPOSITE kind of terminal — the run GAVE UP on that PR and left
-# it open for its owner (`bailout-and-final-report.md`). It is precisely the row a HUMAN may still need to
-# act on, so hiding it would bury the run's unfinished business, which is the one thing a status view must
-# never do. The line is drawn at "finished successfully", NOT at "reached a terminal state". Everything
-# else (in-flight and parked alike) is live work and always shows.
-TABLE_HIDDEN_STATUSES = ("merged",)
+# What the DEFAULT view hides: a row that is DONE and out of the live gate — campaign will take no further
+# action on it, whichever way it ended — while everything still in play (in-flight and parked alike) always
+# shows. In a long run the finished rows become most of the ledger and crowd out the PRs a reader is
+# actually there to look at.
+#
+# That is `TERMINAL_STATUSES` exactly, so this IS that set rather than a second spelling of it: the two can
+# never disagree, and a status added there is hidden here with no edit. The tuple's ORDER is the notice's
+# render order, which is the only property this view adds.
+#
+# `aborted` is hidden DESPITE being the run's unfinished business, left open for its owner with an
+# `abort-<id>.md` a human is meant to read (`bailout-and-final-report.md`). That is not a claim the row
+# stopped mattering: it is that the STATUS VIEW is not what carries it. The final report enumerates every
+# aborted PR and why, the notice below names `aborted` whenever such a row was dropped, and `--all` brings
+# it straight back — so the human is told, by name, that unfinished business is off screen and how to see
+# it. A row hidden WITH DISCLOSURE is not a row buried.
+TABLE_HIDDEN_STATUSES = TERMINAL_STATUSES
 
 
-def hidden_notice(n: int, hidden: "tuple[str, ...]" = TABLE_HIDDEN_STATUSES) -> str:
-    """Keep the ledger's default hidden set while delegating shared rendering."""
-    return _shared_hidden_notice(n, hidden)
+def hidden_statuses(dropped: "list[dict]") -> "tuple[str, ...]":
+    """The hidden statuses ACTUALLY present in `dropped`, in `TABLE_HIDDEN_STATUSES` render order.
+
+    The notice must name what this table really dropped, not what the view is CONFIGURED to drop. Passing
+    the configured set would make a ledger holding only merged rows announce hidden `aborted` ones — a run
+    reading as if it had given up on a PR it never opened — and, the direction that actually costs the
+    reader something, would let a mixed ledger's line be believed as a complete account of what it hid.
+    Deriving the names from the dropped rows keeps every combination true, INCLUDING zero of one kind.
+    """
+    present = {row["status"] for row in dropped}
+    return tuple(s for s in TABLE_HIDDEN_STATUSES if s in present)
 
 
 def cmd_table(path: Path, args) -> int:
@@ -1590,11 +1613,16 @@ def cmd_table(path: Path, args) -> int:
             check_field(f, ROW_FIELDS + (TABLE_BASE_COLUMN,))
     else:
         fields = TABLE_DEFAULT_FIELDS
-    # The DEFAULT view drops finished work (see TABLE_HIDDEN_STATUSES); --all shows the whole ledger.
+    # The DEFAULT view drops the rows campaign is done with (see TABLE_HIDDEN_STATUSES); --all shows the
+    # whole ledger.
     # `--all` composes with `--fields`: one picks the ROWS, the other the COLUMNS, and neither reads the
-    # other.
-    shown = rows if args.show_all else [r for r in rows if r["status"] not in TABLE_HIDDEN_STATUSES]
-    hidden = len(rows) - len(shown)
+    # other. The dropped rows are kept, not just counted: the notice names the statuses actually among
+    # them, which a count alone cannot tell you.
+    if args.show_all:
+        shown, dropped = rows, []
+    else:
+        shown = [r for r in rows if r["status"] not in TABLE_HIDDEN_STATUSES]
+        dropped = [r for r in rows if r["status"] in TABLE_HIDDEN_STATUSES]
     for line in config_lines([(f, header[f]) for f in HEADER_FIELDS]):
         print(line)
     print()
@@ -1620,8 +1648,8 @@ def cmd_table(path: Path, args) -> int:
         # An empty grid is now AMBIGUOUS — nothing adopted, or everything finished — so say WHICH.
         # Both markers live in the '#' namespace: no cell can render a line that impersonates either.
         print(TABLE_EMPTY_MARKER if not rows else TABLE_ALL_HIDDEN_MARKER)
-    if hidden:
-        print(hidden_notice(hidden))
+    if dropped:
+        print(hidden_notice(len(dropped), hidden_statuses(dropped)))
     return 0
 
 
@@ -1757,10 +1785,11 @@ def build_parser() -> argparse.ArgumentParser:
     t = sub.add_parser("table", help="print the run header and the live rows as an aligned table")
     t.add_argument("--fields", help=f"comma-separated row fields to show (default: {','.join(TABLE_DEFAULT_FIELDS)})")
     # The default hides rows; --all is how a reader gets the whole ledger back. The help text is derived
-    # from TABLE_HIDDEN_STATUSES for the same reason hidden_notice() is: so it cannot drift from it.
+    # from TABLE_HIDDEN_STATUSES for the same reason the notice is: so it cannot drift from it. Here the
+    # WHOLE configured set is right — this line describes the view, not any one render of it.
     t.add_argument("--all", dest="show_all", action="store_true",
                    help=f"show every row (the default hides status={'/'.join(TABLE_HIDDEN_STATUSES)} "
-                        f"and reports how many it hid)")
+                        f"and reports how many it hid, naming the statuses it actually dropped)")
 
     sub.add_parser("self-test", help="run every fixture and assert the rules this file enforces still hold")
     return parser

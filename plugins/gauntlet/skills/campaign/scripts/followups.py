@@ -421,7 +421,9 @@ def is_blank(value: str) -> bool:
 # that FINISHED is not here to be hidden: it is DELETED (the merged PR, or the issue, is the record). What
 # is left to hide is the entry that is closed and yet KEPT — the `rejected` one, kept precisely so the next
 # run does not re-raise what the user already ruled against. Everything else is somebody's open obligation.
-# This is the same line `ledger.py`'s TABLE_HIDDEN_STATUSES draws, applied to a different store.
+# `ledger.py`'s TABLE_HIDDEN_STATUSES answers the same QUESTION for the campaign ledger — what has this
+# store stopped owing anyone? — but it answers it for a different store, so its members are its own and
+# are not restated here.
 TABLE_HIDDEN_STATES = ("rejected",)
 
 # `pr` — not `published`: a published entry is DELETED (the issue is the record), so that column could only

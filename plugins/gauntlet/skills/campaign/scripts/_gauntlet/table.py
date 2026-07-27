@@ -73,6 +73,13 @@ def hidden_notice(n: int, hidden: tuple[str, ...]) -> str:
     A filtered view that does not say what it hid is a lie by omission. The count and the flag that reveals
     every row are always present. The wording is derived from the caller's hidden-state set, so a store
     cannot change that set while leaving a stale description beside it.
+
+    ``hidden`` is THE STATES ACTUALLY DROPPED FROM THIS RENDER, never the store's configured hidden set.
+    The two coincide only while a store hides ONE state — then any drop at all is a drop of that state, so
+    a single-state caller may pass its configured tuple and stay correct by construction. A store hiding
+    SEVERAL must narrow the tuple to what this table really dropped: naming a state whose rows are all
+    still on screen is the same lie by omission, told the other way round, and hiding four rows of one
+    state while naming only the other is the version of it that actually misleads.
     """
     what = "/".join(hidden)
     return f"# {n} {what} row{'' if n == 1 else 's'} hidden — pass --all to show every row"
