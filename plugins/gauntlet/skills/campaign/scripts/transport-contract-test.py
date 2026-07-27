@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import html
 import json
 import os
 import re
@@ -13,6 +14,7 @@ import sys
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
+from typing import NamedTuple
 
 from _gauntlet.modules import load_module_from_path
 
@@ -81,13 +83,9 @@ WATCH_ACTION = (
 # check refuses to have. Naming the field is the mechanical part; whether the
 # sentence uses it correctly is the reviewer's.
 WATCH_WARRANT_FIELD = "watch_warranted"
-# Inline markup is not vocabulary: `ensure a **live** watch` is the same
-# directive as `ensure a live watch`. Underscore is NOT stripped -- it is a
-# character of the warrant's own name.
-WATCH_MARKUP_CHARS = str.maketrans("", "", "`*~")
 # Every phrase names a WATCH as the object of a maintenance verb -- that is the
 # whole bound on this list, and it is what keeps "watch the review budget" out.
-# Matched against markup-normalized text, so each entry stays lowercase and
+# Matched against `inline_text`'s projection, so each entry stays lowercase and
 # markup-free. Order is irrelevant: nesting is resolved by longest span.
 WATCH_DIRECTIVE_PHRASES = (
     "ensure or relaunch a watch",
@@ -136,8 +134,71 @@ WATCH_DIRECTIVE_EXEMPTIONS = (
 MARKDOWN_LIST_ITEM = re.compile(
     r"^(?P<prefix>[ \t>]*)(?:[-*+]|\d+[.)]) "
 )
-MARKDOWN_TABLE_ROW = re.compile(r"^[ \t>]*\|.*\|[ \t]*$")
 MARKDOWN_HEADING = re.compile(r"^[ \t>]*#{1,6} ")
+# --- The Markdown view: ONE producer, four consumers -------------------------
+# `document_passages` is the only thing that turns a Markdown document into the
+# units this check judges, and `inline_text` is the only thing that says what a
+# passage's text amounts to. Before them, the block splitter and the inline
+# projection were two independent, partial re-implementations of Markdown, so
+# the check judged a document that did not exist: a fenced diagram was severed
+# by its own blank lines -- a FALSE accusation, because the warrant and the
+# directive landed in different halves -- and a `# comment` inside that fence
+# was deleted outright as a heading, a missed one.
+#
+# This is deliberately NOT CommonMark. The check needs exactly two facts about
+# a document: where a passage begins and ends, and what plain text it amounts
+# to. It never needs link destinations, nesting depth, HTML semantics or
+# reference resolution. So the residue is bounded -- it is the set of
+# constructs that MOVE A BLOCK BOUNDARY or ERASE INLINE TEXT, nothing else --
+# and every cell of it is pinned by a fixture in `run_watch_passage_fixtures`.
+# Unpinned, a bigger hand-rolled parser is just the same trap at larger size.
+#
+# THREE POLICY CALLS, made once, here, rather than falling out of a regex:
+#
+#   1. RAW, not rendered. These documents are read by an agent consuming raw
+#      Markdown, not by a browser, so AN HTML COMMENT IS TEXT: its content both
+#      accuses and discharges, exactly like visible prose. Under the rendered
+#      reading a warrant hidden in a comment would silently excuse a visible
+#      directive -- a suppression vector -- while a directive hidden in a
+#      comment would escape entirely. Reading comments as ordinary text closes
+#      both, and it is what the actual consumer of these documents does.
+#   2. A FENCED BLOCK IS ONE PASSAGE, never skipped. The corpus already forced
+#      this: the campaign's own mermaid flowchart carries the warrant on one
+#      node and the directive on the next.
+#   3. INDENTED CODE IS ORDINARY TEXT -- the same call as (2), stated rather
+#      than inferred. See `document_passages`.
+#
+# These regexes are PRIVATE to this section. `MARKDOWN_LIST_ITEM` and
+# `MARKDOWN_HEADING` above are shared with the triage-contract checks, which
+# judge literal pointer strings and must not move when this view changes.
+WATCH_BLOCKQUOTE = re.compile(r"^ {0,3}(?:> ?)+")
+WATCH_FENCE_OPEN = re.compile(r"^ {0,3}(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
+# `#` alone is an empty ATX heading; `#foo` is not a heading at all.
+WATCH_ATX_HEADING = re.compile(r"^ {0,3}#{1,6}(?:[ \t].*)?$")
+WATCH_SETEXT_UNDERLINE = re.compile(r"^ {0,3}(?:=+|-+)[ \t]*$")
+WATCH_THEMATIC_BREAK = re.compile(r"^ {0,3}(?P<rule>[-*_])(?:[ \t]*(?P=rule)){2,}[ \t]*$")
+WATCH_LIST_MARKER = re.compile(r"^(?P<indent>[ \t]*)(?:[-*+]|\d{1,9}[.)])(?:[ \t]+|$)")
+WATCH_TABLE_DELIMITER = re.compile(
+    r"^ {0,3}\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$"
+)
+WATCH_HTML_COMMENT = re.compile(r"<!--|-->")
+WATCH_HTML_TAG = re.compile(r"</?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?/?>")
+WATCH_INLINE_LINK = re.compile(r"!?\[(?P<label>[^\[\]]*)\]\([^()]*\)")
+WATCH_REFERENCE_LINK = re.compile(r"!?\[(?P<label>[^\[\]]*)\]\[[^\[\]]*\]")
+WATCH_BACKSLASH_ESCAPE = re.compile(r"\\([!-/:-@\[-`{-~])")
+# An emphasis run, and ONLY an emphasis run: a `_` with a word character on
+# both sides is part of a name (`watch_warranted`) and is left alone.
+WATCH_EMPHASIS_UNDERSCORE = re.compile(r"(?<![0-9A-Za-z])_+|_+(?![0-9A-Za-z])")
+# `_` is deliberately absent here -- see `inline_text`.
+WATCH_MARKUP_CHARS = str.maketrans("", "", "`*~")
+
+
+class Passage(NamedTuple):
+    """One judged unit of a Markdown document."""
+
+    line: int
+    raw: str
+    text: str
 
 
 def markdown_section(body: str, heading: str) -> str:
@@ -417,62 +478,201 @@ def check_watch_consumers(adoption: str, loop_control: str) -> None:
                 f"{name} lost the liveness/watch_warranted gate")
 
 
-def markdown_watch_passages(body: str) -> list[tuple[str, int]]:
-    """Split Markdown into passages: one table row, one list item, one paragraph.
+def inline_text(source: str) -> str:
+    """Project Markdown source onto the plain text it amounts to.
 
-    A table row is ONE passage: its cell bars must not sever it, or the check
-    goes structurally inert inside every watch-policy table -- which is exactly
-    where this repository's watch policy is written.
+    Inline markup is not vocabulary: `ensure a **live** watch` is the same
+    directive as `ensure a live watch`, and so is `ensure a [live](x.md) watch`.
+    This is the ONLY inline projection in the watch check -- the accusing side,
+    the warrant test and the exemption anchors all read it, so the two halves of
+    one decision can never disagree about what a passage says.
 
-    Nothing below this splits a passage further. Sentence segmentation is what
-    let a semicolon put a directive and its warrant into different units while
-    the reader sees one instruction.
+    UNDERSCORE IS SPECIAL AND MUST STAY SO. `_` is a character of the warrant's
+    own name, so it is stripped only where it CANNOT be part of a word --
+    emphasis-run position. Adding `_` to the markup translate table would delete
+    `watch_warranted` from every passage that names it, converting a class of
+    missed accusations into a far worse class of false ones.
     """
-    passages: list[tuple[str, int]] = []
-    current: list[str] = []
-    current_line = 0
+    text = html.unescape(source)
+    text = WATCH_BACKSLASH_ESCAPE.sub(r"\1", text)
+    # RAW reading, policy call 1: keep what a comment SAYS, drop only its
+    # delimiters. A tag carries no prose, so it becomes a space.
+    text = WATCH_HTML_COMMENT.sub(" ", text)
+    text = WATCH_HTML_TAG.sub(" ", text)
+    text = WATCH_INLINE_LINK.sub(r"\1", text)
+    text = WATCH_REFERENCE_LINK.sub(r"\1", text)
+    # Remaining brackets become SPACES, never nothing: `CW[keep a watch alive]`
+    # must not fuse its node id onto the directive it labels.
+    text = text.replace("[", " ").replace("]", " ")
+    text = WATCH_EMPHASIS_UNDERSCORE.sub("", text)
+    text = text.translate(WATCH_MARKUP_CHARS)
+    return " ".join(text.lower().split())
+
+
+def document_passages(body: str) -> list[Passage]:
+    """Split a Markdown document into the units this check judges.
+
+    One table row, one list item (with its loose continuation), one fenced
+    block, one paragraph. Nothing below this splits a passage further: sentence
+    segmentation is what let a semicolon put a directive and its warrant into
+    different units while the reader sees one instruction.
+    """
+    passages: list[Passage] = []
+    raw_lines: list[str] = []
+    text_lines: list[str] = []
+    # Blank lines inside a list are held here, not committed: they belong to
+    # the item's source span only if the item turns out to continue past them.
+    held_blanks: list[str] = []
+    start = 0
+    item_indent: int | None = None
+    fence_close: re.Pattern[str] | None = None
+    in_table = False
+
+    def add(number: int, raw: str, text: str) -> None:
+        nonlocal start
+        if not raw_lines:
+            start = number
+        raw_lines.append(raw)
+        text_lines.append(text)
+
+    def drop() -> None:
+        """Discard the open passage: a setext underline retitled it."""
+        nonlocal start, item_indent
+        raw_lines.clear()
+        text_lines.clear()
+        held_blanks.clear()
+        start = 0
+        item_indent = None
 
     def flush() -> None:
-        nonlocal current, current_line
-        if current:
-            passages.append((" ".join(current), current_line))
-        current = []
-        current_line = 0
+        if raw_lines:
+            passages.append(Passage(start, "\n".join(raw_lines),
+                                    inline_text(" ".join(text_lines))))
+        drop()
 
-    for line_number, line in enumerate(body.splitlines(), start=1):
-        item = MARKDOWN_LIST_ITEM.match(line)
-        if MARKDOWN_TABLE_ROW.match(line) is not None:
+    lines = body.splitlines()
+    index = 0
+    # YAML front matter is metadata, but it is scanned like a fence -- one
+    # passage, never skipped -- so a directive cannot hide in it.
+    if lines and lines[0].rstrip() == "---":
+        for offset in range(1, len(lines)):
+            if lines[offset].rstrip() in ("---", "..."):
+                for number in range(1, offset + 2):
+                    add(number, lines[number - 1], lines[number - 1])
+                flush()
+                index = offset + 1
+                break
+
+    while index < len(lines):
+        number = index + 1
+        line = lines[index]
+        index += 1
+        content = WATCH_BLOCKQUOTE.sub("", line)
+
+        # Policy call 2: a fenced block is ONE passage and is never skipped, so
+        # a decision node can carry the warrant to the node that acts on it and
+        # a `#` comment inside the fence is not mistaken for a heading.
+        if fence_close is not None:
+            add(number, line, content)
+            if fence_close.match(content) is not None:
+                fence_close = None
+                flush()
+            continue
+
+        opener = WATCH_FENCE_OPEN.match(content)
+        if opener is not None and not (
+            opener.group("fence").startswith("`") and "`" in opener.group("info")
+        ):
             flush()
-            passages.append((line.strip(), line_number))
-        elif MARKDOWN_HEADING.match(line) is not None:
+            in_table = False
+            marker = opener.group("fence")
+            fence_close = re.compile(
+                rf"^ {{0,3}}{re.escape(marker[0])}{{{len(marker)},}}[ \t]*$")
+            add(number, line, content)
+            continue
+
+        if not content.strip():
+            # A blank line inside a list may be a LOOSE item, not its end. A
+            # `>`-only line reaches here too: it is a blank line in the quote.
+            if item_indent is not None and raw_lines:
+                held_blanks.append(line)
+            else:
+                flush()
+            in_table = False
+            continue
+
+        if WATCH_ATX_HEADING.match(content) is not None:
             flush()
-        elif item is not None:
+            in_table = False
+            continue
+
+        if (raw_lines and not held_blanks and item_indent is None
+                and not in_table
+                and WATCH_SETEXT_UNDERLINE.match(content) is not None):
+            # A setext underline makes the open paragraph a TITLE, and a title
+            # is never a warrant for what the section under it says -- the same
+            # call the ATX spelling above already makes.
+            drop()
+            continue
+
+        if WATCH_THEMATIC_BREAK.match(content) is not None:
             flush()
-            current = [line[item.end():].strip()]
-            current_line = line_number
-        elif not line.strip():
+            in_table = False
+            continue
+
+        if in_table:
+            if "|" in content:
+                flush()
+                add(number, line, content)
+                flush()
+                continue
+            in_table = False
+
+        # A table is a header row plus a delimiter row; outer pipes are
+        # OPTIONAL. Each row is one passage -- its cell bars must not sever it,
+        # or the check goes structurally inert inside every watch-policy table,
+        # which is exactly where this repository's watch policy is written.
+        if "|" in content and index < len(lines):
+            following = WATCH_BLOCKQUOTE.sub("", lines[index])
+            if "|" in following and WATCH_TABLE_DELIMITER.match(following) is not None:
+                flush()
+                add(number, line, content)
+                flush()
+                in_table = True
+                index += 1  # the delimiter row carries no prose
+                continue
+
+        item = WATCH_LIST_MARKER.match(content)
+        if item is not None:
             flush()
-        else:
-            if not current:
-                current_line = line_number
-            current.append(line.strip())
+            add(number, line, content[item.end():])
+            item_indent = item.end()
+            continue
+
+        indent = len(content) - len(content.lstrip(" \t"))
+        if held_blanks:
+            if item_indent is not None and indent >= item_indent:
+                raw_lines.extend(held_blanks)  # the item continues past them
+                held_blanks.clear()
+            else:
+                flush()  # not a continuation: the item ended at the blank line
+        # Policy call 3: indented code is ORDINARY TEXT. A shell transcript that
+        # says "keep a watch alive" is a directive whether or not it is
+        # indented, and an indented block is just as often a loose list item's
+        # own continuation, which must stay joined to the item.
+        add(number, line, content)
+
     flush()
     return passages
 
 
-def watch_text(passage: str) -> str:
-    """Return the passage with inline markup and line wrapping normalized away."""
-    return " ".join(passage.translate(WATCH_MARKUP_CHARS).lower().split())
-
-
-def watch_directive_phrases(passage: str) -> list[str]:
-    """Return the MAXIMAL directive phrases this passage carries.
+def watch_directive_phrases(text: str) -> list[str]:
+    """Return the MAXIMAL directive phrases this projected text carries.
 
     Maximal: "ensure a watch" sits inside "ensure a watch task", and one
     directive must count once, or an exemption would have to declare every
     nested spelling of the imperative it excuses.
     """
-    text = watch_text(passage)
     spans: list[tuple[int, int, str]] = []
     for phrase in WATCH_DIRECTIVE_PHRASES:
         start = text.find(phrase)
@@ -493,15 +693,18 @@ def watch_directive_phrases(passage: str) -> list[str]:
 
 def watch_directive_is_exempt(
     document: str,
-    passage: str,
+    passage: Passage,
     registry: tuple[tuple[str, str, tuple[str, ...], str], ...] =
         WATCH_DIRECTIVE_EXEMPTIONS,
 ) -> bool:
     for exempt_document, anchor, excused, _ in registry:
-        if exempt_document == document and anchor in passage:
+        # The anchor is projected through the SAME view as the passage, so the
+        # excusing side and the accusing side cannot disagree about what the
+        # passage says.
+        if exempt_document == document and inline_text(anchor) in passage.text:
             # An entry excuses the directives it was reviewed against, never
             # whatever the passage grows afterwards.
-            return watch_directive_phrases(passage) == sorted(set(excused))
+            return watch_directive_phrases(passage.text) == sorted(set(excused))
     return False
 
 
@@ -511,16 +714,16 @@ def check_watch_directive_warrants(root: Path = ROOT) -> list[str]:
     for document in sorted(root.rglob("*.md")):
         relative = document.relative_to(root).as_posix()
         text = document.read_text(encoding="utf-8")
-        for passage, line in markdown_watch_passages(text):
-            phrases = watch_directive_phrases(passage)
+        for passage in document_passages(text):
+            phrases = watch_directive_phrases(passage.text)
             if not phrases:
                 continue
-            if WATCH_WARRANT_FIELD in watch_text(passage):
+            if WATCH_WARRANT_FIELD in passage.text:
                 continue
             if watch_directive_is_exempt(relative, passage):
                 continue
             problems.append(
-                f"{relative}:{line} directs watch maintenance "
+                f"{relative}:{passage.line} directs watch maintenance "
                 f"({', '.join(phrases)}) without naming "
                 f"`{WATCH_WARRANT_FIELD}`"
             )
@@ -539,15 +742,16 @@ def check_watch_directive_exemptions(root: Path = ROOT) -> None:
         require(text.count(anchor) == 1,
                 f"watch directive exemption anchor is not unique in {document}: "
                 f"{anchor!r}")
+        projected = inline_text(anchor)
         selected = [
             passage
-            for passage, _ in markdown_watch_passages(text)
-            if anchor in passage
+            for passage in document_passages(text)
+            if projected in passage.text
         ]
         require(len(selected) == 1,
                 f"watch directive exemption anchor selects {len(selected)} "
                 f"passages in {document}: {anchor!r}")
-        require(watch_directive_phrases(selected[0]) == sorted(set(excused)),
+        require(watch_directive_phrases(selected[0].text) == sorted(set(excused)),
                 f"watch directive exemption in {document} no longer excuses "
                 f"exactly {sorted(set(excused))}: {anchor!r}")
 
@@ -557,11 +761,66 @@ def run_watch_action_fixtures() -> None:
     # (`check_document_contract`). It is NOT evidence that this check works: a
     # blind check passes a clean corpus too. The mutation fixtures below are the
     # evidence, and they run against the real documents.
-    fixture_parent = ROOT.parents[4] / ".tmp"
+    # `ROOT.parents` is [skills, gauntlet, plugins, <checkout>, <checkout's
+    # parent>]. Index 3 is the CHECKOUT ROOT -- the `.tmp/` that
+    # `scripts/validate-plugins.sh` already creates and `.gitignore` already
+    # covers. Index 4 escapes the checkout: it litters the directory holding it
+    # and dies on an uncaught OSError wherever that is not writable, skipping
+    # every watch fixture below.
+    fixture_parent = ROOT.parents[3] / ".tmp"
     fixture_parent.mkdir(exist_ok=True)
+    run_watch_view_fixtures()
     run_watch_corpus_mutation_fixtures(fixture_parent)
     run_watch_passage_fixtures(fixture_parent)
     run_watch_exemption_fixtures(fixture_parent)
+
+
+def run_watch_view_fixtures() -> None:
+    """Pin the Markdown view itself: where a passage starts, ends and says what.
+
+    The passage fixtures below judge the CHECK's VERDICT, and a wrong boundary
+    can still produce the right verdict by luck -- the campaign's own flowchart
+    passed for exactly that reason, until a blank line moved. These assert the
+    boundaries and the projection directly, so luck is not a passing grade.
+    """
+    fixtures = (
+        # A fence is one passage, delimiters and internal blank line included.
+        ("fence-is-one-passage",
+         "```mermaid\nA{watch_warranted?}\n\nB[keep a watch]\n```",
+         [(1, "```mermaid\nA{watch_warranted?}\n\nB[keep a watch]\n```",
+           "mermaid a{watch_warranted?} b keep a watch")]),
+        # A heading is a title: it severs and contributes no text of its own.
+        ("heading-is-dropped-not-emitted",
+         "## Title\nBody one.\n\nBody two.",
+         [(2, "Body one.", "body one."), (4, "Body two.", "body two.")]),
+        # One passage per table row; the delimiter row carries no prose.
+        ("table-rows-are-one-passage-each",
+         "verdict | move\n---|---\n`pending` | watch it\n`red` | fix it",
+         [(1, "verdict | move", "verdict | move"),
+          (3, "`pending` | watch it", "pending | watch it"),
+          (4, "`red` | fix it", "red | fix it")]),
+        # A loose list item is ONE passage: the blank line does not end it, and
+        # the passage is reported at the item's own line.
+        ("loose-list-item-is-one-passage",
+         "- first line\n\n  continued here\n\nnext paragraph",
+         [(1, "- first line\n\n  continued here", "first line continued here"),
+          (5, "next paragraph", "next paragraph")]),
+        # A `>`-only line is a blank line inside the quote.
+        ("blockquote-blank-line-severs",
+         "> one\n>\n> two",
+         [(1, "> one", "one"), (3, "> two", "two")]),
+        # The projection: link text survives, emphasis and tags do not, and an
+        # HTML comment's CONTENT survives because an agent reads it (policy 1).
+        ("projection-keeps-text-drops-markup",
+         "See [the *rules*](x.md) <br/> now. <!-- and this -->",
+         [(1, "See [the *rules*](x.md) <br/> now. <!-- and this -->",
+           "see the rules now. and this")]),
+    )
+    for name, body, expected in fixtures:
+        actual = [(passage.line, passage.raw, passage.text)
+                  for passage in document_passages(body)]
+        require(actual == [tuple(item) for item in expected],
+                f"{name} markdown view fixture produced {actual}")
 
 
 def run_watch_corpus_mutation_fixtures(fixture_parent: Path) -> None:
@@ -675,6 +934,100 @@ def run_watch_passage_fixtures(fixture_parent: Path) -> None:
         ("fenced-diagram-unguarded",
          "```mermaid\nflowchart TD\n"
          "    R -- pending --> CW[keep a CI watch alive]\n```", True),
+        # --- Inline projection: markup may not hide a directive, and may not
+        # hide the warrant either. The second direction is the dangerous one:
+        # an erased warrant is a FALSE accusation against correct content.
+        ("inline-link-does-not-hide-a-directive",
+         "While `ci` is `pending`, ensure a [live](watch.md) watch.", True),
+        ("reference-link-does-not-hide-a-directive",
+         "While `ci` is `pending`, ensure a [live][watch] watch.", True),
+        ("image-alt-does-not-hide-a-directive",
+         "![keep a watch alive](diagram.png)", True),
+        ("html-tag-does-not-hide-a-directive",
+         "While `ci` is `pending`, ensure a <b>live</b> watch.", True),
+        ("underscore-emphasis-does-not-hide-a-directive",
+         "While `ci` is `pending`, ensure a _live_ watch.", True),
+        ("escaped-markup-does-not-hide-a-directive",
+         "While `ci` is `pending`, ensure a \\*live\\* watch.", True),
+        # The three ways `_` reaches the warrant's own name. Each of these
+        # would be a false accusation if `_` were stripped unconditionally,
+        # which is why emphasis is parsed as a RUN and not translated away.
+        ("emphasized-warrant-still-names-the-field",
+         "Ensure a live watch only when _watch_warranted_ is true.", False),
+        ("intraword-underscore-is-never-emphasis",
+         "Ensure a live watch only when the watch_warranted field is true.",
+         False),
+        ("escaped-underscore-in-the-warrant",
+         "Ensure a live watch only when watch\\_warranted is true.", False),
+        ("entity-reference-in-the-warrant",
+         "Ensure a live watch only when watch&#95;warranted is true.", False),
+        # POLICY CALL 1, both sides: these documents are read RAW, so an HTML
+        # comment is text. It discharges a directive and it is accused for one.
+        ("html-comment-warrant-discharges",
+         "<!-- only when `watch_warranted` -->\nEnsure a live watch.", False),
+        ("html-comment-directive-is-accused",
+         "<!-- Ensure a live watch. -->", True),
+        # POLICY CALL 2, both sides: a fence is ONE passage and is never
+        # skipped. Neither a blank line nor a list marker nor a `#` comment
+        # inside it means what it would mean outside.
+        ("fenced-blank-line-does-not-sever",
+         "```mermaid\nflowchart TD\n    R --> WW{watch_warranted?}\n\n"
+         "    WW -- true --> CW[keep a CI watch alive]\n```", False),
+        ("fenced-list-marker-does-not-sever",
+         "```yaml\nwatch_warranted: true\n- keep a watch alive\n```", False),
+        ("fenced-comment-is-not-a-heading",
+         "```bash\n# keep a watch alive while ci is pending\ngh pr checks\n```",
+         True),
+        ("tilde-fence-is-one-passage",
+         "~~~text\n`liveness` reports `watch_warranted`\n\n"
+         "then keep a watch alive\n~~~", False),
+        ("fence-closes-only-on-its-own-length",
+         "````mermaid\n`liveness` reports `watch_warranted`\n```\n\n"
+         "    CW[keep a CI watch alive]\n````", False),
+        ("backtick-in-the-info-string-is-not-a-fence",
+         "```sh`x\nkeep a watch alive\n\n`liveness` reports `watch_warranted`.",
+         True),
+        # POLICY CALL 3, both sides: indented code is ordinary text -- scanned
+        # like a fence, and still part of the list item it continues.
+        ("indented-code-is-scanned",
+         "    gh pr checks --watch  # keep a watch alive while ci is pending",
+         True),
+        ("indented-code-continues-its-list-item",
+         f"- Only when {warrant}\n\n      ensure a live watch", False),
+        # --- Block boundaries the old splitter never had. Inventing a boundary
+        # is what severs a directive from the warrant discharging it.
+        ("setext-heading-severs",
+         f"When {warrant}\n===\nEnsure a live watch.", True),
+        ("setext-dash-heading-severs",
+         f"{warrant}\n---\nEnsure a live watch.", True),
+        ("thematic-break-severs", f"{warrant}.\n***\nEnsure a live watch.", True),
+        ("empty-heading-severs", f"{warrant}.\n#\nEnsure a live watch.", True),
+        ("hash-without-a-space-is-not-a-heading",
+         f"#{warrant}\nEnsure a live watch.", False),
+        ("blockquote-blank-line-severs",
+         f"> {warrant}.\n>\n> Ensure a live watch.", True),
+        ("blockquote-line-wrap-joins",
+         f"> {warrant}\n> and only then ensure a live watch.", False),
+        ("table-without-outer-pipes-rows-are-separate",
+         f"verdict | move\n---|---\n`pending` | {warrant}\n"
+         "`red` | Ensure a live watch.", True),
+        ("table-without-outer-pipes-row-is-not-severed",
+         f"condition | move\n---|---\n{warrant} | ensure a live watch", False),
+        ("pipe-in-prose-is-not-a-table",
+         f"{warrant} | ensure a live watch\nand that is the whole rule.", False),
+        ("loose-list-item-continuation-joins",
+         f"- Ensure a live watch.\n\n  Only when {warrant}.", False),
+        ("unindented-line-after-a-blank-ends-the-item",
+         f"- Ensure a live watch.\n\nOnly when {warrant}.", True),
+        ("ordered-list-items-are-separate",
+         f"1. {warrant}\n2. Ensure a live watch.", True),
+        # Front matter is metadata, and it is scanned like a fence: one
+        # passage, never skipped.
+        ("front-matter-is-one-passage",
+         f"---\ntitle: watching\nwhen: {warrant}\nthen: keep a watch alive\n---",
+         False),
+        ("front-matter-is-not-skipped",
+         "---\ntitle: watching\nthen: keep a watch alive\n---", True),
     )
     for name, fixture, expected in fixtures:
         with tempfile.TemporaryDirectory(dir=fixture_parent) as temporary:
@@ -689,7 +1042,8 @@ def run_watch_passage_fixtures(fixture_parent: Path) -> None:
 def run_watch_exemption_fixtures(fixture_parent: Path) -> None:
     """The registry excuses only what it names, and it may not go stale."""
     document, anchor, excused, _ = WATCH_DIRECTIVE_EXEMPTIONS[0]
-    passage = f"| {anchor}; relaunch it in this same heartbeat. |"
+    row = f"| {anchor}; relaunch it in this same heartbeat. |"
+    passage = Passage(1, row, inline_text(row))
     require(watch_directive_is_exempt(document, passage,
                                       (WATCH_DIRECTIVE_EXEMPTIONS[0],)),
             "the registry entry under test does not excuse its own passage")
