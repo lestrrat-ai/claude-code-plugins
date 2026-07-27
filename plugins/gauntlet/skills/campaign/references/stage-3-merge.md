@@ -133,7 +133,8 @@ branch — the repo's "Automatically delete head branches" setting alone governs
 Each phase leaves a durable or safely repeatable checkpoint. Re-run the same command after any failure:
 GitHub `MERGED` skips the merge call; base updates are fast-forward-only; absent owned worktrees/branches
 count as completed cleanup; a terminal ledger row is a no-op, except an `aborted` row whose later live view
-verifies `MERGED`, which resumes post-merge finalization and records `merged`.
+verifies `MERGED`, which records `merged` and does nothing else (`loop-control.md` Step 4 owns that outcome
+and this site does not restate it).
 
 When the checked-out local base is what git fast-forwards and an unrelated actor's **uncommitted** edits in
 that checkout block it, the command **refuses and lists the blocking paths it detected** (each staged, unstaged,
@@ -163,7 +164,7 @@ the same git detail through the standard refusal wrapper
 OPEN (a CLOSED held row is closed out to `aborted` — `loop-control.md` Step 4 — and a `MERGED` held row is an
 external merge, resumed to finalize base-sync/owned-cleanup/terminal write; neither is refused), a `--repo`
 that does not name the checkout's own repository, stale gates, uncertain GitHub facts, another run's PR,
-foreign refs, root/reused cleanup targets, and cleanup before confirmed `MERGED`. Report `reused-left` cleanup results in the final report.
+foreign refs, root/reused cleanup targets, and cleanup before confirmed `MERGED`. Report every cleanup result that is not `removed` in the final report — the command's result names each owned resource's disposition, and this site does not restate that set.
 
 Never hand-run a later phase after this command fails. Fix the named cause, then re-run the command so its
 ownership checks and phase order remain in force.

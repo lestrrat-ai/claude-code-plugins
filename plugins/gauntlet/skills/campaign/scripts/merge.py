@@ -8,9 +8,12 @@ is either durable outside this process (GitHub MERGED, updated refs, absent owne
 ledger row) or safe to repeat. A rerun therefore resumes after interruption without repeating the merge.
 
 It is also the FINALIZER for an absent-from-snapshot row loop-control.md Step 4 routes here after a merge
-that landed but never finished: the single live view distinguishes MERGED (resume the owed base-sync /
-cleanup / terminal-write phases) from an OPEN/CLOSED terminal-aborted no-op or CLOSED-without-merge (record
-or preserve `aborted`, no merge, no cleanup, because unmerged branch content must never be destroyed).
+that landed but never finished: the single live view distinguishes MERGED on a NONTERMINAL row (resume the
+owed base-sync / cleanup / terminal-write phases) from an OPEN/CLOSED terminal-aborted no-op or
+CLOSED-without-merge (record or preserve `aborted`, no merge, no cleanup, because unmerged branch content
+must never be destroyed). MERGED on an already-`aborted` row is a THIRD outcome and the narrowest one: it
+records the verified `merged` disposition in the ledger and does nothing else — no merge, no base-sync, and
+no cleanup of the worktree/branch the abort handed back to the user.
 
     merge.py run --ledger <state.jsonl> --pr <N> --project-root <dir> --repo <owner/name> \
         [--merge-method squash|merge|rebase]
@@ -189,9 +192,10 @@ def _validate_state(header: dict, row: dict, pr: str, root: Path, view: dict,
     # between a bug and a destroyed worktree is never relaxed.
     #   * `check_live_refs=False` drops the live head/base/branch equality pins — the checks a MERGE needs to
     #     land on the exact reviewed tip, and the head pin a MERGED-resume keeps to confirm OUR reviewed head
-    #     is what landed. Terminal aborted no-op paths drop it: a push or a base/branch rename before the
-    #     terminal result is irrelevant to a row that records `aborted`, and pinning it there would wedge the
-    #     row forever.
+    #     is what landed. Every LEDGER-ONLY path drops it — the classification block in `execute` names that
+    #     set and owns why. Such a path writes a ledger status and touches no ref or worktree, so a push or a
+    #     base/branch rename before the terminal result cannot change what it does; pinning it there would
+    #     wedge an already-settled row forever.
     #   * `require_resolved_ownership=False` drops the fail-closed that BOTH ownership fields are RESOLVED
     #     (∈{yes,no}). That fail-closed is a MERGE-INITIATING sanity gate: a HALF-ADOPTION (pr-adopt.py
     #     registers the ledger row BEFORE it resolves the worktree, so its documented git-failure path leaves
@@ -620,12 +624,25 @@ def execute(ledger: Path, pr: str, project_root: Path, repo: str,
     #   * aborted_repeat: an already-`aborted` row whose PR is still OPEN or CLOSED — the terminal-repeat
     #     no-op, symmetric with the `merged`-repeat below. OPEN is the normal abort result: bailout leaves
     #     the PR open and removes this run's labels, so it drops out of the run-scoped snapshot.
-    #   Both are LEDGER-ONLY (record `aborted`/no-op, merge and clean nothing), so both drop the live
-    #   head/base/branch pins (`check_live_refs=False`): a push or base/branch rename before the terminal
-    #   result must not wedge a settled row, and neither terminal no-op state re-enters this run's gate.
+    #   * aborted_later_merged: an already-`aborted` row whose PR is now MERGED — RECORDING a disposition,
+    #     not resuming a merge. The abort already handed the owned worktree and branch back to the user
+    #     (`bailout-and-final-report.md`), and whatever landed on GitHub is the user's own later work, not
+    #     this run's reviewed tip. So this path writes the terminal `merged` status and NOTHING else: no
+    #     `_sync_base` (this run never merged into `<base>`, and fast-forwarding a local base the PR did not
+    #     merge into is not ours to do) and no `_cleanup` (removing resources the abort deliberately returned
+    #     would destroy the user's work). Classify by the STATE PAIR, not by the individual live-ref
+    #     mismatches it tolerates: a moved head, a retargeted base, a renamed branch, a dirty returned
+    #     worktree, a moved local branch, and a returned worktree switched to another checkout are all the
+    #     SAME ordinary post-abort situation, and enumerating them one by one would keep missing members.
+    #   All three are LEDGER-ONLY (record `aborted`/`merged`/no-op, merge and clean nothing), so all three
+    #   drop the live head/base/branch pins (`check_live_refs=False`): a push or base/branch rename before
+    #   the terminal result must not wedge a settled row, and no terminal state re-enters this run's gate.
+    #   Dropping the pins removes no protection from any resource — `_cleanup`'s OWN identity guards (the
+    #   branch-ref and head_sha matches) are what refuse a foreign resource, and no path here calls it.
     close_out = view["state"] == "CLOSED" and row["status"] not in ("merged", "aborted")
     aborted_repeat = row["status"] == "aborted" and view["state"] in ("OPEN", "CLOSED")
-    ledger_only = close_out or aborted_repeat
+    aborted_later_merged = row["status"] == "aborted" and view["state"] == "MERGED"
+    ledger_only = close_out or aborted_repeat or aborted_later_merged
     # merge_initiating is the ONE path that STARTS a merge — a live OPEN state on an in_review row. It is the
     # only path that requires the full merge-tip pins, RESOLVED ownership, and this run's OWN-label presence:
     # a half-adoption (unresolved ownership, no own label yet) must never be merged. Every other path only
@@ -643,15 +660,20 @@ def execute(ledger: Path, pr: str, project_root: Path, repo: str,
     if row["status"] == "aborted":
         # Terminal-repeat, symmetric with the `merged` no-op below (both terminal statuses are safe to
         # repeat). An OPEN or CLOSED live state confirms the recorded abort still holds -> the same
-        # already-complete no-op, no ledger write. A later verified MERGED state is a new durable result:
-        # fall through to the MERGED finalization below so base-sync, cleanup, and the terminal ledger update
-        # can resume.
+        # already-complete no-op, no ledger write.
         if view["state"] in ("OPEN", "CLOSED"):
             return {"status": "already-complete", "pr": pr, "cleanup": {}}
         if view["state"] != "MERGED":
             raise Refusal(
                 f"terminal ledger row says aborted but GitHub state is {view['state']!r}; "
                 "expected OPEN, CLOSED, or MERGED")
+        # A later verified MERGED state is a new durable result, so record it — and record ONLY it (the
+        # `aborted_later_merged` classification above owns why). The terminal write is the single phase;
+        # `_sync_base` and `_cleanup` are deliberately not reached. The cleanup result reports both owned
+        # resources as `aborted-left`: still present, left with the user by the abort, never inspected here.
+        _mark_terminal(ledger, pr, "merged")
+        return {"status": "merged", "pr": pr,
+                "cleanup": {"worktree": "aborted-left", "branch": "aborted-left"}}
 
     if row["status"] == "merged":
         if view["state"] != "MERGED":
@@ -659,13 +681,12 @@ def execute(ledger: Path, pr: str, project_root: Path, repo: str,
                 f"terminal ledger row says merged but GitHub state is {view['state']!r}")
         return {"status": "already-complete", "pr": pr, "cleanup": {}}
 
-    # Only rows without a completed live result remain. Classify by the LIVE state, not the row status, so an
-    # EXTERNAL merge finalizes landed work regardless of whether the row is nonterminal or was previously
-    # aborted before the PR later merged.
+    # Only NONTERMINAL rows reach here — both terminal statuses returned above. Classify by the LIVE state,
+    # not the row status, so an EXTERNAL merge finalizes landed work whether the row is `in_review` or held.
     if view["state"] == "MERGED":
         # A maintainer merged the exact reviewed head while this row was still nonterminal — in_review OR
-        # held (`L.HELD_STATUSES`) — or after an earlier abort. The full ownership validation above confirmed
-        # our reviewed head/base/branch on our owned resources, so the work LANDED: fall through to resume the
+        # held (`L.HELD_STATUSES`). The full ownership validation above confirmed our reviewed
+        # head/base/branch on our owned resources, so the work LANDED: fall through to resume the
         # owed base-sync / owned cleanup / terminal write. This is the ONLY way a held row proceeds; the campaign
         # still never INITIATES a merge on a held (or OPEN) PR — that stays refused just below.
         pass

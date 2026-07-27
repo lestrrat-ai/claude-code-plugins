@@ -96,6 +96,8 @@ the worker returns, and what never moves into it. The steps below are unchanged 
        (Step 4), which FINALIZES it through `merge.py run`: that single per-row live view — NOT a snapshot
        re-widening — distinguishes **MERGED** (resume the owed base-sync/cleanup/terminal-write phases) from
        **CLOSED without merging** (the terminal close-out, which records `aborted` and touches no local refs).
+       An absent **terminal `aborted`** row carries this same fact to the same place, but its outcomes are
+       NOT the two above — **Step 4 owns them**, and this bullet deliberately does not restate them.
      - **`head_moved`** — the live head differs from the row's `head_sha`: this is the **gate-reset and
        head-move-reset** site — the two paragraphs directly above the command block own it. The tool
        reports only THAT the head moved; deciding whether the PR **diff** changed (reset `reviews_ok`,
@@ -531,13 +533,29 @@ the worker returns, and what never moves into it. The steps below are unchanged 
   changes the ledger to `merged`. The no-op performs no merge or cleanup, so normal aborts can reach the
   finished-run path with their unmerged local resources preserved.
 
-  **An already-terminal `aborted` row routed by Step 1 is also resumable when its later live view verifies
-  `MERGED`.** The same command resumes base-sync and owned cleanup, then records `merged`; a later `CLOSED`
-  view remains the already-complete abort no-op. If this run already has `<run-id>.md`, update that existing
-  projection immediately with the safe `carryover.py reconcile-merged --ledger <state.jsonl> --out-dir
-  <repo>/.gauntlet/history --pr <N> --now <iso>` command. It accepts only this one aborted-to-MERGED
-  transition and writes atomically; when the history file does not yet exist, Step 5's normal distill writes
-  the current terminal projection.
+  **An already-terminal `aborted` row routed by Step 1 RECORDS a `merged` disposition when its later live
+  view verifies `MERGED` — it does not resume a merge.** The same command writes the terminal `merged`
+  status and does **nothing else**: no merge, no base-sync, and no cleanup of the worktree and branch the
+  abort handed back to the user (`bailout-and-final-report.md`), which it reports as left in place. That is
+  what lets the record survive the ordinary post-abort situation instead of refusing on it — by the time
+  the user merges the PR themselves, the head may have moved, the base may have been retargeted, the branch
+  renamed, and the returned worktree left dirty, switched to another checkout, or advanced by their own
+  commit. A later `OPEN` or `CLOSED` view remains the already-complete abort no-op. If this run already has
+  `<run-id>.md`, update that existing projection immediately with the safe `carryover.py reconcile-merged
+  --ledger <state.jsonl> --out-dir <repo>/.gauntlet/history --pr <N> --now <iso>` command. It accepts only
+  this one aborted-to-MERGED transition and writes atomically; when the history file does not yet exist,
+  Step 5's normal distill writes the current terminal projection.
+
+  **When `merge.py run` REFUSES an absent terminal-`aborted` row, THIS is what discharges the follow-up —
+  it is never left outstanding.** The refusals this route can still make are shape-and-identity problems in
+  the row, the checkout, or the invocation, and the refusal names the cause; the live-ref and cleanup
+  refusals that used to wedge this route are gone. So: **correct the named cause and re-run the same
+  command.** Do **not** reach for `ledger.py park` — it refuses a terminal row on purpose, and nothing here
+  waits on a human. If the cause genuinely cannot be corrected, **record it in the final report and leave
+  the row `aborted`**: the follow-up is then discharged as reported-unresolved, the row is already terminal,
+  and the run may take the finished branch (`no pending terminal-aborted follow-up` is satisfied by a
+  discharged follow-up, not only by a `merged` one). **Never re-route the same unfixable fact forever** —
+  a fact that survives one correction attempt and one report is done, not pending.
 ### Step 5 — Reschedule or exit
 
 #### Primary continuity

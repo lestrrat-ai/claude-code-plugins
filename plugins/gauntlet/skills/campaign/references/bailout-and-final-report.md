@@ -86,8 +86,9 @@ LOCAL state against that same PR / its head; the PR itself is left in place.
   still carrying this run's label", so once this run's owner label is removed the still-open PR no
   longer carries it and can no longer block terminal exit — an aborted row is outside ordinary gate work and
   lacks its `required(tier)` SATISFIED verdicts. The one absent-snapshot terminal follow-up may still run the
-  existing finalizer to verify a later external MERGED result; it never initiates a merge, and a CLOSED result
-  remains a no-op. The un-labelled open PR is otherwise simply left for its owner.
+  existing finalizer to verify a later external MERGED result; it never initiates a merge and never touches
+  the local worktree or branch this abort leaves with the user — `loop-control.md` Step 4 owns every outcome
+  it can reach. The un-labelled open PR is otherwise simply left for its owner.
 - **Not converging → the REASSESSMENT PASS takes over. `repair-pass.md` owns this, and it SUPERSEDES the
   rule that used to live here.** The bailouts above catch a *stuck* task; this catches one that is
   *progressing by whack-a-mole* — a loop that produces a real finding and a real fix every single round and

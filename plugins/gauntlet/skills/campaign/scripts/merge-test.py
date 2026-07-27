@@ -60,6 +60,7 @@ class Fake:
                  merge_state_status: str = "CLEAN", header_base: "str | None" = None,
                  base_ff_blocked: bool = False, ancestor_ok: bool = True,
                  worktree_head: str = SHA,
+                 worktree_branch: "str | None" = None, local_branch_head: str = SHA,
                  plumb_fail: "str | None" = None,
                  staged_paths: "list[str] | None" = None,
                  staged_incoming_paths: "list[str] | None" = None,
@@ -120,6 +121,13 @@ class Fake:
         # The worktree may move after review while the ledger and live PR remain pinned to SHA. Stage 3's
         # base-ancestry probe must inspect the reviewed SHA, never this ambient checkout tip.
         self.worktree_head = worktree_head
+        # An abort hands the owned worktree and branch back to the user, who may then move either one.
+        # `worktree_branch` is the branch the owned worktree path now holds (a different name models the
+        # user switching that checkout); `local_branch_head` is what the owned branch ref resolves to (a
+        # different SHA models a commit the user pushed from it). Both are inputs `_cleanup` refuses on, so
+        # they are how a fixture proves a route never reached `_cleanup`.
+        self.worktree_branch = worktree_branch or self.branch
+        self.local_branch_head = local_branch_head
         # Post-merge base-sync diagnostic knobs, all modeled on checked[0] (the checkout holding the base,
         # which the fixtures set to root). `base_ff_blocked` forces the checked-out-base `merge --ff-only`
         # to fail as git does against uncommitted work. `ancestor_ok` is the `merge-base --is-ancestor HEAD
@@ -186,7 +194,8 @@ class Fake:
             entries.append(f"worktree {self.root}\0HEAD {'b' * 40}\0branch refs/heads/{self.base}\0\0")
         if self.worktree_present:
             entries.append(
-                f"worktree {self.worktree}\0HEAD {self.worktree_head}\0branch refs/heads/{self.branch}\0\0")
+                f"worktree {self.worktree}\0HEAD {self.worktree_head}"
+                f"\0branch refs/heads/{self.worktree_branch}\0\0")
         return "".join(entries)
 
     def run(self, argv: list[str], *, cwd: "str | None" = None,
@@ -295,7 +304,8 @@ class Fake:
         if len(argv) >= 7 and argv[:4] == ["git", "-C", str(self.root), "show-ref"]:
             return ok() if self.branch_present else bad("absent")
         if len(argv) >= 5 and argv[:4] == ["git", "-C", str(self.root), "rev-parse"]:
-            return ok(f"{SHA}\n")
+            # `_cleanup`'s owned-branch identity probe — the only root rev-parse of a branch ref.
+            return ok(f"{self.local_branch_head}\n")
         if len(argv) >= 7 and argv[:4] == ["git", "-C", str(self.root), "branch"]:
             if self._fail("branch-remove"):
                 return bad("branch delete failed")
@@ -774,8 +784,8 @@ def t_repeat_after_closed_terminal_is_noop():
             finish(td, real)
 
 
-def t_aborted_row_resumes_after_later_verified_merge():
-    """A later verified MERGED result supersedes an earlier abort and finalizes the campaign row."""
+def t_aborted_row_records_later_verified_merge():
+    """A later verified MERGED result RECORDS `merged` on an aborted row and changes nothing else."""
     td, root, f, led, real = scenario(state="CLOSED")
     try:
         first, _, err = invoke(f, led, root)
@@ -791,12 +801,52 @@ def t_aborted_row_resumes_after_later_verified_merge():
         check(result["status"] == "merged",
               f"later verified MERGED result did not finalize the aborted row: {err}")
         check(status(led) == "merged", "later verified MERGED result did not update the terminal row")
-        check(result["cleanup"] == {"worktree": "removed", "branch": "removed"},
-              f"later MERGED finalization did not clean owned resources: {result}")
-        check(not any(argv[:3] == ["gh", "pr", "merge"] for argv, _ in f.calls[before:]),
+        # The abort handed the owned worktree and branch back to the user, and whatever later landed on
+        # GitHub is the user's own work, not this run's reviewed tip. So the terminal write is the ONLY
+        # phase: the resources are reported left in place, and neither cleanup nor base-sync may run.
+        check(result["cleanup"] == {"worktree": "aborted-left", "branch": "aborted-left"},
+              f"later MERGED record did not leave the returned resources in place: {result}")
+        check(f.worktree_present and f.branch_present,
+              "later MERGED record destroyed resources the abort returned to the user")
+        new = [argv for argv, _ in f.calls[before:]]
+        check(not any(argv[:3] == ["gh", "pr", "merge"] for argv in new),
               "later verified MERGED result attempted a second merge")
+        check(not any("worktree" in argv and "remove" in argv for argv in new),
+              "later MERGED record ran owned cleanup")
+        check(not any(argv[3:5] in (["fetch", "origin"], ["merge", "--ff-only"]) for argv in new),
+              "later MERGED record fast-forwarded a local base this run never merged into")
     finally:
         finish(td, real)
+
+    # The route is LEDGER-ONLY, so it must hold across the whole class of post-abort drift, not just the
+    # inputs listed here. Bailout leaves the PR OPEN, strips this run's label, and returns the owned
+    # worktree and branch to the user (`bailout-and-final-report.md`), so by the time the PR merges the head
+    # may have moved, the base may have been retargeted, the branch renamed, the returned worktree left
+    # dirty or switched to another checkout, and the local branch advanced by the user's own commit. Each
+    # one refused before this route existed, leaving the row stuck at `aborted` while GitHub said MERGED —
+    # and the moved-local-branch refusal fired only AFTER the worktree had already been removed.
+    for label, knob in (
+        ("moved head", {"view_head": "c" * 40}),
+        ("retargeted base", {"view_base": "other-base"}),
+        ("renamed branch", {"view_branch": "renamed"}),
+        ("dirty returned worktree", {"fail_once": "dirty"}),
+        ("moved local branch", {"local_branch_head": "d" * 40}),
+        ("returned worktree on another branch", {"worktree_branch": "scratch"}),
+    ):
+        td, root, f, led, real = scenario(state="MERGED", status="aborted", **knob)
+        try:
+            code, result, err = invoke(f, led, root)
+            check(code == 0 and result is not None and result["status"] == "merged",
+                  f"{label}: a verified MERGED PR on an aborted row was refused: {err}")
+            check(status(led) == "merged", f"{label}: the verified merge was not recorded")
+            check(result is not None and
+                  result["cleanup"] == {"worktree": "aborted-left", "branch": "aborted-left"},
+                  f"{label}: the cleanup result drifted: {result}")
+            check(f.merged_calls == 0, f"{label}: recording the disposition issued a merge")
+            check(f.worktree_present and f.branch_present,
+                  f"{label}: recording the disposition destroyed the user's returned resources")
+        finally:
+            finish(td, real)
 
 
 def t_head_race_between_view_and_merge_refuses_before_landing():
@@ -1744,7 +1794,7 @@ CASES = [
     ("terminal-write-resume", "a failed terminal write resumes after already-completed cleanup", t_terminal_write_failure_resumes_after_cleanup),
     ("terminal-repeat", "repeated invocation after terminal state is a no-op", t_repeat_after_terminal_is_noop),
     ("aborted-terminal-repeat", "repeating after a CLOSED close-out or normal OPEN abort is an already-complete no-op (moved refs tolerated)", t_repeat_after_closed_terminal_is_noop),
-    ("aborted-later-merge", "a later verified MERGED result resumes an earlier aborted row without re-merging", t_aborted_row_resumes_after_later_verified_merge),
+    ("aborted-later-merge", "a later verified MERGED result records `merged` on an aborted row without merging, base-syncing, or cleaning the returned resources", t_aborted_row_records_later_verified_merge),
     ("head-race", "--match-head-commit refuses a tip that advanced before the merge landed", t_head_race_between_view_and_merge_refuses_before_landing),
     ("merge-method", "merge method is a validated input; squash-disabled repo has a prevailing-method recourse", t_merge_method_input_validated_and_applied),
     ("absent-resume", "an absent-but-unfinalized MERGED row resumes its remaining phases through run", t_absent_snapshot_merged_row_resumes_via_run),
