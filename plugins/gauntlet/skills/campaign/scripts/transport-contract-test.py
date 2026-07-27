@@ -58,8 +58,12 @@ WATCH_ACTION = (
 )
 WATCH_MAINTENANCE_VERBS = r"(?:keep|maintain|start|launch|relaunch|ensure)(?:s|ed|ing)?"
 WATCH_STATUS_VALUES = r"(?:pending|red|green|unknown|unusable|unverifiable)"
+WATCH_STATUS_MARKUP = r"[`*_]{0,2}"
 WATCH_STATUS_CONDITION = (
-    r"\b(?:ci(?:\s+status)?|status)\b\s*(?:is|=|==|:)\s*"
+    WATCH_STATUS_MARKUP
+    + r"\b(?:ci(?:`?\s+`?status)?|status)\b"
+    + WATCH_STATUS_MARKUP
+    + r"\s*(?:is|=|==|:)\s*"
     r"(?:[`\"']\s*)?(?:quoted\s+)?"
     + WATCH_STATUS_VALUES
     + r"\b\s*[`\"']?(?=\s|[.!?;:|,)\]}]|$)"
@@ -80,11 +84,28 @@ WATCH_MAINTENANCE_ACTION = (
 )
 WATCH_STATUS_CONDITION_RE = re.compile(WATCH_STATUS_CONDITION, re.IGNORECASE)
 WATCH_MAINTENANCE_ACTION_RE = re.compile(WATCH_MAINTENANCE_ACTION, re.IGNORECASE)
+WATCH_WARRANTED_REPORTER = (
+    r"(?:`?liveness`?(?:\s+result)?|it)\s+(?:has|reports?|returns?)\s+"
+)
+WATCH_WARRANTED_TOKEN = r"`?watch_warranted`?"
+WATCH_WARRANTED_IS_TRUE = r"\s*(?:is|=|==|:)\s*`?true`?"
 WATCH_WARRANTED_TRUE_GUARD_RE = re.compile(
     r"\b(?:only\s+)?(?:when|if|provided(?:\s+that)?|as\s+long\s+as)\s+"
-    r"(?:(?:the|a)\s+)?(?:returned\s+)?"
-    r"(?:liveness\s+result\s+(?:has|reports?)\s+)?"
-    r"`?watch_warranted`?\s*(?:is|=|==|:)\s*`?true`?\b",
+    # The same introducer may carry the status condition first, as in
+    # "when CI status is pending and `liveness` reports `watch_warranted`".
+    + rf"(?:{WATCH_STATUS_CONDITION}\s*[,;:-]*\s*(?:and|but)?\s*(?:only\s+)?)?"
+    + r"(?:(?:the|a)\s+)?(?:returned\s+)?"
+    r"(?:"
+    # A named reporter (`liveness`, the liveness result, or a pronoun) makes the
+    # trailing `is true` optional: it is the docs' own house phrasing.
+    + WATCH_WARRANTED_REPORTER
+    + WATCH_WARRANTED_TOKEN
+    + rf"(?:{WATCH_WARRANTED_IS_TRUE})?"
+    r"|"
+    # Without a reporter, a bare token is not a guard: `is true` stays required.
+    + WATCH_WARRANTED_TOKEN
+    + WATCH_WARRANTED_IS_TRUE
+    + r")\b",
     re.IGNORECASE,
 )
 WATCH_NEGATED_BEFORE_ACTION_RE = re.compile(
@@ -110,7 +131,8 @@ WATCH_GUARD_AFTER_ACTION_GAP_RE = re.compile(
     re.IGNORECASE,
 )
 WATCH_STATUS_GUARD_AFTER_ACTION_GAP_RE = re.compile(
-    rf"^\s*(?:when|if|while)\s+{WATCH_STATUS_CONDITION}(?:\s+only)?\s*$",
+    rf"^\s*(?:when|if|while)\s+{WATCH_STATUS_CONDITION}"
+    r"\s*[,;:-]*\s*(?:but\s+)?(?:only\s*)?$",
     re.IGNORECASE,
 )
 MARKDOWN_LIST_ITEM = re.compile(
@@ -504,7 +526,8 @@ def check_status_watch_maintenance_docs(root: Path = ROOT) -> list[str]:
                 continue
             relative = document.relative_to(root).as_posix()
             problems.append(
-                f"{relative}:{line} adds status-based watch maintenance without `watch_warranted`"
+                f"{relative}:{line} adds status-based watch maintenance "
+                f"without a `watch_warranted` guard"
             )
     return problems
 
@@ -577,10 +600,55 @@ def run_watch_action_fixtures() -> None:
             "When watch_warranted is true, ensure a watch when CI status is pending.",
             False,
         ),
+        (
+            "named-reporter-guard",
+            "Ensure a live watch when CI status is pending and `liveness` reports "
+            "`watch_warranted`.",
+            False,
+        ),
+        (
+            "pronoun-reporter-guard",
+            "When CI status is pending, run `liveness` and ensure a watch only when it "
+            "reports `watch_warranted`.",
+            False,
+        ),
+        (
+            "named-reporter-true-guard",
+            "Ensure a watch when CI status is pending only when `liveness` reports "
+            "`watch_warranted` is `true`.",
+            False,
+        ),
+        (
+            "comma-before-guard",
+            "Ensure a watch when CI status is pending, only when returned "
+            "watch_warranted is true.",
+            False,
+        ),
+        (
+            "comma-and-but-before-guard",
+            "Ensure a watch when CI status is pending, but only when the returned "
+            "`watch_warranted` is `true`.",
+            False,
+        ),
+        (
+            "reporterless-bare-token-guard",
+            "Ensure a watch when CI status is pending only when watch_warranted changes.",
+            True,
+        ),
         ("passive-action", "A watch should be launched when CI status is pending.", True),
         ("hyphenated-action", "Keep a long-running watch alive when CI status is pending.", True),
         ("quoted-status", 'Ensure a watch when CI status is "pending".', True),
         ("code-status", "Ensure a watch when CI status is `pending`.", True),
+        ("code-field-and-status", "`ci` is `pending`, ensure a watch.", True),
+        ("code-field-plain-status", "`ci` is pending, ensure a watch.", True),
+        ("emphasis-field", "**ci** is pending, ensure a watch.", True),
+        ("code-field-phrase", "`ci status` is pending, ensure a watch.", True),
+        (
+            "code-field-relaunch",
+            "While `ci` is `pending`, relaunch the watch each heartbeat.",
+            True,
+        ),
+        ("field-substring-not-a-status", "Ensure a watch when sci is pending.", False),
         ("quoted-word-status", "Ensure a watch when CI status is quoted pending.", True),
         ("colon-status", "CI status is pending: keep a watch.", True),
         ("quoted-action", "CI status is pending, 'keep a watch'.", False),
