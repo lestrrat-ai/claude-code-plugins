@@ -784,8 +784,11 @@ nonterminal, malformed, and wrong-attempt reports are `unusable`. The parsed bin
 the existing if-and-only-if rule: **`not-satisfied` exactly when at least one GATING finding stands.** A
 verdict that blocks a PR must name what blocks it, and a finding that blocks a PR cannot be waved through.
 
-**A SATISFIED report has exactly one `RESIDUAL-RISK:` line immediately above its verdict.** It uses the
-prompt's exact form. The line is forbidden on NOT SATISFIED and DEFERRED results.
+**A SATISFIED report MAY carry a `RESIDUAL-RISK:` line, and its absence NEVER blocks the verdict.** The
+line is calibration metadata, never a gate input, so a SATISFIED report without one counts exactly as a
+SATISFIED report with one. When it IS present the prompt still owns its exact form, there is at most one
+of it, and it is the last nonblank line before the verdict — blank lines between the two are tolerated,
+any other line is not. The line is forbidden on NOT SATISFIED and DEFERRED results.
 
 **A parsed DEFERRED result routes through progress state without becoming a judgment.** An unruled
 `plan_amendment_request` returns `amended`; an unfinished pass returns `incomplete`; a complete pass with
@@ -809,7 +812,7 @@ pass is a trapdoor, not a disclosure:
 | `ok` | 0 | the artifacts are sound: one strict result from the active attempt's report; a `pass_identity` naming **this** PR, **this** pass, **this** launch attempt, **the live head SHA**, and a bound **`default_non_goals` still equal to the run's live defaults**; a **usable intent block** for this PR; every planned unit `done` **once**, with concrete evidence, after a `started` for it; every `done` for a unit that is **actually in the plan**; no unruled amendment; and the parsed result **coheres** with the findings | tally the parsed binary result through `ledger.py verdict` |
 | `incomplete` | 1 | sound, but a planned unit has no `done` — the pass has not covered its plan | it is still working (or it stopped early — the meaningful-progress rule decides which). **Never tally a verdict from it** |
 | `amended` | 1 | sound, but the reviewer raised a `plan_amendment_request` nobody has ruled on | fold it into the plan and restart the pass, or ignore it with a note — then re-run with `--amendments-ruled N` |
-| `unusable` | 1 | the artifacts are **defective** — the active report is missing, empty, truncated, duplicate, nonterminal, malformed, or lacks SATISFIED's exact residual-risk line; a short SHA or other malformed identifier; invalid progress/identity/findings; **no usable intent block**; a bound `default_non_goals` that no longer matches the run's live defaults (scope drift); a parsed result that does not cohere with findings; or a spurious DEFERRED result | the pass **CANNOT count**. Fix skipped adoption inputs when named; otherwise retry — the same pass, next launch attempt (`runtime-adapter.md`, "Review preparation mapping") — or take the fresh-worker fallback |
+| `unusable` | 1 | the artifacts are **defective** — the active report is missing, empty, truncated, duplicate, nonterminal, malformed, or carries a misplaced or malformed residual-risk line (its ABSENCE is fine); a short SHA or other malformed identifier; invalid progress/identity/findings; **no usable intent block**; a bound `default_non_goals` that no longer matches the run's live defaults (scope drift); a parsed result that does not cohere with findings; or a spurious DEFERRED result | the pass **CANNOT count**. Fix skipped adoption inputs when named; otherwise retry — the same pass, next launch attempt (`runtime-adapter.md`, "Review preparation mapping") — or take the fresh-worker fallback |
 
 **`ok` is not SATISFIED.** The tool parses the reviewer's exact terminal result but does not judge the
 report's prose, raise `reviews_ok`, or merge. `ledger.py verdict` remains the only tally writer.
@@ -930,16 +933,18 @@ found" is the expected, honest common outcome, and speculative "might be fragile
 and do not block SATISFIED. (This is distinct from a `plan_amendment_request`, which fixes the plan
 structurally; the sweep finds a defect now, regardless of the plan.)
 
-**Residual-risk signal (SATISFIED only).** A SATISFIED verdict carries one
+**Residual-risk signal (SATISFIED only, and OPTIONAL).** The prompt asks a SATISFIED verdict for one
 `RESIDUAL-RISK: <area> — <why>` line naming the part of the diff the pass verified with the least
 certainty, relative to the rest. It is calibration metadata, never a finding and never a verdict
 input: a SATISFIED with a residual-risk line is a **full** SATISFIED, and the line NEVER withholds the
 gate, NEVER enters the fix loop, and is NEVER fed into the corroborating review (which stays
-context-isolated). It reflects the gauntlet's purpose — lower the odds a defect survives stochastic
-variation, not claim certainty — by making residual uncertainty explicit instead of hidden behind a
-binary verdict. Record it with the verdict and carry **each accepting pass's** line into the final
-report, grouped by PR (one line per accepting pass — so `required(tier)` lines: two for a
-STANDARD/HIGH PR, one for a TRIVIAL PR). Its only aggregate use (when a PR has ≥2 accepting passes):
+context-isolated). Because it is not a gate input, **a SATISFIED report that omits it is accepted
+unchanged** — the pass counts, and nothing about the gate moves. It reflects the gauntlet's purpose —
+lower the odds a defect survives stochastic variation, not claim certainty — by making residual
+uncertainty explicit instead of hidden behind a binary verdict. Record it with the verdict and carry
+**each accepting pass's** line into the final report, grouped by PR (at most one line per accepting
+pass, and a pass that wrote none contributes none). Its only aggregate use (when a PR has ≥2 accepting
+passes that each named an area):
 when **both** accepting passes on the same content name the same area, note that convergence in the
 report, and the orchestrator MAY add a plan unit covering it the next time the PR content changes and a
 fresh review round starts — but it never blocks the current gate.

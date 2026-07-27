@@ -718,7 +718,7 @@ class Tables:
         self.REPORT_CASES: "dict[str, dict]" = {
             "valid-satisfied": {
                 "report": SAT_REPORT, "want": OK, "needle": "report verdict satisfied",
-                "why": "the parser derives SATISFIED and its immediately preceding residual risk",
+                "why": "the parser derives SATISFIED and the residual risk last before the verdict",
             },
             "valid-not-satisfied": {
                 "report": NOT_SAT_REPORT, "findings": [finding()], "want": OK,
@@ -776,10 +776,13 @@ class Tables:
                 "want": OK, "needle": "report verdict satisfied",
                 "why": "the active attempt's result wins while the dead attempt stays inert",
             },
-            "missing-residual-risk": {
-                "report": "VERDICT: SATISFIED\n", "want": UNUSABLE,
-                "needle": "exactly one `RESIDUAL-RISK:`",
-                "why": "SATISFIED carries the required calibration line",
+            # The calibration line is OPTIONAL. It never was a gate input, so its absence never made a
+            # verdict less usable — but requiring it discarded four complete review passes across two
+            # engines. A SATISFIED report without one counts.
+            "satisfied-without-residual-risk": {
+                "report": "Report body.\nVERDICT: SATISFIED\n", "want": OK,
+                "needle": "report verdict satisfied",
+                "why": "a missing calibration line does not block a SATISFIED verdict",
             },
             "malformed-residual-risk": {
                 "report": "RESIDUAL-RISK: parser contract - wrong separator\nVERDICT: SATISFIED\n",
@@ -787,15 +790,22 @@ class Tables:
                 "why": "the residual-risk fields and em dash have one exact shape",
             },
             "misplaced-residual-risk": {
-                "report": "RESIDUAL-RISK: parser — hard\n\nVERDICT: SATISFIED\n",
-                "want": UNUSABLE, "needle": "immediately above",
-                "why": "the residual-risk line has one exact position",
+                "report": "RESIDUAL-RISK: parser — hard\nand then more prose\nVERDICT: SATISFIED\n",
+                "want": UNUSABLE, "needle": "last nonblank line",
+                "why": "prose between the line and the verdict detaches the signal from the verdict",
+            },
+            # Real reviewers on two engines separated the two with a blank line. Nothing of substance
+            # intervenes, so the line still belongs to this verdict and the pass counts.
+            "blank-line-above-verdict-residual-risk": {
+                "report": "Report body.\nRESIDUAL-RISK: parser — hard\n\nVERDICT: SATISFIED\n",
+                "want": OK, "needle": "report verdict satisfied",
+                "why": "blank lines between the residual risk and the verdict do not detach it",
             },
             "duplicate-residual-risk": {
                 "report": "RESIDUAL-RISK: first — hard\nRESIDUAL-RISK: second — hard\n"
                           "VERDICT: SATISFIED\n",
-                "want": UNUSABLE, "needle": "exactly one `RESIDUAL-RISK:`",
-                "why": "one accepting pass contributes one residual-risk record",
+                "want": UNUSABLE, "needle": "at most one `RESIDUAL-RISK:`",
+                "why": "one accepting pass contributes at most one residual-risk record",
             },
             "residual-on-not-satisfied": {
                 "report": "RESIDUAL-RISK: parser — hard\nVERDICT: NOT SATISFIED\n",

@@ -90,9 +90,11 @@ THE QUESTION YOU ARE ANSWERING IS: does this PR achieve its stated Purpose, with
    checkable evidence) as a finding in itself.
    Summarise your findings in this report with file:line and the concrete fix (the tool holds the
    authoritative record). If — and only if — your verdict is SATISFIED,
-   output one line immediately above the verdict, in the form RESIDUAL-RISK: <area or file> — <why
-   this was the hardest part to verify fully>, naming the part of the diff you checked with the LEAST
-   certainty relative to the rest. It is a calibration signal, NOT a finding, and does not weaken your
+   output one line above the verdict with nothing but blank lines between the two, in the form
+   RESIDUAL-RISK: <area or file> — <why this was the hardest part to verify fully>, naming the part
+   of the diff you checked with the LEAST certainty relative to the rest. Nothing else may come
+   between that line and the verdict.
+   It is a calibration signal, NOT a finding, and does not weaken your
    SATISFIED — do not manufacture a concern to fill it; if identifying it surfaces a real GATING defect,
    record it with the tool and return NOT SATISFIED instead. End with exactly one line:
    'VERDICT: SATISFIED' or 'VERDICT: NOT SATISFIED'.

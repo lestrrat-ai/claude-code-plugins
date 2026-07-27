@@ -976,7 +976,7 @@ def t_bundle_exempts_every_prior_cap_round(tmp: Path) -> None:
     # The repair landed, the row returned to review, two more rounds ran, and round 3 is the SECOND cap.
     head = case["head_sha"]
     # A clean intermediate round: SATISFIED coheres with 0 gating findings, and #126's `parse_report`
-    # requires its one RESIDUAL-RISK line immediately above the verdict. No audit is owed (0 gating).
+    # accepts an optional RESIDUAL-RISK line last before the verdict. No audit is owed (0 gating).
     write_review_attempt(case["rundir"], 2, 1, head,
                          "round 2\n\nRESIDUAL-RISK: feature.txt — the clean re-review after the repair "
                          "landed\nVERDICT: SATISFIED\n")

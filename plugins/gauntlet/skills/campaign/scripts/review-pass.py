@@ -476,8 +476,11 @@ FINDINGS_NAME_RE = re.compile(rf"^review-(?P<pr>{COUNT})-{COUNT}(?:\.a{ATTEMPT})
 
 # The strict terminal report contract. The prompt owns these exact lines; `parse_report` is their executable
 # reader. A deferred result includes a reason because it is a request the orchestrator must route. A
-# SATISFIED result includes the immediately preceding residual-risk line because that metadata is carried
-# into the campaign's final report.
+# SATISFIED result MAY carry a residual-risk line, which is carried into the campaign's final report. That
+# line is calibration metadata, never a gate input, so its ABSENCE has never made a verdict less usable —
+# yet requiring it discarded four complete, substantive review passes across two engines. It is optional
+# now; when present it must still be well-formed and stand last before the verdict, and it stays forbidden
+# on every non-SATISFIED result.
 REPORT_SATISFIED = "VERDICT: SATISFIED"
 REPORT_NOT_SATISFIED = "VERDICT: NOT SATISFIED"
 REPORT_DEFERRED_RE = re.compile(r"^VERDICT: DEFERRED — (?P<reason>\S(?:.*\S)?)\Z")
@@ -1252,8 +1255,9 @@ def parse_report(progress: Path) -> "dict[str, str | None]":
     """Read one exact terminal result from the active attempt's report.
 
     Report prose remains the reviewer's judgment. This parser owns only the framing that makes that
-    judgment usable: one terminal result on the last nonblank line, a reason for DEFERRED, and the
-    immediately preceding residual-risk line for SATISFIED.
+    judgment usable: one terminal result on the last nonblank line, a reason for DEFERRED, and — for
+    SATISFIED only, and only when the reviewer wrote one — the optional residual-risk line that stands
+    last before the verdict, blank lines between the two tolerated.
     """
     path = report_path(progress)
     text = read_text(path, "active review report")
@@ -1305,24 +1309,30 @@ def parse_report(progress: Path) -> "dict[str, str | None]":
     residual_lines = [n for n, line in enumerate(lines) if line.startswith("RESIDUAL-RISK:")]
     residual: "str | None" = None
     if verdict == SATISFIED:
-        if len(residual_lines) != 1:
+        if len(residual_lines) > 1:
             # MUTATE:report-residual-count:pass
             raise Defect(
-                f"{path.name}: SATISFIED requires exactly one `RESIDUAL-RISK:` line; found "
+                f"{path.name}: SATISFIED carries at most one `RESIDUAL-RISK:` line; found "
                 f"{len(residual_lines)}"
             )
-        if residual_lines[0] != last - 1:
-            # MUTATE:report-residual-position:pass
-            raise Defect(
-                f"{path.name}: SATISFIED requires its `RESIDUAL-RISK:` line immediately above the verdict"
-            )
-        residual = lines[last - 1]
-        if RESIDUAL_RISK_RE.match(residual) is None:
-            # MUTATE:report-residual-shape:pass
-            raise Defect(
-                f"{path.name}: residual risk must be exactly "
-                "'RESIDUAL-RISK: <area or file> — <why this was hardest to verify fully>'"
-            )
+        if residual_lines:
+            # ATTACHED, not adjacent. When the line IS there it must belong to THIS verdict — nothing of
+            # substance may stand between them. A blank line does not defeat that, and insisting on
+            # adjacency discarded four complete, substantive review passes across two engines.
+            # `nonblank[-2]` is always in range here: the residual line is nonblank and is not the verdict.
+            if residual_lines[0] != nonblank[-2]:
+                # MUTATE:report-residual-position:pass
+                raise Defect(
+                    f"{path.name}: a SATISFIED report's `RESIDUAL-RISK:` line must be the last nonblank "
+                    f"line before the verdict; only blank lines may separate the two"
+                )
+            residual = lines[residual_lines[0]]
+            if RESIDUAL_RISK_RE.match(residual) is None:
+                # MUTATE:report-residual-shape:pass
+                raise Defect(
+                    f"{path.name}: residual risk must be exactly "
+                    "'RESIDUAL-RISK: <area or file> — <why this was hardest to verify fully>'"
+                )
     elif residual_lines:
         # MUTATE:report-residual-binary-only:pass
         raise Defect(
