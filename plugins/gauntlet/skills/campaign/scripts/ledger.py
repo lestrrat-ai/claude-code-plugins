@@ -26,6 +26,12 @@ from typing import NoReturn
 from _gauntlet.atomic import replace_text
 from _gauntlet.jsonl import JsonlError, object_lines
 from _gauntlet.table import config_lines, escape_cell as _shared_escape_cell, grid_lines
+# Re-exported WITHOUT a default, because no one-argument default can be right: the notice names the
+# statuses a render ACTUALLY dropped (`hidden_statuses()`), never the configured set, and
+# `TABLE_HIDDEN_STATUSES` holds two — a defaulted `hidden_notice(1)` would announce a hidden `aborted`
+# row on a ledger holding none. Every `hidden_notice` call in the tree passes its own status tuple, so
+# nothing reaches the missing default. The "Compatibility export" below scopes to `escape_cell` alone;
+# this name carries no such promise.
 from _gauntlet.table import hidden_notice
 
 # Compatibility export for existing test and script consumers. New consumers import `_gauntlet.table`.
