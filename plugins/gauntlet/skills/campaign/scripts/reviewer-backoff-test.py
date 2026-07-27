@@ -1053,6 +1053,210 @@ def test_retry_phrase_without_a_value_falls_back_without_disabling() -> None:
               f"unrecognized wording disabled the external route: {message!r}")
 
 
+def test_longer_marker_outranks_the_fragment_inside_it() -> None:
+    """`refused` is a fragment of `connection refused`; the marker explaining more text wins."""
+
+    now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    for message in (
+        "dial tcp 10.0.0.1:443: connect: connection refused",
+        "connection refused",
+        "TLS handshake: connection refused",
+        "connection refused; 503 service unavailable",
+        "upstream connection reset; connection refused",
+    ):
+        result = MODULE.decide(message, now=now, pr_number=188)
+        check(result.kind == MODULE.TRANSIENT,
+              f"a transport refusal was read as a reviewer refusal: {message!r}")
+        check(result.action == MODULE.RETRY_EXTERNAL,
+              f"a transport refusal did not spend the one retry: {message!r}")
+
+    timed = MODULE.decide("connection refused; retry after 90 seconds", now=now, pr_number=188)
+    check(timed.kind == MODULE.TIMER and timed.retry_after_seconds == 90,
+          "a transport refusal threw away the provider's 90-second delay")
+    permanent = MODULE.decide("permission denied; connection refused", now=now, pr_number=188)
+    check(permanent.kind == MODULE.PERMANENT,
+          "a permanent marker lost to a transport refusal")
+
+
+def test_refusal_wording_survives_a_longer_timer_attempt() -> None:
+    """Only markers can eat markers: a timer attempt straddling a refusal must never swallow it."""
+
+    now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    for message in (
+        "retry: decline 5",
+        "the model refused to comply",
+        "I must decline; retry after 90 seconds is not applicable here.",
+    ):
+        result = MODULE.decide(message, now=now, pr_number=188)
+        check(result.kind == MODULE.REFUSAL,
+              f"a timer attempt swallowed the reviewer refusal: {message!r}")
+        check(result.action == MODULE.STOP_AND_ASK,
+              f"a swallowed refusal skipped the operator: {message!r}")
+
+
+def test_trigger_word_without_a_value_keeps_the_transient_class() -> None:
+    """A connector or colon alone introduces no value, so a live transient marker keeps the class."""
+
+    now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    for carrier in ("service unavailable", "temporarily unavailable", "connection reset"):
+        for tail in (": please stand by", " in us-east-1", " at this time", " for this account",
+                     " on this endpoint", " after maintenance"):
+            message = carrier + tail
+            result = MODULE.decide(message, now=now, pr_number=188)
+            check(result.kind == MODULE.TRANSIENT,
+                  f"a valueless trigger word forced the malformed-timer path: {message!r}")
+            check(result.state.external_disabled is False,
+                  f"a valueless trigger word disabled the session route: {message!r}")
+
+
+def test_status_code_after_a_trigger_word_is_not_a_timer_value() -> None:
+    """`503` is a status the transient list explains whole, not a delay the timer detector guesses."""
+
+    now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    for message in (
+        "service unavailable: 503",
+        "service unavailable:503",
+        "service unavailable : 503",
+        "service unavailable 503",
+        "service unavailable  503",
+        "service unavailable\n503",
+        "temporarily unavailable: 503",
+        "connection reset: 503",
+        "retry: 429",
+        "too many requests; retry: 429",
+    ):
+        result = MODULE.decide(message, now=now, pr_number=188)
+        check(result.kind == MODULE.TRANSIENT,
+              f"a status code was read as a broken timer value: {message!r}")
+        check(result.state.external_disabled is False,
+              f"a status code disabled the session route: {message!r}")
+
+
+def test_free_standing_retry_word_without_a_value_keeps_the_transient_class() -> None:
+    now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    for message in (
+        "503; retry: yes",
+        "503; retry in a moment",
+        "503; retry after the maintenance window",
+        "502 bad gateway; please retry in a bit",
+        "gateway timeout; retry at your convenience",
+        "gateway timeout; wait for the upstream to recover",
+        "gateway timeout; wait: upstream is down",
+        "internal server error; backoff in effect",
+        "internal server error; backoff: enabled",
+        "429; retrying in background",
+        "rate limit; try again at a later time",
+        "rate limit; resets at midnight",
+        "rate limit; resets on the first of the month",
+        "temporary failure; available in region eu-west",
+    ):
+        result = MODULE.decide(message, now=now, pr_number=188)
+        check(result.kind == MODULE.TRANSIENT,
+              f"a valueless retry word forced the malformed-timer path: {message!r}")
+        check(result.action == MODULE.RETRY_EXTERNAL,
+              f"a recognized transient failure did not retry: {message!r}")
+
+
+def test_valueless_trigger_word_never_poisons_a_valid_timer() -> None:
+    """A stray trigger elsewhere in the message must not throw away a real provider deadline."""
+
+    now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    for message in (
+        "rate limit; retry after 90 seconds; service unavailable at this time",
+        "service unavailable at this time; retry after 90 seconds",
+    ):
+        result = MODULE.decide(message, now=now, pr_number=188)
+        check(result.kind == MODULE.TIMER,
+              f"a valueless trigger word poisoned a valid timer: {message!r}")
+        check(result.retry_after_seconds == 90,
+              f"a poisoned timer lost the provider delay: {message!r}")
+
+    absolute = MODULE.decide(
+        "quota exhausted; resets Jul 27, 9pm (Asia/Tokyo); service unavailable in us-east-1",
+        now=now,
+        pr_number=188,
+    )
+    check(absolute.kind == MODULE.TIMER and absolute.retry_after_seconds == 172800,
+          "a valueless trigger word poisoned a valid absolute timer")
+
+
+def test_valueless_trigger_word_without_a_marker_stays_unrecognized() -> None:
+    """With no marker at all the message is opaque, and opaque text never disables the route."""
+
+    now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    for message in (
+        "quota exceeded; resets: soon",
+        "please retry at your leisure",
+        "job failed; wait for operator",
+        "upstream busy; try again in a while",
+        "aborted; retry: manual",
+    ):
+        result = MODULE.decide(message, now=now, pr_number=188)
+        check(result.kind == MODULE.UNRECOGNIZED,
+              f"opaque wording was classified permanent: {message!r}")
+        check(result.action == MODULE.FALLBACK_NATIVE,
+              f"opaque wording did not fall back natively: {message!r}")
+        check(result.state.external_disabled is False,
+              f"opaque wording disabled the session route: {message!r}")
+
+
+def test_trigger_word_with_a_number_and_a_non_time_noun_fails_closed() -> None:
+    """`retry after 3 requests` is the shape of `retry after 90 bananas`; both must fail closed.
+
+    No syntactic rule separates `requests`, `attempts`, `times`, or a bare count from `bananas`.
+    Only a vocabulary of non-time nouns would, and that vocabulary is a declared non-goal, so these
+    stay `permanent` deliberately. The last three rows are the same shape reached through a
+    transient carrier, and they fail closed for the same reason.
+    """
+
+    now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    for message in (
+        "rate limit exceeded, retry after 3 requests",
+        "retry: 3 attempts failed, gateway timeout",
+        "504 gateway timeout; retry 3 times",
+        "429; retrying: attempt 2",
+        "timed out; wait 30",
+        "service unavailable 30",
+        "temporarily unavailable 30",
+        "connection reset 30",
+    ):
+        result = MODULE.decide(message, now=now, pr_number=188)
+        check(result.kind == MODULE.PERMANENT,
+              f"a countable non-time noun was accepted as a timer: {message!r}")
+        check(result.action == MODULE.FALLBACK_NATIVE,
+              f"a countable non-time noun did not fall back: {message!r}")
+        check(result.state.external_disabled,
+              f"a countable non-time noun did not disable the session route: {message!r}")
+
+
+def test_one_intervening_token_bounds_the_timer_attempt_window() -> None:
+    """The one-token window between a connector and a value is arbitrary and load-bearing.
+
+    Inside the window the text is a broken timer and fails closed; outside it the text is ordinary
+    prose that never reaches the `permanent` precedence. Both sides are pinned so the boundary
+    cannot drift silently.
+    """
+
+    now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    for message in (
+        "rate limit; retry after never seconds",
+        "temporarily unavailable; reset after every 90 seconds",
+    ):
+        inside = MODULE.decide(message, now=now, pr_number=188)
+        check(inside.kind == MODULE.PERMANENT,
+              f"a value one token past the connector stopped failing closed: {message!r}")
+
+    for message, expected in (
+        ("upstream busy; try again in a few minutes", MODULE.UNRECOGNIZED),
+        ("service unavailable; try again in a few minutes", MODULE.TRANSIENT),
+    ):
+        outside = MODULE.decide(message, now=now, pr_number=188)
+        check(outside.kind == expected,
+              f"a value three tokens past the connector was read as a timer: {message!r}")
+        check(outside.state.external_disabled is False,
+              f"prose past the attempt window disabled the session route: {message!r}")
+
+
 def test_cli_reports_reviewer_refusal() -> None:
     payload = run_cli(
         "decide",
@@ -1136,6 +1340,15 @@ CASES = [
     ("refusal-pr-exemption-bounds", "the refusal PR exemption leaves every other guard closed", test_refusal_pr_exemption_keeps_other_guards_closed),
     ("valueless-retry-phrase-transient", "a valueless retry phrase keeps a transient classification", test_retry_phrase_without_a_value_keeps_transient_classification),
     ("valueless-retry-phrase-unrecognized", "a valueless retry phrase falls back without disabling", test_retry_phrase_without_a_value_falls_back_without_disabling),
+    ("marker-fragment-precedence", "a longer marker outranks the fragment inside it", test_longer_marker_outranks_the_fragment_inside_it),
+    ("refusal-survives-timer-attempt", "a timer attempt never swallows refusal wording", test_refusal_wording_survives_a_longer_timer_attempt),
+    ("valueless-trigger-transient", "a valueless trigger word keeps the transient class", test_trigger_word_without_a_value_keeps_the_transient_class),
+    ("status-code-not-timer-value", "a status code after a trigger word is not a timer value", test_status_code_after_a_trigger_word_is_not_a_timer_value),
+    ("valueless-retry-word-transient", "a free-standing valueless retry word keeps the transient class", test_free_standing_retry_word_without_a_value_keeps_the_transient_class),
+    ("timer-not-poisoned", "a valueless trigger word never poisons a valid timer", test_valueless_trigger_word_never_poisons_a_valid_timer),
+    ("valueless-trigger-unrecognized", "a valueless trigger word without a marker stays unrecognized", test_valueless_trigger_word_without_a_marker_stays_unrecognized),
+    ("non-time-noun-fails-closed", "a number with a non-time noun stays permanent", test_trigger_word_with_a_number_and_a_non_time_noun_fails_closed),
+    ("attempt-window-bounds", "one intervening token bounds the timer attempt window", test_one_intervening_token_bounds_the_timer_attempt_window),
     ("cli-refusal", "CLI reports the refusal kind and stop-and-ask action", test_cli_reports_reviewer_refusal),
 ]
 

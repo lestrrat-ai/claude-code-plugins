@@ -51,13 +51,6 @@ DURATION_RE = re.compile(
     rf"(?=\s*{_TIMER_END})",
     re.IGNORECASE,
 )
-TIMER_PHRASE_RE = re.compile(
-    r"\b(?:retry(?:ing)?|try\s+again|backoff|wait)\b"
-    r"(?=\s*(?:after|in|for|at|on)\b|\s*:\s*|\s+\d)"
-    r"|\b(?:reset(?:s)?|available|unavailable)\b"
-    r"(?=\s*(?:after|in|for|at|on)\b|\s*:\s*|\s+\d)",
-    re.IGNORECASE,
-)
 ABSOLUTE_TIMER_PREFIX_RE = re.compile(
     r"\b(?:reset(?:s)?|available|retry(?:ing)?|try\s+again)\s+"
     r"(?:(?:at|on)\s+)?"
@@ -88,6 +81,24 @@ ABSOLUTE_RE = re.compile(
     r"(?:\s+(?P<year>\d{4}))?\s*"
     r"(?:\s*\((?P<zone>[^)\s,]+)(?:\s*,?\s*(?P<zone_offset>Z|[+-]\d{2}:?\d{2}))?\))?"
     rf"(?=\s*{_TIMER_END})",
+    re.IGNORECASE,
+)
+
+# A trigger word claims text only when it actually INTRODUCES A VALUE. The trigger and the connector
+# alphabet are exactly the ones a timer detector already recognises, so this can only ever match a
+# subset of the trigger words themselves; what it adds is the requirement that a digit, a time-unit
+# word, or a month name follow, with AT MOST ONE INTERVENING TOKEN. That one-token window is the only
+# thing separating `retry after never seconds` (one intervening token, a broken timer that must fail
+# closed) from `try again in a few minutes` (three, ordinary prose that is not a timer at all); it is
+# arbitrary, load-bearing, and pinned by fixtures on both sides.
+_TIMER_TRIGGER = r"(?:retry(?:ing)?|try\s+again|backoff|wait|reset(?:s)?|unavailable|available)"
+_TIMER_CONNECTOR = r"(?:\s*(?:after|in|for|at|on)\b|\s*:\s*|(?=\s+\d))"
+_TIMER_UNIT_WORD = r"(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|[smhd])"
+_TIMER_MONTH_WORD = "(?:%s)" % "|".join(sorted(MONTHS, key=len, reverse=True))
+TIMER_ATTEMPT_RE = re.compile(
+    rf"\b{_TIMER_TRIGGER}\b{_TIMER_CONNECTOR}\s*"
+    r"(?:\S+\s+)?"
+    rf"(?P<value>\d+|(?:{_TIMER_UNIT_WORD}|{_TIMER_MONTH_WORD})\b)",
     re.IGNORECASE,
 )
 
@@ -137,6 +148,25 @@ PERMANENT_MARKERS = (
     "command not found",
     "no such file or directory",
     "usage:",
+)
+
+
+def _marker_pattern(marker: str) -> re.Pattern[str]:
+    if marker.isdigit():
+        return re.compile(rf"(?<![\w.]){re.escape(marker)}(?![\w.])", re.IGNORECASE)
+    return re.compile(re.escape(marker), re.IGNORECASE)
+
+
+def _marker_patterns(markers: tuple[str, ...]) -> tuple[tuple[int, str, re.Pattern[str]], ...]:
+    return tuple((index, marker, _marker_pattern(marker)) for index, marker in enumerate(markers))
+
+
+_REFUSAL_PATTERNS = _marker_patterns(REFUSAL_MARKERS)
+_PERMANENT_PATTERNS = _marker_patterns(PERMANENT_MARKERS)
+_TRANSIENT_PATTERNS = _marker_patterns(TRANSIENT_MARKERS)
+_STATUS_VALUE_RE = re.compile(
+    r"(?<![\w.])(?:%s)(?![\w.])"
+    % "|".join(re.escape(marker) for marker in TRANSIENT_MARKERS if marker.isdigit())
 )
 
 
@@ -316,24 +346,12 @@ class _TimerCandidate:
     identity: str
 
 
-def _relative_candidates(text: str, now: datetime) -> list[_TimerCandidate] | object:
-    matches = list(RETRY_AFTER_RE.finditer(text)) + list(DURATION_RE.finditer(text))
-    candidates: list[_TimerCandidate] = []
-    seen_spans: set[tuple[int, int]] = set()
-    for match in sorted(matches, key=lambda item: item.start()):
-        span = (match.start(), match.end())
-        if span in seen_spans:
-            continue
-        seen_spans.add(span)
-        try:
-            delay = int(match.group("value")) * _unit_seconds(match.groupdict().get("unit"))
-            retry_at = (_utc(now) + timedelta(seconds=delay)).astimezone(now.tzinfo)
-        except (OverflowError, ValueError):
-            return _MALFORMED_TIMER
-        candidates.append(_TimerCandidate(
-            match.start(), match.end(), delay, retry_at, _timer_identity(match.group(0))
-        ))
-    return candidates
+@dataclass(frozen=True)
+class _TimerScan:
+    """Every timer claim in one message: the spans that parsed, and the spans that only tried."""
+
+    parsed: tuple[_TimerCandidate, ...]
+    attempts: tuple[tuple[int, int], ...]
 
 
 def _absolute_timer_match(match: re.Match[str] | None, now: datetime) -> tuple[int, datetime, str] | None:
@@ -387,45 +405,69 @@ def _absolute_timer(text: str, now: datetime) -> tuple[int, datetime, str] | Non
     return _absolute_timer_match(ABSOLUTE_RE.search(text), now)
 
 
-def _timer_candidates(text: str, now: datetime) -> list[_TimerCandidate] | object:
-    relative = _relative_candidates(text, now)
-    if relative is _MALFORMED_TIMER:
-        return _MALFORMED_TIMER
+def _is_status_value(text: str, start: int, end: int) -> bool:
+    """Report whether the claimed timer value is really a live digit transient marker.
 
-    candidates = list(relative)
+    ``503`` in ``service unavailable: 503`` is a status, not a delay: the transient marker explains
+    the whole token while the timer detector explains only part of it, so the longer claim wins.
+    Value PARSING never consults this — a genuinely parsed ``retry after 503 seconds`` stays a timer.
+    """
+
+    match = _STATUS_VALUE_RE.match(text, start)
+    return match is not None and match.end() == end
+
+
+def _scan_timers(text: str, now: datetime) -> _TimerScan:
+    parsed: list[_TimerCandidate] = []
+    attempts: list[tuple[int, int]] = []
+    seen_spans: set[tuple[int, int]] = set()
+    relative = list(RETRY_AFTER_RE.finditer(text)) + list(DURATION_RE.finditer(text))
+    for match in sorted(relative, key=lambda item: item.start()):
+        span = (match.start(), match.end())
+        if span in seen_spans:
+            continue
+        seen_spans.add(span)
+        try:
+            delay = int(match.group("value")) * _unit_seconds(match.groupdict().get("unit"))
+            retry_at = (_utc(now) + timedelta(seconds=delay)).astimezone(now.tzinfo)
+        except (OverflowError, ValueError):
+            attempts.append(span)
+            continue
+        parsed.append(_TimerCandidate(
+            span[0], span[1], delay, retry_at, _timer_identity(match.group(0))
+        ))
     for match in ABSOLUTE_RE.finditer(text):
         absolute = _absolute_timer_match(match, now)
         if absolute is None:
-            return _MALFORMED_TIMER
+            attempts.append(match.span())
+            continue
         delay, retry_at, identity = absolute
-        candidates.append(_TimerCandidate(
+        parsed.append(_TimerCandidate(
             match.start(), match.end(), delay, retry_at, identity
         ))
 
-    valid_spans = [(candidate.start, candidate.end) for candidate in candidates]
-    for match in TIMER_PHRASE_RE.finditer(text):
-        if not any(start <= match.start() < end for start, end in valid_spans):
-            return _MALFORMED_TIMER
+    valid_spans = [(candidate.start, candidate.end) for candidate in parsed]
+    for match in TIMER_ATTEMPT_RE.finditer(text):
+        if any(start <= match.start() < end for start, end in valid_spans):
+            continue
+        if _is_status_value(text, match.start("value"), match.end("value")):
+            continue
+        attempts.append(match.span())
     for match in ABSOLUTE_TIMER_PREFIX_RE.finditer(text):
-        if not any(start <= match.start() < end for start, end in valid_spans):
-            return _MALFORMED_TIMER
-    return candidates
+        if any(start <= match.start() < end for start, end in valid_spans):
+            continue
+        attempts.append(match.span())
+    return _TimerScan(tuple(parsed), tuple(attempts))
 
 
 def _timer(text: str, now: datetime) -> tuple[int, datetime, str] | None | object:
-    candidates = _timer_candidates(text, now)
-    if candidates is _MALFORMED_TIMER:
+    scan = _scan_timers(text, now)
+    if scan.attempts:
         return _MALFORMED_TIMER
-    if not candidates:
+    if not scan.parsed:
         return None
-    candidate = min(candidates, key=lambda item: item.start)
+    candidate = min(scan.parsed, key=lambda item: item.start)
     return candidate.delay, candidate.retry_at, candidate.identity
-
-
-def _contains_transient_marker(text: str, marker: str) -> bool:
-    if marker.isdigit():
-        return re.search(rf"(?<![\w.]){re.escape(marker)}(?![\w.])", text) is not None
-    return marker in text
 
 
 def timer_seconds(message: str, now: datetime) -> int | None:
@@ -450,6 +492,87 @@ def _refusal(reason: str) -> ExternalReviewFailure:
 
 def _unrecognized(reason: str) -> ExternalReviewFailure:
     return ExternalReviewFailure(UNRECOGNIZED, None, None, reason)
+
+
+_RANK_REFUSAL = 0
+_RANK_PERMANENT = 1
+_RANK_MALFORMED_TIMER = 2
+_RANK_TIMER = 3
+_RANK_TRANSIENT = 4
+
+
+@dataclass(frozen=True)
+class _ClassCandidate:
+    """One class's claim on a span of the failure text, with how much of it that claim explains."""
+
+    start: int
+    end: int
+    rank: int
+    order: int
+    reason: str
+    marker: bool
+    timer: _TimerCandidate | None = None
+
+
+def _marker_candidates(
+    text: str,
+    patterns: tuple[tuple[int, str, re.Pattern[str]], ...],
+    rank: int,
+    label: str,
+) -> list[_ClassCandidate]:
+    candidates: list[_ClassCandidate] = []
+    for order, marker, pattern in patterns:
+        for match in pattern.finditer(text):
+            candidates.append(_ClassCandidate(
+                match.start(), match.end(), rank, order, f"{label} marker: {marker}", True
+            ))
+    return candidates
+
+
+def _classification_candidates(text: str, now: datetime) -> list[_ClassCandidate]:
+    scan = _scan_timers(text, now)
+    candidates = _marker_candidates(text, _REFUSAL_PATTERNS, _RANK_REFUSAL, "refusal")
+    candidates += _marker_candidates(text, _PERMANENT_PATTERNS, _RANK_PERMANENT, "permanent")
+    candidates += _marker_candidates(text, _TRANSIENT_PATTERNS, _RANK_TRANSIENT, "transient")
+    for start, end in scan.attempts:
+        candidates.append(_ClassCandidate(
+            start, end, _RANK_MALFORMED_TIMER, 0, "provider supplied an invalid retry timer", False
+        ))
+    for timer in scan.parsed:
+        candidates.append(_ClassCandidate(
+            timer.start, timer.end, _RANK_TIMER, 0, "provider supplied a retry timer", False, timer
+        ))
+    return candidates
+
+
+def _surviving_candidates(candidates: list[_ClassCandidate]) -> list[_ClassCandidate]:
+    """Drop every MARKER that is only a FRAGMENT of a longer marker on the same text.
+
+    A marker whose span sits inside a strictly longer marker's span explained less of the message
+    than that longer one did, so it is discarded before any class ordering happens. This is what
+    stops the refusal marker `refused` from outranking the transient marker `connection refused`
+    that contains it.
+
+    Two bounds are deliberate. Merely OVERLAPPING claims are both kept: `service unavailable for 90
+    bananas` must stay a broken timer, and its attempt span overlaps but does not sit inside the
+    transient marker's span. And only MARKERS take part — a timer span is not evidence about the
+    words inside it, so a timer attempt that happens to straddle a refusal marker must never swallow
+    it. Silently losing a refusal is the exact failure this classifier exists to prevent.
+    """
+
+    survivors: list[_ClassCandidate] = []
+    for candidate in candidates:
+        length = candidate.end - candidate.start
+        if candidate.marker and any(
+            other.marker
+            and other.start <= candidate.start
+            and candidate.end <= other.end
+            and (other.end - other.start) > length
+            for other in candidates
+        ):
+            continue
+        survivors.append(candidate)
+    return survivors
 
 
 def _valid_failure(value: object) -> bool:
@@ -548,6 +671,11 @@ def _read_failure(path: Path) -> ExternalReviewFailure:
 def classify(message: str, now: datetime | None = None) -> ExternalReviewFailure:
     """Classify every external-process error before route selection.
 
+    Every marker, parsed timer, and timer ATTEMPT in the message is collected first, as a claim on a
+    span of the text. A claim that sits inside a strictly longer one is a fragment and is discarded
+    (`_surviving_candidates`). Only then does the class order decide, and it is unchanged: refusal,
+    then permanent, then malformed timer, then valid timer, then transient, then unrecognized.
+
     Refusal markers take precedence over every other marker: a reviewer that declined the task on
     content or policy grounds is not a transport failure, and swapping in a same-engine native
     reviewer would silently drop the engine diversity the gate relies on. That marker set is
@@ -556,6 +684,11 @@ def classify(message: str, now: datetime | None = None) -> ExternalReviewFailure
     malformed or unsupported timer text is permanent for this session. Opaque text is unrecognized
     and falls back without disabling the external route. A numeric offset paired with a named timezone
     must match that zone's valid offset for the target local time.
+
+    Text is a broken timer only when a retry, reset, or availability word actually INTRODUCES A VALUE
+    (`TIMER_ATTEMPT_RE`), and a value token that is itself a live digit transient marker is a status
+    rather than a delay (`_is_status_value`). A trigger word that introduces nothing keeps the class
+    its own markers give it.
     """
 
     if not isinstance(message, str):
@@ -566,25 +699,20 @@ def classify(message: str, now: datetime | None = None) -> ExternalReviewFailure
         return _permanent("external failure classification had an invalid timestamp")
     if not text:
         return _permanent("external process returned no error text")
-    lowered = text.lower()
-    for marker in REFUSAL_MARKERS:
-        if marker in lowered:
-            return _refusal(f"refusal marker: {marker}")
-    for marker in PERMANENT_MARKERS:
-        if marker in lowered:
-            return _permanent(f"permanent marker: {marker}")
-    timer = _timer(text, current)
-    if timer is _MALFORMED_TIMER:
-        return _permanent("provider supplied an invalid retry timer")
-    if timer is not None:
-        delay, retry_at, timer_identity = timer
-        return ExternalReviewFailure(
-            TIMER, delay, retry_at, "provider supplied a retry timer", timer_identity
-        )
-    for marker in TRANSIENT_MARKERS:
-        if _contains_transient_marker(lowered, marker):
-            return ExternalReviewFailure(TRANSIENT, None, None, f"transient marker: {marker}")
-    return _unrecognized("no recognized retry class or timer was identified")
+    survivors = _surviving_candidates(_classification_candidates(text, current))
+    if not survivors:
+        return _unrecognized("no recognized retry class or timer was identified")
+    winner = min(survivors, key=lambda item: (item.rank, item.order, item.start))
+    if winner.rank == _RANK_REFUSAL:
+        return _refusal(winner.reason)
+    if winner.rank in (_RANK_PERMANENT, _RANK_MALFORMED_TIMER):
+        return _permanent(winner.reason)
+    timer = winner.timer
+    if timer is None:
+        return ExternalReviewFailure(TRANSIENT, None, None, winner.reason)
+    return ExternalReviewFailure(
+        TIMER, timer.delay, timer.retry_at, winner.reason, timer.identity
+    )
 
 
 def _iso(value: datetime | None) -> str | None:

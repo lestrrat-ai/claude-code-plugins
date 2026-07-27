@@ -184,20 +184,41 @@ ReviewTransition {
 The classifier recognizes non-negative whole-second relative provider delays such as `retry after 90
 seconds` and `available in 90 seconds`, plus absolute provider reset timestamps such as `resets Jul 27,
 9pm (Asia/Tokyo)`. Construct an absolute timestamp in the provider-named timezone, then calculate elapsed
-time with timezone-aware arithmetic. Refusal markers take precedence over every other marker, because a
-reviewer that declined the task on content or policy grounds has not suffered a transport failure and must
-not be recovered by swapping in a same-engine native reviewer. That marker set is deliberately NOT
-exhaustive: refusal wording it does not match stays `unrecognized` and takes the disclosed native fallback.
+time with timezone-aware arithmetic.
+
+The classifier collects every marker, every parsed timer, and every timer attempt in the message
+FIRST, as a claim on a span of the text, and only then applies the class order. A marker whose span
+sits inside a strictly longer marker's span is a fragment of that longer one and is dropped before
+the class order runs, so `refused` inside `connection refused` never outranks it. Merely overlapping
+claims both survive, and only markers can drop markers: a timer span says nothing about the words
+inside it, so a timer attempt straddling refusal wording never swallows it.
+
+The class order over what survives is refusal, then permanent, then malformed timer, then valid
+timer, then transient, then unrecognized. Refusal markers take precedence over every other marker,
+because a reviewer that declined the task on content or policy grounds has not suffered a transport
+failure and must not be recovered by swapping in a same-engine native reviewer. That marker set is
+deliberately NOT exhaustive: refusal wording it does not match stays `unrecognized` and takes the
+disclosed native fallback.
 Permanent markers come next, taking precedence over timers and transient markers;
 valid timer text takes precedence over generic transient markers. Malformed or unsupported timer text,
 including fractional or unrepresentable delays, unknown zones, and a numeric offset that is invalid for
 the named zone at the target local time, is `permanent`, and because it is `permanent` it also outranks
 any transient marker in the same message. A named zone's valid offsets include both sides
-of a DST fold. Text is a timer attempt at all only when a retry, reset, or availability word actually
-introduces a value — a connector such as `after` or `in`, a colon, or a digit follows it. A retry word that
-introduces nothing, as in `please try again`, is not a broken timer and never reaches that `permanent`
-precedence: the message keeps the class its own markers give it, `transient` when a transient marker
-matches and `unrecognized` otherwise. An unrecognized failure is opaque text that falls back natively
+of a DST fold.
+
+Text is a timer attempt at all only when a retry, reset, or availability word actually introduces a
+value: a digit, a time-unit word, or a month name must follow it, with at most one intervening
+token, optionally through a connector such as `after` or `in` or through a colon. A connector or a
+colon on its own is NOT a value, so `service unavailable at this time` is not a broken timer. A value
+token that is itself a live digit transient marker is a status rather than a delay, so `retry: 429`
+is not one either. That one-token window is arbitrary and load-bearing — it is what separates
+`retry after never seconds`, a broken timer that fails closed, from `try again in a few minutes`,
+ordinary prose — and fixtures pin both sides of it. A trigger word that introduces nothing, as in
+`please try again`, never reaches that `permanent` precedence: the message keeps the class its own
+markers give it, `transient` when a transient marker matches and `unrecognized` otherwise. A number
+with no time unit behind it stays a broken timer, because nothing syntactic separates
+`retry after 3 requests` from `retry after 90 bananas` and a vocabulary of non-time nouns is a
+non-goal. An unrecognized failure is opaque text that falls back natively
 without disabling this external route for the current session.
 
 `ExternalReviewSessionState` is process/session memory owned by the active orchestrator. Update it only
