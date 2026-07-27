@@ -700,6 +700,76 @@ def required_set_cli_cases(ci, tmp: Path) -> list[str]:
     return problems
 
 
+def derive_cli_repo_cases(ci, tmp: Path) -> list[str]:
+    """`derive` refuses a malformed `--repo` BEFORE the first fetch, exactly as `required-set` does.
+
+    ONE flag, ONE spelling of the help text, ONE validator — so the same bad slug must get the same answer
+    from either subcommand. Unvalidated it did not: the typo was spent on a fetch that 404s and came back
+    `unusable`, a verdict ABOUT THE PR, which is a caller's mistake reported against the wrong thing.
+
+    The gh on PATH here RECORDS and FAILS, so "no line was appended" is the mechanical proof that the
+    refusal happened ahead of the network. The valid-slug case is the boundary: it must still reach gh, or
+    the guard is refusing input the tool is supposed to accept.
+    """
+    problems: list[str] = []
+    cli_tmp = tmp / "derive-cli-repo"
+    cli_tmp.mkdir()
+    rundir = cli_tmp / "rundir"
+    rundir.mkdir()
+
+    fake_bin = cli_tmp / "bin"
+    fake_bin.mkdir()
+    fake_gh = fake_bin / "gh"
+    fake_gh.write_text("#!/bin/sh\nprintf 'called\\n' >> \"$GH_CALLS\"\nexit 1\n", encoding="utf-8")
+    fake_gh.chmod(0o700)
+    gh_calls = cli_tmp / "gh-calls"
+    gh_calls.write_bytes(b"")
+    denied_env = os.environ.copy()
+    denied_env["PATH"] = str(fake_bin) + os.pathsep + denied_env.get("PATH", "")
+    denied_env["GH_CALLS"] = str(gh_calls)
+
+    def run_derive(repo: str):
+        return subprocess.run(  # noqa: S603 - this suite drives its sibling command
+            [sys.executable, str(STATUS_PY), "derive", "--pr", "1",
+             "--head-sha", ci.FIXTURE_SHA, "--rundir", str(rundir),
+             "--required-set", ci.SNAP.NONE_DECLARED, "--repo", repo],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False, env=denied_env,
+        )
+
+    # The same slugs `required-set` already refuses. `derive` must not hold a second opinion about them.
+    for name, repo in (("malformed", "invalid"),
+                       ("whitespace-only", " / "),
+                       ("embedded-space owner", "bad owner/repo"),
+                       ("overlong owner", f"{'o' * 40}/repo"),
+                       ("overlong name", f"owner/{'r' * 101}")):
+        calls_before = gh_calls.read_bytes()
+        proc = run_derive(repo)
+        if proc.returncode != 2:
+            problems.append(f"[derive CLI] {name} --repo exited {proc.returncode}, not 2: {proc.stderr!r}")
+        if proc.stdout:
+            problems.append(f"[derive CLI] {name} --repo emitted stdout: {proc.stdout!r}")
+        if gh_calls.read_bytes() != calls_before:
+            problems.append(f"[derive CLI] {name} --repo fetched from GitHub before naming the caller error")
+        lines = [line for line in proc.stderr.splitlines() if line]
+        if "Traceback" in proc.stderr:
+            problems.append(f"[derive CLI] {name} --repo emitted a traceback: {proc.stderr!r}")
+        elif len(lines) != 1:
+            problems.append(f"[derive CLI] {name} --repo emitted {len(lines)} diagnostic lines: "
+                            f"{proc.stderr!r}")
+        elif "is not a valid GitHub owner/name" not in lines[0]:
+            problems.append(f"[derive CLI] {name} --repo named the wrong rule: {lines[0]!r}")
+
+    # THE BOUNDARY, so the guard cannot pass by refusing everything: a well-formed slug still reaches gh.
+    calls_before = gh_calls.read_bytes()
+    proc = run_derive("o/r")
+    if proc.returncode == 2:
+        problems.append(f"[derive CLI] a valid --repo was refused as a caller error: {proc.stderr!r}")
+    elif gh_calls.read_bytes() == calls_before:
+        problems.append("[derive CLI] a valid --repo never reached gh — the guard rejects accepted input")
+
+    return problems
+
+
 def grouped_required_set_cases(ci, tmp: Path) -> list[str]:
     """The GROUPED, per-base refresh (mixed bases), and `derive`'s row-based required-set resolution."""
     problems: list[str] = []
@@ -1419,6 +1489,14 @@ def run(ci, tmp: Path) -> int:
         print(f"ok       {'required-set CLI exits':32} -> settled=0, unknown=1, "
               f"caller/store/output errors=2; "
               f"errors preserve the ledger and emit one diagnostic without a traceback")
+
+    derive_repo_problems = derive_cli_repo_cases(ci, tmp)
+    for problem in derive_repo_problems:
+        failures += 1
+        print(f"FAIL     {problem}")
+    if not derive_repo_problems:
+        print(f"ok       {'derive CLI --repo guard':32} -> every slug `required-set` refuses is refused by "
+              f"`derive` too, before the first fetch, while a valid slug still reaches gh")
 
     liveness_problems = liveness_cases(ci, tmp)
     for problem in liveness_problems:
