@@ -56,28 +56,74 @@ WATCH_ACTION = (
     "Run `liveness`, then ensure or relaunch a watch only when returned "
     "`watch_warranted` is `true`"
 )
+# --- Shared token-edge primitives -------------------------------------------
+# Every site below asks the same question -- "what may sit at this token's
+# edge?" -- and answers it here, once. Hand-rolling it per site is what made the
+# identical missing markup tolerance surface as a false negative on the accuse
+# path (status condition, maintenance action) and a false positive on the excuse
+# path (guard, negation, gaps).
+#
+# `\b` cannot be part of that answer: it is RELATIVE, so its meaning flips with
+# whatever the engine just consumed, and it therefore cannot compose with an
+# optional markup delimiter. WATCH_LEFT/WATCH_RIGHT are absolute.
+WATCH_MARKUP = r"[`*_~]{0,3}"
+WATCH_LEFT = r"(?<![0-9A-Za-z])"
+WATCH_RIGHT = r"(?![0-9A-Za-z])"
+# The one gap vocabulary: whitespace, clause punctuation, table cell bars,
+# inline markup, dashes and arrows.
+WATCH_GAP_CHARS = r"(?:[\s,;:()\[\]{}|`*_~—–-]|->|→)"
+# What may follow a matched token: whitespace, sentence or clause punctuation,
+# a table cell bar, a dash, or end of clause.
+WATCH_TOKEN_END = r"(?=\s|[.!?;:|,)\]}]|[-—–]|$)"
+
+
+def watch_token(inner: str) -> str:
+    """Wrap a vocabulary alternation in the shared markup-tolerant token edges.
+
+    The builder decides EDGES only. Which words count as verbs, introducers or
+    connectives stays with the caller.
+    """
+    return rf"{WATCH_MARKUP}{WATCH_LEFT}(?:{inner}){WATCH_RIGHT}{WATCH_MARKUP}"
+
+
+def watch_gap(connectives: str) -> str:
+    """Return the one gap pattern: gap characters around named connectives."""
+    return rf"{WATCH_GAP_CHARS}*(?:{watch_token(connectives)}{WATCH_GAP_CHARS}*)*"
+
+
 WATCH_MAINTENANCE_VERBS = r"(?:keep|maintain|start|launch|relaunch|ensure)(?:s|ed|ing)?"
 WATCH_STATUS_VALUES = r"(?:pending|red|green|unknown|unusable|unverifiable)"
-WATCH_STATUS_MARKUP = r"[`*_]{0,2}"
-WATCH_STATUS_CONDITION = (
-    WATCH_STATUS_MARKUP
-    + r"\b(?:ci(?:`?\s+`?status)?|status)\b"
-    + WATCH_STATUS_MARKUP
-    + r"\s*(?:is|=|==|:)\s*"
-    r"(?:[`\"']\s*)?(?:quoted\s+)?"
-    + WATCH_STATUS_VALUES
-    + r"\b\s*[`\"']?(?=\s|[.!?;:|,)\]}]|$)"
+# `is`/`=`/`==`/`:` may carry markup, but a bare symbol must not demand a
+# non-word character after it: `ci=pending` has none.
+WATCH_COPULA = (
+    rf"\s*(?:{watch_token('is')}|{WATCH_MARKUP}(?:==|=|:){WATCH_MARKUP})\s*"
 )
+WATCH_STATUS_FIELD = (
+    rf"(?:{watch_token('ci')}(?:\s+{watch_token('status')})?"
+    rf"|{watch_token('status')})"
+)
+WATCH_STATUS_CONDITION = (
+    WATCH_STATUS_FIELD
+    + WATCH_COPULA
+    + r"(?:[\"']\s*)?(?:quoted\s+)?"
+    + watch_token(WATCH_STATUS_VALUES)
+    + r"\s*[\"']?"
+    + WATCH_TOKEN_END
+)
+# Filler words between a maintenance verb and its object may themselves be
+# marked up: `ensure a **live** watch`.
+WATCH_ACTION_FILLER = rf"(?:\s+{WATCH_MARKUP}[\w-]+{WATCH_MARKUP}){{0,8}}?"
 WATCH_ACTIVE_MAINTENANCE_ACTION = (
-    r"\b"
-    + WATCH_MAINTENANCE_VERBS
-    + r"\b(?:\s+[\w-]+){0,8}?\s+\bwatch(?:es|ed|ing)?\b(?:\s+alive)?"
+    watch_token(WATCH_MAINTENANCE_VERBS)
+    + WATCH_ACTION_FILLER
+    + r"\s+"
+    + watch_token(r"watch(?:es|ed|ing)?")
+    + rf"(?:\s+{watch_token('alive')})?"
 )
 WATCH_PASSIVE_MAINTENANCE_ACTION = (
-    r"\bwatch(?:es|ed|ing)?\b"
-    r"(?:\s+(?:should|must|may|can|will|is|are|be)){0,3}\s+"
-    + WATCH_MAINTENANCE_VERBS
-    + r"\b"
+    watch_token(r"watch(?:es|ed|ing)?")
+    + rf"(?:\s+{watch_token('should|must|may|can|will|is|are|be')}){{0,3}}\s+"
+    + watch_token(WATCH_MAINTENANCE_VERBS)
 )
 WATCH_MAINTENANCE_ACTION = (
     rf"(?:{WATCH_ACTIVE_MAINTENANCE_ACTION}|{WATCH_PASSIVE_MAINTENANCE_ACTION})"
@@ -85,16 +131,20 @@ WATCH_MAINTENANCE_ACTION = (
 WATCH_STATUS_CONDITION_RE = re.compile(WATCH_STATUS_CONDITION, re.IGNORECASE)
 WATCH_MAINTENANCE_ACTION_RE = re.compile(WATCH_MAINTENANCE_ACTION, re.IGNORECASE)
 WATCH_WARRANTED_REPORTER = (
-    r"(?:`?liveness`?(?:\s+result)?|it)\s+(?:has|reports?|returns?)\s+"
+    rf"(?:{watch_token('liveness')}(?:\s+{watch_token('result')})?"
+    rf"|{watch_token('it')})"
+    rf"\s+{watch_token('has|reports?|returns?')}\s+"
 )
-WATCH_WARRANTED_TOKEN = r"`?watch_warranted`?"
-WATCH_WARRANTED_IS_TRUE = r"\s*(?:is|=|==|:)\s*`?true`?"
+WATCH_WARRANTED_TOKEN = watch_token("watch_warranted")
+WATCH_WARRANTED_IS_TRUE = WATCH_COPULA + watch_token("true")
 WATCH_WARRANTED_TRUE_GUARD_RE = re.compile(
-    r"\b(?:only\s+)?(?:when|if|provided(?:\s+that)?|as\s+long\s+as)\s+"
+    rf"(?:{watch_token('only')}\s+)?"
+    + watch_token(r"when|if|provided(?:\s+that)?|as\s+long\s+as")
+    + r"\s+"
     # The same introducer may carry the status condition first, as in
     # "when CI status is pending and `liveness` reports `watch_warranted`".
-    + rf"(?:{WATCH_STATUS_CONDITION}\s*[,;:-]*\s*(?:and|but)?\s*(?:only\s+)?)?"
-    + r"(?:(?:the|a)\s+)?(?:returned\s+)?"
+    + rf"(?:{WATCH_STATUS_CONDITION}{watch_gap('and|but|only')})?"
+    + rf"(?:{watch_token('the|a')}\s+)?(?:{watch_token('returned')}\s+)?"
     r"(?:"
     # A named reporter (`liveness`, the liveness result, or a pronoun) makes the
     # trailing `is true` optional: it is the docs' own house phrasing.
@@ -105,39 +155,54 @@ WATCH_WARRANTED_TRUE_GUARD_RE = re.compile(
     # Without a reporter, a bare token is not a guard: `is true` stays required.
     + WATCH_WARRANTED_TOKEN
     + WATCH_WARRANTED_IS_TRUE
-    + r")\b",
+    + r")",
+    # No trailing `\b`: the final atom may be a closing markup delimiter, which
+    # `\b` can never satisfy, so it would backtrack that delimiter out of the
+    # guard and into the gap. watch_token's WATCH_RIGHT already pins the word.
     re.IGNORECASE,
 )
 WATCH_NEGATED_BEFORE_ACTION_RE = re.compile(
-    r"(?:\bnever\b|\bdo\s+not\b|\bdon't\b|\bdoesn't\b|"
-    r"\bno\s+need\s+to\b|\bunnecessary\s+to\b|"
-    r"\bnot(?:\s+(?:required|necessary))?\s+to\b|\bnot\b)\s*$",
+    watch_token(
+        r"never|do\s+not|don't|doesn't|no\s+need\s+to|unnecessary\s+to|"
+        r"not(?:\s+(?:required|necessary))?\s+to|not"
+    )
+    + r"\s*$",
     re.IGNORECASE,
 )
 WATCH_NEGATED_AFTER_ACTION_RE = re.compile(
-    r"^\s*(?:is|are|becomes?|seems?)\s+(?:unnecessary|"
-    r"not\s+(?:required|necessary))\b",
+    # The negating copula need not be adjacent to the action: "ensure a watch
+    # when CI status is pending is unnecessary" negates it just as plainly.
+    rf"^{WATCH_ACTION_FILLER}\s*"
+    + watch_token("is|are|becomes?|seems?")
+    + r"\s+"
+    + watch_token(r"unnecessary|not\s+(?:required|necessary)"),
     re.IGNORECASE,
 )
+# NOT routed through watch_token: here the backticks are SEMANTIC -- they mark a
+# quotation, which is itself the excuse. Making markup skippable inside this
+# pattern would turn every backticked example into a quotation.
 WATCH_QUOTED_SPAN_RE = re.compile(
     r"`[^`\n]*`|\"[^\"\n]*\"|(?<!\w)'[^'\n]*'(?!\w)|“[^”\n]*”|‘[^’\n]*’"
 )
 WATCH_GUARD_BEFORE_ACTION_GAP_RE = re.compile(
-    r"^\s*[,;:()\[\]-]*(?:(?:then|and)\s+)?[,;:()\[\]-]*\s*$",
+    rf"^{watch_gap('then|and|only')}$",
     re.IGNORECASE,
 )
 WATCH_GUARD_AFTER_ACTION_GAP_RE = re.compile(
-    r"^\s*[,;:()\[\]-]*(?:only|then|and)?[,;:()\[\]-]*\s*$",
+    rf"^{watch_gap('only|then|and|but')}$",
     re.IGNORECASE,
 )
 WATCH_STATUS_GUARD_AFTER_ACTION_GAP_RE = re.compile(
-    rf"^\s*(?:when|if|while)\s+{WATCH_STATUS_CONDITION}"
-    r"\s*[,;:-]*\s*(?:but\s+)?(?:only\s*)?$",
+    rf"^{WATCH_GAP_CHARS}*{watch_token('when|if|while')}\s+"
+    rf"{WATCH_STATUS_CONDITION}{watch_gap('but|only|and|then')}$",
     re.IGNORECASE,
 )
+WATCH_GUARD_PREFIX_RE = re.compile(watch_gap("then|and|only"), re.IGNORECASE)
 MARKDOWN_LIST_ITEM = re.compile(
     r"^(?P<prefix>[ \t>]*)(?:[-*+]|\d+[.)]) "
 )
+MARKDOWN_TABLE_ROW = re.compile(r"^[ \t>]*\|.*\|[ \t]*$")
+MARKDOWN_TABLE_DELIMITER = re.compile(r"^[ \t>]*\|[\s:|-]*\|[ \t]*$")
 
 
 def markdown_section(body: str, heading: str) -> str:
@@ -432,7 +497,13 @@ def markdown_watch_clauses(body: str) -> list[tuple[str, int]]:
 
     for line_number, line in enumerate(body.splitlines(), start=1):
         item = MARKDOWN_LIST_ITEM.match(line)
-        if item is not None:
+        if MARKDOWN_TABLE_ROW.match(line) is not None:
+            # A table row is ONE clause. Its cell bars must not sever it, or the
+            # check goes structurally inert inside every watch-policy table.
+            flush()
+            if MARKDOWN_TABLE_DELIMITER.match(line) is None:
+                blocks.append((line.strip(), line_number))
+        elif item is not None:
             flush()
             current = [line[item.end():].strip()]
             current_line = line_number
@@ -448,15 +519,18 @@ def markdown_watch_clauses(body: str) -> list[tuple[str, int]]:
     for block, line_number in blocks:
         clauses.extend(
             (clause.strip(), line_number)
-            for clause in re.split(r"(?<=[.!?;|])\s+", block)
+            for clause in re.split(r"(?<=[.!?;])\s+", block)
             if clause.strip()
         )
     return clauses
 
 
 def watch_action_is_quoted(clause: str, action: re.Match[str]) -> bool:
+    # `<=` on both ends, not `<`: the action's own markup edges may now consume
+    # the quotation's opening delimiter, so a fully quoted action starts exactly
+    # where its quotation does. Containment is what excuses it, either way.
     return any(
-        quoted.start() < action.start() and action.end() <= quoted.end()
+        quoted.start() <= action.start() and action.end() <= quoted.end()
         for quoted in WATCH_QUOTED_SPAN_RE.finditer(clause)
     )
 
@@ -473,11 +547,7 @@ def watch_action_is_negated(clause: str, action: re.Match[str]) -> bool:
 def watch_guard_prefix_is_conditional(clause: str, guard: re.Match[str]) -> bool:
     prefix = clause[:guard.start()]
     prefix = WATCH_STATUS_CONDITION_RE.sub("", prefix)
-    return re.fullmatch(
-        r"\s*[,;:()\[\]-]*(?:(?:then|and|only)\s+)?[,;:()\[\]-]*\s*",
-        prefix,
-        re.IGNORECASE,
-    ) is not None
+    return WATCH_GUARD_PREFIX_RE.fullmatch(prefix) is not None
 
 
 def watch_action_has_true_warrant_guard(
@@ -681,6 +751,70 @@ def run_watch_action_fixtures() -> None:
         ("separate-list-items", "- CI status is pending\n- Keep a watch.", False),
         ("separate-sentences", "CI status is pending. Keep a watch.", False),
         ("same-list-item", "- CI status is pending and keep a watch.", True),
+        # Gap content, not markup form: the guard-to-action and action-to-guard
+        # gaps carry arrows, dashes and more than one connective.
+        (
+            "arrow-guard-to-action-gap",
+            "When `liveness` reports `watch_warranted` → ensure a watch while "
+            "CI status is pending.",
+            False,
+        ),
+        (
+            "ascii-arrow-guard-to-action-gap",
+            "When `liveness` reports `watch_warranted` -> ensure a watch while "
+            "CI status is pending.",
+            False,
+        ),
+        (
+            "multi-connective-action-to-guard-gap",
+            "Ensure a watch when CI status is pending, and only if returned "
+            "watch_warranted is true.",
+            False,
+        ),
+        (
+            "em-dash-status-terminator",
+            "`ci` is `pending`—ensure a watch.",
+            True,
+        ),
+        (
+            "non-adjacent-negation-after-action",
+            "To ensure a watch when CI status is pending is unnecessary.",
+            False,
+        ),
+        # A table row is one clause; its cell bars must not sever the condition
+        # from the action, or the check goes inert inside watch-policy tables.
+        (
+            "table-row-condition-and-action",
+            "| condition | policy |\n|---|---|\n"
+            "| When `ci` is `pending` | ensure a live watch |",
+            True,
+        ),
+        (
+            "table-row-guarded-action",
+            "| condition | policy |\n|---|---|\n"
+            "| When `ci` is `pending` | ensure a live watch only when "
+            "`liveness` reports `watch_warranted` |",
+            False,
+        ),
+        (
+            "table-delimiter-row-is-not-a-clause",
+            "| CI status is pending | keep a watch |\n|---|---|",
+            True,
+        ),
+        # ...and one clause per row, not one clause per table: a condition in
+        # one row must not bind to an action in another.
+        (
+            "separate-table-rows",
+            "| verdict | policy |\n|---|---|\n"
+            "| `ci` is `pending` | wait for the liveness bounds |\n"
+            "| `red` | keep a watch |",
+            False,
+        ),
+        # The quotation excuse must survive the action's own markup edges in
+        # both directions: a wholly quoted action stays excused, and a merely
+        # marked-up object does not become a quotation.
+        ("code-span-quoted-action", "CI status is pending, `keep a watch`.", False),
+        ("code-span-action-object", "`ci` is `pending`, ensure a `watch`.", True),
     )
     for name, fixture, expected in parser_fixtures:
         with tempfile.TemporaryDirectory(dir=fixture_parent) as temporary:
@@ -690,6 +824,95 @@ def run_watch_action_fixtures() -> None:
             found = bool(check_status_watch_maintenance_docs(fixture_root))
             require(found is expected,
                     f"{name} status-based watch maintenance fixture had the wrong result")
+
+    run_watch_markup_grid_fixtures(fixture_parent)
+
+
+def run_watch_markup_grid_fixtures(fixture_parent: Path) -> None:
+    """Sweep every token position against every inline-markup form.
+
+    A FLAT list of sentences is what let the guard-before/guard-after asymmetry
+    survive four review rounds: one missing markup tolerance shows up as a false
+    NEGATIVE at an accuse position and a false POSITIVE at an excuse position,
+    so a list that happens to spell one position plainly proves nothing about
+    the other. The grid forces both directions at every position.
+    """
+    markup_forms = (
+        ("plain", "{}"),
+        ("code", "`{}`"),
+        ("bold", "**{}**"),
+        ("italic", "*{}*"),
+        ("underscore", "_{}_"),
+        ("strikethrough", "~~{}~~"),
+        ("code-in-bold", "**`{}`**"),
+        ("code-in-italic", "*`{}`*"),
+    )
+    # (position, token, clause template with one slot, expected to be flagged)
+    token_positions = (
+        # Accuse path: the marked-up token must still be recognised, or a real
+        # anti-pattern escapes.
+        ("condition-field", "ci", "{} is pending, ensure a watch.", True),
+        ("condition-field-phrase", "ci status",
+         "{} is pending, ensure a watch.", True),
+        ("condition-copula", "is", "`ci` {} pending, ensure a watch.", True),
+        ("condition-value", "pending", "`ci` is {}, ensure a watch.", True),
+        ("condition-whole", "ci = pending", "{}, ensure a watch.", True),
+        ("active-verb", "ensure", "`ci` is `pending`, {} a watch.", True),
+        ("active-object", "watch", "`ci` is `pending`, ensure a {}.", True),
+        ("active-filler", "live", "`ci` is `pending`, ensure a {} watch.", True),
+        ("passive-object", "watch",
+         "`ci` is `pending`, a {} should be maintained.", True),
+        ("passive-verb", "maintained",
+         "`ci` is `pending`, a watch should be {}.", True),
+        # Excuse path: the same marked-up token must still be recognised, or a
+        # correct sentence is flagged.
+        ("guard-introducer", "When",
+         "{} `watch_warranted` is `true`, ensure a watch when CI status "
+         "is pending.", False),
+        ("guard-introducer-provided", "provided",
+         "Ensure a watch when CI status is pending, {} returned "
+         "watch_warranted is true.", False),
+        ("guard-reporter", "liveness",
+         "Ensure a watch when CI status is pending only when {} reports "
+         "`watch_warranted`.", False),
+        ("guard-reporter-verb", "reports",
+         "Ensure a watch when CI status is pending only when `liveness` {} "
+         "`watch_warranted`.", False),
+        ("guard-token", "watch_warranted",
+         "Ensure a watch when CI status is pending only when `liveness` "
+         "reports {}.", False),
+        ("guard-copula", "is",
+         "Ensure a watch when CI status is pending only when returned "
+         "watch_warranted {} true.", False),
+        ("guard-true", "true",
+         "Ensure a watch when CI status is pending only when returned "
+         "watch_warranted is {}.", False),
+        ("guard-to-action-connective", "then",
+         "When `watch_warranted` is `true`, {} ensure a watch when CI status "
+         "is pending.", False),
+        ("action-to-guard-connective", "and",
+         "Ensure a watch when CI status is pending, {} only when returned "
+         "watch_warranted is true.", False),
+        ("negator-before-action", "Never",
+         "{} ensure a watch when CI status is pending.", False),
+        ("negator-after-copula", "is",
+         "When CI status is pending, to ensure a watch {} unnecessary.", False),
+        ("negator-after-word", "unnecessary",
+         "When CI status is pending, to ensure a watch is {}.", False),
+    )
+    for position, token, template, expected in token_positions:
+        for form_name, form in markup_forms:
+            clause = template.format(form.format(token))
+            with tempfile.TemporaryDirectory(dir=fixture_parent) as temporary:
+                fixture_root = Path(temporary) / "campaign"
+                fixture_root.mkdir()
+                (fixture_root / "fixture.md").write_text(
+                    clause + "\n", encoding="utf-8"
+                )
+                found = bool(check_status_watch_maintenance_docs(fixture_root))
+                require(found is expected,
+                        f"{position}/{form_name} watch markup grid cell had the "
+                        f"wrong result: {clause!r}")
 
 
 def require_rejected(callback, expected: str, message: str) -> None:
