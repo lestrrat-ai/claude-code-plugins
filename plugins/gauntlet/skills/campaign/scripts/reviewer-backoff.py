@@ -126,9 +126,18 @@ REFUSAL_MARKERS = (
     "can't assist",
     "cannot assist",
     "won't help",
-    "able to help",
-    "able to assist",
-    "provide assistance",
+    # Every refusal marker must carry its own negation. A positive stem like `able to help` matches
+    # both "I am able to help" and "I'm unable to help with that", so it cannot tell a refusal from
+    # ordinary prose, and a manufactured refusal ends autonomous handling with stop-and-ask.
+    "unable to help",
+    "not able to help",
+    "unable to assist",
+    "not able to assist",
+    "unable to provide assistance",
+    "not able to provide assistance",
+    "cannot provide assistance",
+    "can't provide assistance",
+    "won't provide assistance",
     "decline",
     "refusal",
     "refused",
@@ -151,9 +160,18 @@ PERMANENT_MARKERS = (
 )
 
 
+# Markers that are a line-leading banner rather than a phrase. `usage:` identifies a CLI help dump
+# only when it opens a line; anywhere else it is ordinary telemetry prose (`token usage: 41234`,
+# `memory usage: 82%`), and matching that would classify permanent and disable the external reviewer
+# for the whole session.
+_LINE_ANCHORED_MARKERS = frozenset({"usage:"})
+
+
 def _marker_pattern(marker: str) -> re.Pattern[str]:
     if marker.isdigit():
         return re.compile(rf"(?<![\w.]){re.escape(marker)}(?![\w.])", re.IGNORECASE)
+    if marker in _LINE_ANCHORED_MARKERS:
+        return re.compile(rf"(?m)^[ \t]*{re.escape(marker)}", re.IGNORECASE)
     return re.compile(re.escape(marker), re.IGNORECASE)
 
 
@@ -410,7 +428,10 @@ def _is_status_value(text: str, start: int, end: int) -> bool:
 
     ``503`` in ``service unavailable: 503`` is a status, not a delay: the transient marker explains
     the whole token while the timer detector explains only part of it, so the longer claim wins.
-    Value PARSING never consults this — a genuinely parsed ``retry after 503 seconds`` stays a timer.
+    A UNIT is what separates the two readings, so both stages consult this. Value PARSING consults it
+    for a UNITLESS value only: ``retry after 429`` names no unit, so its ``429`` is the status the
+    transient list already explains, and `_scan_timers` suppresses that span outright. A unit-bearing
+    ``retry after 503 seconds`` states a delay and stays a timer.
     """
 
     match = _STATUS_VALUE_RE.match(text, start)
@@ -420,6 +441,11 @@ def _is_status_value(text: str, start: int, end: int) -> bool:
 def _scan_timers(text: str, now: datetime) -> _TimerScan:
     parsed: list[_TimerCandidate] = []
     attempts: list[tuple[int, int]] = []
+    # Spans a status token owns: neither a timer nor a broken one. Suppressing the span, rather than
+    # only dropping the candidate, is load-bearing. `ABSOLUTE_TIMER_PREFIX_RE` would otherwise read
+    # `retry after 42` out of `retry after 429` and register a malformed-timer attempt, which is
+    # permanent and disables the external reviewer for the session — worse than the timer it fixes.
+    status_spans: list[tuple[int, int]] = []
     seen_spans: set[tuple[int, int]] = set()
     relative = list(RETRY_AFTER_RE.finditer(text)) + list(DURATION_RE.finditer(text))
     for match in sorted(relative, key=lambda item: item.start()):
@@ -427,6 +453,11 @@ def _scan_timers(text: str, now: datetime) -> _TimerScan:
         if span in seen_spans:
             continue
         seen_spans.add(span)
+        if match.groupdict().get("unit") is None and _is_status_value(
+            text, match.start("value"), match.end("value")
+        ):
+            status_spans.append(span)
+            continue
         try:
             delay = int(match.group("value")) * _unit_seconds(match.groupdict().get("unit"))
             retry_at = (_utc(now) + timedelta(seconds=delay)).astimezone(now.tzinfo)
@@ -447,14 +478,15 @@ def _scan_timers(text: str, now: datetime) -> _TimerScan:
         ))
 
     valid_spans = [(candidate.start, candidate.end) for candidate in parsed]
+    claimed_spans = valid_spans + status_spans
     for match in TIMER_ATTEMPT_RE.finditer(text):
-        if any(start <= match.start() < end for start, end in valid_spans):
+        if any(start <= match.start() < end for start, end in claimed_spans):
             continue
         if _is_status_value(text, match.start("value"), match.end("value")):
             continue
         attempts.append(match.span())
     for match in ABSOLUTE_TIMER_PREFIX_RE.finditer(text):
-        if any(start <= match.start() < end for start, end in valid_spans):
+        if any(start <= match.start() < end for start, end in claimed_spans):
             continue
         attempts.append(match.span())
     return _TimerScan(tuple(parsed), tuple(attempts))
@@ -686,9 +718,11 @@ def classify(message: str, now: datetime | None = None) -> ExternalReviewFailure
     must match that zone's valid offset for the target local time.
 
     Text is a broken timer only when a retry, reset, or availability word actually INTRODUCES A VALUE
-    (`TIMER_ATTEMPT_RE`), and a value token that is itself a live digit transient marker is a status
-    rather than a delay (`_is_status_value`). A trigger word that introduces nothing keeps the class
-    its own markers give it.
+    (`TIMER_ATTEMPT_RE`). A value token that is itself a live digit transient marker is a status
+    rather than a delay (`_is_status_value`), and that holds at BOTH stages: a value carrying no unit
+    is suppressed even when the timer regexes parsed it, so `retry after 429` yields neither a timer
+    nor a broken one and the transient marker keeps the class. A trigger word that introduces nothing
+    keeps the class its own markers give it.
     """
 
     if not isinstance(message, str):

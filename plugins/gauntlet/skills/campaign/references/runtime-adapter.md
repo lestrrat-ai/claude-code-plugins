@@ -210,8 +210,11 @@ Text is a timer attempt at all only when a retry, reset, or availability word ac
 value: a digit, a time-unit word, or a month name must follow it, with at most one intervening
 token, optionally through a connector such as `after` or `in` or through a colon. A connector or a
 colon on its own is NOT a value, so `service unavailable at this time` is not a broken timer. A value
-token that is itself a live digit transient marker is a status rather than a delay, so `retry: 429`
-is not one either. That one-token window is arbitrary and load-bearing — it is what separates
+token that carries NO time unit and is itself a live digit transient marker is a status rather than a
+delay, and that holds whether or not the timer text otherwise reads as complete: `retry: 429` is not a
+broken timer, and `retry after 429` is not a valid one either. Both keep the class their own markers
+give them, `transient` here. A stated unit settles the reading the other way, so `retry after 503
+seconds` is a timer of 503 seconds. That one-token window is arbitrary and load-bearing — it is what separates
 `retry after never seconds`, a broken timer that fails closed, from `try again in a few minutes`,
 ordinary prose — and fixtures pin both sides of it. A trigger word that introduces nothing, as in
 `please try again`, never reaches that `permanent` precedence: the message keeps the class its own

@@ -918,7 +918,7 @@ def test_reviewer_refusal_stops_and_asks() -> None:
 def test_reviewer_refusal_precedes_other_markers() -> None:
     now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
     for message in (
-        "I can't assist with that. usage: codex exec [OPTIONS] [PROMPT]",
+        "I can't assist with that.\nusage: codex exec [OPTIONS] [PROMPT]",
         "Sorry, I can't provide assistance with that. Please try again with a different request.",
         "I must decline; retry after 90 seconds is not applicable here.",
     ):
@@ -927,6 +927,44 @@ def test_reviewer_refusal_precedes_other_markers() -> None:
               f"another marker outranked the reviewer refusal: {message!r}")
         check(result.action == MODULE.STOP_AND_ASK,
               f"refusal with a competing marker did not stop and ask: {message!r}")
+
+
+def test_positive_capability_wording_is_not_a_refusal() -> None:
+    """Prose that says the reviewer COULD help must never manufacture a refusal or a dead route."""
+
+    now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    for message in (
+        "I am able to help with this review",
+        "the assistant was able to assist and finished the review",
+        "happy to provide assistance",
+        "token usage: 41234",
+        "memory usage: 82%",
+    ):
+        result = MODULE.decide(message, now=now, pr_number=188)
+        check(result.kind != MODULE.REFUSAL,
+              f"positive wording was read as a reviewer refusal: {message!r}")
+        check(result.kind != MODULE.PERMANENT,
+              f"neutral wording was read as a permanent failure: {message!r}")
+        check(result.state.external_disabled is False,
+              f"neutral wording disabled the session route: {message!r}")
+
+
+def test_negated_capability_wording_is_still_a_refusal() -> None:
+    """The negation is what the marker must carry, so every negated form still reaches the operator."""
+
+    now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    for message in (
+        "I'm unable to help with that",
+        "I am not able to help with that",
+        "I am not able to assist with this request",
+        "unable to provide assistance",
+        "I won't provide assistance here",
+    ):
+        result = MODULE.decide(message, now=now, pr_number=188)
+        check(result.kind == MODULE.REFUSAL,
+              f"a negated refusal form was not classified: {message!r}")
+        check(result.action == MODULE.STOP_AND_ASK,
+              f"a negated refusal form did not stop and ask: {message!r}")
 
 
 def test_reviewer_refusal_after_retry_still_stops_and_asks() -> None:
@@ -1124,12 +1162,35 @@ def test_status_code_after_a_trigger_word_is_not_a_timer_value() -> None:
         "connection reset: 503",
         "retry: 429",
         "too many requests; retry: 429",
+        "rate limited; retry after 429",
+        "retry after 429",
+        "retry after 503",
+        "retry-after: 502",
+        "retry after 504",
     ):
         result = MODULE.decide(message, now=now, pr_number=188)
         check(result.kind == MODULE.TRANSIENT,
               f"a status code was read as a broken timer value: {message!r}")
         check(result.state.external_disabled is False,
               f"a status code disabled the session route: {message!r}")
+
+
+def test_unit_bearing_timer_survives_the_status_value_rule() -> None:
+    """The status rule keys on a MISSING unit, so a stated unit must still yield the exact delay."""
+
+    now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    for message, delay in (
+        ("retry after 503 seconds", 503),
+        ("retry after 429 seconds", 429),
+        ("retry after 30", 30),
+        ("retry after 1429", 1429),
+        ("http 429; retry after 60 seconds", 60),
+    ):
+        result = MODULE.decide(message, now=now, pr_number=188)
+        check(result.kind == MODULE.TIMER,
+              f"the status value rule swallowed a real timer: {message!r}")
+        check(result.retry_after_seconds == delay,
+              f"a surviving timer lost the provider delay: {message!r}")
 
 
 def test_free_standing_retry_word_without_a_value_keeps_the_transient_class() -> None:
@@ -1334,6 +1395,8 @@ CASES = [
     ("zero-delay-timer", "zero-delay timer retries immediately", test_zero_delay_timer_retries_immediately),
     ("refusal-stop-and-ask", "reviewer refusal stops and asks the operator", test_reviewer_refusal_stops_and_asks),
     ("refusal-marker-precedence", "refusal precedes permanent and timer markers", test_reviewer_refusal_precedes_other_markers),
+    ("positive-wording-not-refusal", "positive capability wording is not a reviewer refusal", test_positive_capability_wording_is_not_a_refusal),
+    ("negated-wording-still-refusal", "negated capability wording still stops and asks", test_negated_capability_wording_is_still_a_refusal),
     ("refusal-after-retry", "spent retry never downgrades a refusal to fallback", test_reviewer_refusal_after_retry_still_stops_and_asks),
     ("refusal-keeps-backoff", "refusal preserves an active session deadline", test_reviewer_refusal_preserves_active_session_backoff),
     ("refusal-missing-pr", "refusal without a PR number still stops and asks", test_reviewer_refusal_without_pr_still_stops_and_asks),
@@ -1344,6 +1407,7 @@ CASES = [
     ("refusal-survives-timer-attempt", "a timer attempt never swallows refusal wording", test_refusal_wording_survives_a_longer_timer_attempt),
     ("valueless-trigger-transient", "a valueless trigger word keeps the transient class", test_trigger_word_without_a_value_keeps_the_transient_class),
     ("status-code-not-timer-value", "a status code after a trigger word is not a timer value", test_status_code_after_a_trigger_word_is_not_a_timer_value),
+    ("unit-bearing-timer-survives", "a unit-bearing timer survives the status value rule", test_unit_bearing_timer_survives_the_status_value_rule),
     ("valueless-retry-word-transient", "a free-standing valueless retry word keeps the transient class", test_free_standing_retry_word_without_a_value_keeps_the_transient_class),
     ("timer-not-poisoned", "a valueless trigger word never poisons a valid timer", test_valueless_trigger_word_never_poisons_a_valid_timer),
     ("valueless-trigger-unrecognized", "a valueless trigger word without a marker stays unrecognized", test_valueless_trigger_word_without_a_marker_stays_unrecognized),
