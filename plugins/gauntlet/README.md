@@ -74,7 +74,9 @@ That contract permits one retry for transient failures. A valid timer waits at t
 only while the retry is unspent and the current time is before that deadline; after the retry is spent,
 native fallback is immediate while session backoff is retained for other launches. Malformed or unsupported
 timer text is permanent and disables the external route for this session before native fallback. Opaque or
-unrecognized typed failure kinds use native fallback without disabling the route.
+unrecognized typed failure kinds use native fallback without disabling the route. A reviewer that refuses
+the task outright is never recovered automatically: the campaign stops that PR and tells you, because
+falling back would hand the review to the same engine that is driving the campaign.
 Session backoff and disabled state are never durable. The retry uses the same full review contract and process
 command; only the mapped Codex recovery
 profile adds repository-maintenance framing. It never resumes the failed session or requires a model

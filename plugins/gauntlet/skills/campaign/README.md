@@ -238,7 +238,10 @@ never the place to look them up.
   current time is before that deadline; after the retry is spent, native fallback is immediate while session
   backoff is retained for other launches. Permanent failures, including malformed or unsupported timer text,
   go to native fallback and disable the external route for this session. Opaque or unrecognized typed failure
-  kinds use native fallback without disabling it. Session backoff and disabled state are never durable. The
+  kinds use native fallback without disabling it. A reviewer that refuses the task outright is never
+  recovered automatically: the campaign stops that PR and tells you, because falling back would review the
+  code with the same engine that is driving the campaign and quietly cost you the second opinion.
+  Session backoff and disabled state are never durable. The
   retry uses the same complete review contract and process command; only the
   mapped Codex recovery profile adds repository-maintenance framing. It never resumes the failed session
   or requires a model switch. Campaign therefore runs with or without the other engine. The fallback uses

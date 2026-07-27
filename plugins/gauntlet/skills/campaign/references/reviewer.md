@@ -124,23 +124,29 @@ attempt-scoped prompt artifact.** Never pass the prompt as a command argument an
 the former puts untrusted bytes at the wrong boundary, while the latter can stay open forever.
 
 An external reviewer can fail in a way that yields **no usable verdict**: quota/rate-limit
-exhaustion, auth failures, timeouts, or other system errors. Distinguish this from a real review — a
+exhaustion, auth failures, timeouts, other system errors, or a refusal to perform the task at all.
+Distinguish this from a real review — a
 run that returns an actual finding list or a `VERDICT: …` line is a *result*, act on it. A *failure*
 is the absence of a verdict.
 
 **Before any retry or fallback, classify the captured external-process failure through
 `runtime-adapter.md`, "Review failure classification and session backoff".** The helper returns
-`transient`, `timer`, `permanent`, or `unrecognized`; permanent markers and malformed or unsupported
-timer text are permanent, while opaque text is unrecognized. Apply the returned transition: transient
+`transient`, `timer`, `permanent`, `refusal`, or `unrecognized`; permanent markers and malformed or unsupported
+timer text are permanent, a reviewer that declined the task on content or policy grounds is a refusal, and
+opaque text is unrecognized. Apply the returned transition: transient
 failures may spend the one retry. A valid timer waits for the exact provider deadline only while the retry
 is unspent and the current time is before that deadline; after the retry is spent, fall back immediately
 while retaining session backoff for other launches. Permanent failures, including malformed or unsupported
 timer text, disable that external route for this session, and opaque or unrecognized failures use native
-fallback without disabling the external route.
+fallback without disabling the external route. **A refusal is the one failure that never recovers on its
+own**: it returns `stop-and-ask`, so report the refusal and the PR under review to the operator and stop
+there. Never retry it and never let it fall back to the same-engine native reviewer — that would drop the
+engine diversity the gate relies on without anyone being told. The refusal marker set is deliberately not
+exhaustive, so refusal wording it does not match arrives as `unrecognized` and takes the native fallback.
 The paired CLI absence is a pre-launch capability miss and takes native fallback without a retry. Keep
 the session backoff state in memory only; never write it to campaign artifacts.
-Note in the final report which cross-engine routes were unavailable and which passes used the recovery
-profile or ran on the native-worker fallback. The gate is unchanged: a worker pass is a fresh,
+Note in the final report which cross-engine routes were unavailable, which passes used the recovery
+profile or ran on the native-worker fallback, and every reviewer refusal that stopped a PR for the operator. The gate is unchanged: a worker pass is a fresh,
 context-isolated re-roll that counts toward the review gate exactly like an external pass. The runtime
 owner defines the native limitations and the only machine-blocker transition; do not restate them here.
 

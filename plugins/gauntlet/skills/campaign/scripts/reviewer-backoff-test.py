@@ -894,6 +894,83 @@ def test_zero_delay_timer_retries_immediately() -> None:
           "zero-delay timer was not an immediate retry")
 
 
+def test_reviewer_refusal_stops_and_asks() -> None:
+    """A content/safety refusal must reach the operator, never a silent same-engine fallback."""
+
+    now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    for message in (
+        "I'm sorry, but I can't help with that.",
+        "ERROR: I'm unable to assist with a request of this kind.",
+        "codex: turn aborted: refusal",
+        "The reviewer declined this task on policy grounds.",
+        "response blocked: safety policy violation",
+    ):
+        result = MODULE.decide(message, now=now, pr_number=188)
+        check(result.kind == MODULE.REFUSAL, f"reviewer refusal was not classified: {message!r}")
+        check(result.action == MODULE.STOP_AND_ASK,
+              f"reviewer refusal did not stop and ask: {message!r}")
+        check(not result.state.external_disabled,
+              f"reviewer refusal disabled the session route: {message!r}")
+        check(result.state.external_backoff_until is None,
+              f"reviewer refusal stored a session deadline: {message!r}")
+
+
+def test_reviewer_refusal_precedes_other_markers() -> None:
+    now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    for message in (
+        "I can't assist with that. usage: codex exec [OPTIONS] [PROMPT]",
+        "Sorry, I can't provide assistance with that. Please try again with a different request.",
+        "I must decline; retry after 90 seconds is not applicable here.",
+    ):
+        result = MODULE.decide(message, now=now, pr_number=188)
+        check(result.kind == MODULE.REFUSAL,
+              f"another marker outranked the reviewer refusal: {message!r}")
+        check(result.action == MODULE.STOP_AND_ASK,
+              f"refusal with a competing marker did not stop and ask: {message!r}")
+
+
+def test_reviewer_refusal_after_retry_still_stops_and_asks() -> None:
+    now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    result = MODULE.decide(
+        "I'm sorry, but I can't help with that.", retry_spent=True, now=now, pr_number=188
+    )
+    check(result.action == MODULE.STOP_AND_ASK,
+          "spent retry turned a reviewer refusal into a native fallback")
+
+
+def test_reviewer_refusal_preserves_active_session_backoff() -> None:
+    now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    deadline = datetime(2026, 7, 25, 12, 5, tzinfo=timezone.utc)
+    state = MODULE.SessionState(False, deadline, "retry after 300 seconds", 188)
+    result = MODULE.transition(
+        MODULE.Failure(MODULE.REFUSAL, None, None, "refusal marker: decline"),
+        now=now,
+        state=state,
+        pr_number=188,
+    )
+    check(result.action == MODULE.STOP_AND_ASK,
+          "active session backoff swallowed a reviewer refusal")
+    check(result.state.external_backoff_until == deadline,
+          "reviewer refusal changed the active session deadline")
+    check(result.state.external_backoff_timer_id == "retry after 300 seconds",
+          "reviewer refusal changed the active timer owner")
+
+
+def test_cli_reports_reviewer_refusal() -> None:
+    payload = run_cli(
+        "decide",
+        "--message",
+        "I'm sorry, but I can't help with that.",
+        "--now",
+        "2026-07-25T12:00:00Z",
+        "--pr",
+        "188",
+    )
+    check(payload["kind"] == MODULE.REFUSAL, "CLI did not report the refusal kind")
+    check(payload["action"] == MODULE.STOP_AND_ASK, "CLI did not report the stop-and-ask action")
+    check(payload["external_disabled"] is False, "CLI refusal disabled the session route")
+
+
 CASES = [
     ("absolute-provider-timezone", "absolute reset uses provider timezone", test_absolute_timer_uses_provider_timezone),
     ("absolute-at-on-connectors", "absolute timers accept at/on connectors", test_absolute_timer_accepts_at_and_on_connectors),
@@ -954,6 +1031,11 @@ CASES = [
     ("initial-timer-missing-pr", "initial timer without a PR owner is never stored", test_initial_timer_without_pr_fails_closed_before_storage),
     ("ownerless-state", "ownerless session state fails closed before cross-PR use", test_ownerless_state_fails_closed_before_cross_pr_use),
     ("zero-delay-timer", "zero-delay timer retries immediately", test_zero_delay_timer_retries_immediately),
+    ("refusal-stop-and-ask", "reviewer refusal stops and asks the operator", test_reviewer_refusal_stops_and_asks),
+    ("refusal-marker-precedence", "refusal precedes permanent and timer markers", test_reviewer_refusal_precedes_other_markers),
+    ("refusal-after-retry", "spent retry never downgrades a refusal to fallback", test_reviewer_refusal_after_retry_still_stops_and_asks),
+    ("refusal-keeps-backoff", "refusal preserves an active session deadline", test_reviewer_refusal_preserves_active_session_backoff),
+    ("cli-refusal", "CLI reports the refusal kind and stop-and-ask action", test_cli_reports_reviewer_refusal),
 ]
 
 

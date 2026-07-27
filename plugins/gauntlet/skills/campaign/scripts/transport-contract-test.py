@@ -759,7 +759,7 @@ def check_document_contract() -> None:
         "ExternalReviewFailure",
         "ExternalReviewSessionState",
         "reviewer-backoff.py",
-        'kind: "transient" | "timer" | "permanent" | "unrecognized"',
+        'kind: "transient" | "timer" | "permanent" | "refusal" | "unrecognized"',
         "retry_after_seconds: NonNegativeInt | null",
         "external_backoff_until: Timestamp | null",
         "external_backoff_timer_id: Text | null",
@@ -778,6 +778,7 @@ def check_document_contract() -> None:
         "selected cross-engine route, paired CLI available, and session state clear | `launch-external`",
         "external failure classified `timer`, retry not spent, and `now` is before its deadline | `wait-external`",
         "external failure classified `permanent` | set session `external_disabled`",
+        "external failure classified `refusal` | `stop-and-ask`",
         "external failure classified `unrecognized` | use `fallback-native` without setting session `external_disabled`",
         "timer transition without the current positive PR number, including initial empty state | treat as malformed",
         "numeric offset that is invalid for",
@@ -794,6 +795,7 @@ def check_document_contract() -> None:
         "| `retry-external` + `external-claude` | `external-claude` | "
         "`external-process-capture` | `standard` |",
         "| `wait-external` | no preparation | no preparation | no preparation |",
+        "| `stop-and-ask` | no preparation | no preparation | no preparation |",
         "| `launch-native` / `fallback-native` | `native` | `native-worker-write` | `standard` |",
         "dead or unusable attempt `3` → `park-machine-blocker`",
         'prompt_profile: "standard" | "codex-recovery"',
@@ -840,6 +842,8 @@ def check_document_contract() -> None:
     reviewer_flat = " ".join(reviewer.split())
     require("Before any retry or fallback, classify the captured external-process failure" in reviewer_flat and
             "unrecognized failures use native fallback without disabling the external route" in reviewer_flat and
+            "refusal is the one failure that never recovers on its own" in reviewer_flat and
+            "it returns `stop-and-ask`" in reviewer_flat and
             "never chooses a prompt profile from provider error text" in reviewer_flat and
             "never resumes the failed external session" in reviewer_flat and
             "does not require a model switch" in reviewer_flat,

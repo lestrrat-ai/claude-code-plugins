@@ -161,7 +161,7 @@ provider text never selects a route, profile, model, or argv member.
 
 ```text
 ExternalReviewFailure {
-  kind: "transient" | "timer" | "permanent" | "unrecognized",
+  kind: "transient" | "timer" | "permanent" | "refusal" | "unrecognized",
   retry_after_seconds: NonNegativeInt | null,
   retry_at: Timestamp | null,
   reason: Text,
@@ -184,7 +184,11 @@ ReviewTransition {
 The classifier recognizes non-negative whole-second relative provider delays such as `retry after 90
 seconds` and `available in 90 seconds`, plus absolute provider reset timestamps such as `resets Jul 27,
 9pm (Asia/Tokyo)`. Construct an absolute timestamp in the provider-named timezone, then calculate elapsed
-time with timezone-aware arithmetic. Permanent markers take precedence over timers and transient markers;
+time with timezone-aware arithmetic. Refusal markers take precedence over every other marker, because a
+reviewer that declined the task on content or policy grounds has not suffered a transport failure and must
+not be recovered by swapping in a same-engine native reviewer. That marker set is deliberately NOT
+exhaustive: refusal wording it does not match stays `unrecognized` and takes the disclosed native fallback.
+Permanent markers come next, taking precedence over timers and transient markers;
 valid timer text takes precedence over generic transient markers. Malformed or unsupported timer text,
 including fractional or unrepresentable delays, unknown zones, and a numeric offset that is invalid for
 the named zone at the target local time, is `permanent`. A named zone's valid offsets include both sides
@@ -222,7 +226,8 @@ review_transition(
 state=session, pr_number=pr_number)`. Replace `session` with the returned transition state before the next
 transition. The helper keeps `unrecognized` opaque failures separate from `permanent` failures:
 opaque text falls back natively without disabling the external route, while known permanent markers and
-malformed timers retain the session-disable path owned there.
+malformed timers retain the session-disable path owned there. A `refusal` is neither: it returns
+`stop-and-ask` with the session state unchanged, so the operator decides what happens next.
 
 This operation owns every route change:
 
@@ -234,17 +239,22 @@ This operation owns every route change:
 | external failure classified `timer`, retry not spent, and `now` is before its deadline | `wait-external` until the exact provider deadline; do not launch before it |
 | external failure classified `timer`, retry not spent, and `now` has reached its deadline | `retry-external` immediately |
 | external failure classified `permanent` | set session `external_disabled`, then `fallback-native` |
+| external failure classified `refusal` | `stop-and-ask`: report the reviewer's refusal and the PR it was reviewing to the operator and stop this PR's review there. Never retry, never fall back to the same-engine native reviewer, and leave session state unchanged |
 | external failure classified `unrecognized` | use `fallback-native` without setting session `external_disabled` |
 | timer transition without the current positive PR number, including initial empty state | treat as malformed, set session `external_disabled`, then `fallback-native` without storing a deadline or timer identity |
-| external failure after retry, regardless of class | `fallback-native`; preserve the helper's disable decision and retain any timer backoff for other launches in this session |
+| external failure after retry, any class except `refusal` | `fallback-native`; preserve the helper's disable decision and retain any timer backoff for other launches in this session |
 | session timer backoff is active for another PR | use `fallback-native` for that PR; do not shorten or ignore the timer |
 | native route/fallback can follow the installed contract | `launch-native` with the native limitations below |
 | native attempts cannot follow the installed contract or produce valid artifacts and their budget is exhausted | `park-machine-blocker` |
 
-`wait-external` is a session action, not a process launch: it consumes no `launch_attempt` and calls
-no `review-dispatch.py prepare`. Use the heartbeat or another bounded wait to reach the returned
+`wait-external` and `stop-and-ask` are session actions, not process launches: they consume no
+`launch_attempt` and call no `review-dispatch.py prepare`. For `wait-external`, use the heartbeat or
+another bounded wait to reach the returned
 timestamp, then re-enter this transition with the same typed failure, live session state, and current time;
-the active-deadline re-entry rule above decides whether the stored deadline is preserved. A pre-launch
+the active-deadline re-entry rule above decides whether the stored deadline is preserved.
+`stop-and-ask` instead ends the campaign's autonomous handling of that PR and waits for the operator:
+engine diversity is a property of the gate, so a reviewer that refused the task is an operator decision,
+never a silent downgrade to a same-engine reviewer. A pre-launch
 cross-engine capability miss has no process to relaunch, so it consumes no retry and takes the fresh
 native fallback immediately. A provider error does not change the policy in a later session.
 Missing native OS/startup controls alone never select `park-machine-blocker`; only actual inability to
@@ -261,6 +271,7 @@ are different enums:
 | `retry-external` + `external-codex` | `external-codex` | `external-process-capture` | `codex-recovery` |
 | `retry-external` + `external-claude` | `external-claude` | `external-process-capture` | `standard` |
 | `wait-external` | no preparation | no preparation | no preparation |
+| `stop-and-ask` | no preparation | no preparation | no preparation |
 | `launch-native` / `fallback-native` | `native` | `native-worker-write` | `standard` |
 | `park-machine-blocker` | no preparation | no preparation | no preparation |
 

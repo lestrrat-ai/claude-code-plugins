@@ -14,7 +14,7 @@ adapter; keep workflow rules shared.
 | Agent dispatch | Agent tool and configured agent types | Available Codex multi-agent controls | Describe worker scope, permissions, model class, and output; do not require a host tool name. |
 | Model selection | Claude model aliases may be available | Session model or configured Codex agents | State required capability; map named models only inside host adapter. |
 | Heartbeat/resume | `ScheduleWakeup` where available | wakes its thread where available; bounded foreground wait otherwise | Persist state before waiting and provide an exact resume path. |
-| Other-agent reviewer | Default: review with `codex exec` | Default: review with `claude -p` | Cross-engine is the default, launched at native-limitation level when the paired CLI is present. Classify failures before retry or fallback: a valid timer waits only while the retry is unspent and the current time is before its deadline; after the retry is spent, fall back immediately while retaining session backoff. Disable the external route only for permanent failures, including malformed or unsupported timer text; unrecognized failures use a fresh native worker without disabling it. Explicit or saved user choice overrides. |
+| Other-agent reviewer | Default: review with `codex exec` | Default: review with `claude -p` | Cross-engine is the default, launched at native-limitation level when the paired CLI is present. Classify failures before retry or fallback: a valid timer waits only while the retry is unspent and the current time is before its deadline; after the retry is spent, fall back immediately while retaining session backoff. Disable the external route only for permanent failures, including malformed or unsupported timer text; unrecognized failures use a fresh native worker without disabling it. A reviewer refusal never falls back — it stops and asks the operator, since the fallback would be the driving engine itself. Explicit or saved user choice overrides. |
 
 Campaign's exact cross-agent command lines live in
 [`plugins/gauntlet/skills/campaign/references/cross-agent-reviewers.md`](../plugins/gauntlet/skills/campaign/references/cross-agent-reviewers.md).
@@ -40,7 +40,9 @@ Campaign's exact cross-agent command lines live in
   that deadline; after the retry is spent, fall back immediately while retaining session backoff for other
   launches. Permanent failures, including malformed or unsupported timer text, disable that external route
   for the current session before falling back to a fresh native worker. Opaque or unrecognized failures fall
-  back to a fresh native worker without disabling that route. Session backoff is never durable.
+  back to a fresh native worker without disabling that route. A refusal never falls back: it stops and asks
+  the operator, because the native fallback runs the driving engine and would silently end cross-engine
+  review. Session backoff is never durable.
   The existing external Codex retry uses the typed `codex-recovery` prompt profile from **Review
   preparation mapping**; every other launch uses `standard`. Profiles never add attempts, resume a failed
   session, weaken the shared review contract, or require a model switch.

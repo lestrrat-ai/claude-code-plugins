@@ -730,6 +730,7 @@ def t_transition_actions_map_directly_to_prepare_inputs() -> None:
         "| `retry-external` + `external-claude` | `external-claude` | "
         "`external-process-capture` | `standard` |",
         "| `wait-external` | no preparation | no preparation | no preparation |",
+        "| `stop-and-ask` | no preparation | no preparation | no preparation |",
         "| `launch-native` / `fallback-native` | `native` | `native-worker-write` | `standard` |",
         "| `park-machine-blocker` | no preparation | no preparation | no preparation |",
     ):

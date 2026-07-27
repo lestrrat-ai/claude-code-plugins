@@ -57,7 +57,8 @@ Optional when Claude Code is the orchestrator:
   back immediately while retaining session backoff for other launches. Permanent failures, including
   malformed or unsupported timer text, disable that external route for the current session. Opaque or
   unrecognized failures fall back to a fresh native worker without disabling the route under the documented
-  native limitations.
+  native limitations. A reviewer that refuses the task outright stops that PR and reports it to you instead
+  of falling back — the fallback would review with the same engine that is driving the campaign.
   Session backoff is never durable, so the campaign runs with or without Codex. An explicit selection or
   saved preference overrides the default (you can
   force a native reviewer). Missing native filesystem/startup controls alone never park a pass.

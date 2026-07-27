@@ -26,11 +26,13 @@ SIBLING = HERE / "reviewer-backoff-test.py"
 TRANSIENT = "transient"
 TIMER = "timer"
 PERMANENT = "permanent"
+REFUSAL = "refusal"
 UNRECOGNIZED = "unrecognized"
 
 RETRY_EXTERNAL = "retry-external"
 WAIT_EXTERNAL = "wait-external"
 FALLBACK_NATIVE = "fallback-native"
+STOP_AND_ASK = "stop-and-ask"
 
 _TIMER_END = r"(?:\Z|[.;:!?]|,(?!\d))"
 _UNITLESS_TIMER_END = r"(?:\Z|[.;!?]|,(?!\d))"
@@ -105,6 +107,23 @@ TRANSIENT_MARKERS = (
     "502",
     "503",
     "504",
+)
+REFUSAL_MARKERS = (
+    "can't help",
+    "cannot help",
+    "can't assist",
+    "cannot assist",
+    "won't help",
+    "able to help",
+    "able to assist",
+    "provide assistance",
+    "decline",
+    "refusal",
+    "refused",
+    "content filter",
+    "content policy",
+    "safety policy",
+    "usage policy",
 )
 PERMANENT_MARKERS = (
     "authentication failed",
@@ -424,6 +443,10 @@ def _permanent(reason: str) -> ExternalReviewFailure:
     return ExternalReviewFailure(PERMANENT, None, None, reason)
 
 
+def _refusal(reason: str) -> ExternalReviewFailure:
+    return ExternalReviewFailure(REFUSAL, None, None, reason)
+
+
 def _unrecognized(reason: str) -> ExternalReviewFailure:
     return ExternalReviewFailure(UNRECOGNIZED, None, None, reason)
 
@@ -431,7 +454,7 @@ def _unrecognized(reason: str) -> ExternalReviewFailure:
 def _valid_failure(value: object) -> bool:
     if not isinstance(value, ExternalReviewFailure) or not isinstance(value.reason, str):
         return False
-    if value.kind in (TRANSIENT, PERMANENT, UNRECOGNIZED):
+    if value.kind in (TRANSIENT, PERMANENT, REFUSAL, UNRECOGNIZED):
         return (
             value.retry_after_seconds is None
             and value.retry_at is None
@@ -524,7 +547,11 @@ def _read_failure(path: Path) -> ExternalReviewFailure:
 def classify(message: str, now: datetime | None = None) -> ExternalReviewFailure:
     """Classify every external-process error before route selection.
 
-    Permanent markers take precedence. Valid whole-second timer text wins over transient markers;
+    Refusal markers take precedence over every other marker: a reviewer that declined the task on
+    content or policy grounds is not a transport failure, and swapping in a same-engine native
+    reviewer would silently drop the engine diversity the gate relies on. That marker set is
+    deliberately NOT exhaustive; refusal wording it does not match stays unrecognized.
+    Permanent markers come next. Valid whole-second timer text wins over transient markers;
     malformed or unsupported timer text is permanent for this session. Opaque text is unrecognized
     and falls back without disabling the external route. A numeric offset paired with a named timezone
     must match that zone's valid offset for the target local time.
@@ -539,6 +566,9 @@ def classify(message: str, now: datetime | None = None) -> ExternalReviewFailure
     if not text:
         return _permanent("external process returned no error text")
     lowered = text.lower()
+    for marker in REFUSAL_MARKERS:
+        if marker in lowered:
+            return _refusal(f"refusal marker: {marker}")
     for marker in PERMANENT_MARKERS:
         if marker in lowered:
             return _permanent(f"permanent marker: {marker}")
@@ -594,7 +624,11 @@ def transition(
     state: ExternalReviewSessionState | None = None,
     pr_number: int | None = None,
 ) -> Decision:
-    """Apply one typed failure to session state and return the next recovery action."""
+    """Apply one typed failure to session state and return the next recovery action.
+
+    A refusal never recovers automatically: it returns ``stop-and-ask`` with the session state
+    unchanged, before any retry, timer wait, or native fallback can consume it.
+    """
 
     prior = state if state is not None else ExternalReviewSessionState()
     if not _valid_state(prior):
@@ -607,7 +641,7 @@ def transition(
         pr_number = None
     elif not isinstance(failure, ExternalReviewFailure):
         failure = _permanent("external failure classification was malformed")
-    elif failure.kind not in (TRANSIENT, TIMER, PERMANENT, UNRECOGNIZED):
+    elif failure.kind not in (TRANSIENT, TIMER, PERMANENT, REFUSAL, UNRECOGNIZED):
         failure = _unrecognized("unrecognized external failure classification")
     elif not _valid_failure(failure):
         failure = _permanent("external failure classification was malformed")
@@ -617,6 +651,8 @@ def transition(
     if current is None:
         failure = _permanent("external transition had an invalid timestamp")
         current = datetime.now(timezone.utc)
+    if failure.kind == REFUSAL:
+        return _decision(STOP_AND_ASK, failure, prior, failure.reason)
     if prior.external_disabled:
         return _decision(FALLBACK_NATIVE, failure, prior, "external route is disabled for this session")
     prior_deadline_active = (
@@ -702,7 +738,7 @@ def decide(
     state: ExternalReviewSessionState | None = None,
     pr_number: int | None = None,
 ) -> Decision:
-    """Classify one failure, then return retry, exact-timer wait, or native fallback."""
+    """Classify one failure, then return retry, exact-timer wait, native fallback, or stop-and-ask."""
 
     current = now if now is not None else datetime.now(timezone.utc)
     return transition(
