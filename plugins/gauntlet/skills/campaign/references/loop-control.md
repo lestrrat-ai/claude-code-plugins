@@ -342,7 +342,7 @@ the worker returns, and what never moves into it. The steps below are unchanged 
        **stays behind** until then; it is not dropped from the run, just frozen.
      - a **TERMINAL** answer (`api_approval` = `declined`, `blocker_ruling` = `abort`) → `--status aborted`
        (terminal), via `bailout-and-final-report.md`'s abort procedure. It **never** returns to
-       `in_review`, and nothing is dispatched for it again.
+       `in_review`, and Step 3, "Dispatch due work", never dispatches anything for it again.
 
      The record and the unpark, per cause (`files-and-ledger.md`, `status`):
 

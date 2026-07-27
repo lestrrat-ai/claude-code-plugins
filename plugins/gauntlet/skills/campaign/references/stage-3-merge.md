@@ -17,8 +17,11 @@ the counters would merge a PR whose disputed finding or API change the user has 
 whose diff the reassessment pass is in the middle of rescoping. For a park, only the user's answer unparks
 it, and **to the `status` that
 answer dictates** — `in_review` for a **resume** answer; terminal `aborted` for a **terminal** one (a
-`declined` API change, a `blocker_ruling` of `abort`), which never returns to `in_review` and is never
-merged (`loop-control.md` step 3, "Only the user's answer unparks a PR", owns the mapping). Until the
+`declined` API change, a `blocker_ruling` of `abort`), which never returns to `in_review`
+(`loop-control.md` step 3, "Only the user's answer unparks a PR", owns the mapping). Campaign **never
+INITIATES a merge for such a terminal row**; a later verified external MERGED result is only RECORDED by
+the terminal-aborted follow-up (`loop-control.md` Step 4 owns that outcome and this site does not restate
+it). Until the
 answer lands the PR is skipped, never merged.
 
 ### The merge precondition — TWO enums, and NEITHER of them is a CI signal

@@ -439,11 +439,11 @@ def t_unadopted_number_stays_int():
           f"unadopted number is the verbatim int, got {res['unadopted'][0]!r}")
 
 
-# --- terminal rows: not compared at all ---------------------------------------
+# --- terminal rows: not compared against a present snapshot -------------------
 
 def t_terminal_merged_even_when_present():
     # A merged row whose PR is STILL in the snapshot (with a moved head) — the tool stays silent beyond
-    # `terminal`. Presence, absence and change are all NOT reported for a terminal row.
+    # `terminal`. Presence, absence and change are all NOT reported for a `merged` row.
     code, res, err = scenario([row(41, status="merged")], [entry(41, headRefOid=SHA_B, base="develop")])
     check(code == 0, f"exit 0, got {code} (stderr {err!r})")
     check(res["rows"]["41"] == {"terminal": "merged"},

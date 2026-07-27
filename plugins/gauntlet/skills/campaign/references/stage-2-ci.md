@@ -579,9 +579,10 @@ answers the park it was written for, and no other). Both halves, or neither hold
   unparks the PR (`loop-control.md` step 3): the tool spends the ruling and resets the liveness counters in
   one write. It refuses a `blocker_ruling` that is not a well-formed `retry@<iso>` — a bare `retry` or an
   `abort` never reaches this consume path.
-- **`abort@<iso>` is NEVER cleared.** It unparks into terminal `aborted`; a terminal row is never re-parked
-  and never re-consulted, so the ruling stays as the durable record of **why** the PR stopped
-  (`bailout-and-final-report.md`).
+- **`abort@<iso>` is NEVER cleared.** It unparks into terminal `aborted`; a terminal row is never
+  re-parked, so the ruling stays as the durable record of **why** the PR stopped
+  (`bailout-and-final-report.md`). The terminal-aborted follow-up's one live verification
+  (`loop-control.md` Step 4 owns it) neither re-parks the row nor spends the ruling.
 
 **This is what SCOPES the ruling to its park**, and it is why the clear at park **entry** is the
 load-bearing one: a ruling present on a parked row can only have been written **while THAT park was
