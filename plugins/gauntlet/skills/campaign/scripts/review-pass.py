@@ -1251,6 +1251,23 @@ def report_path(progress: Path) -> Path:
     return progress.parent / (progress.name[: -len(PROGRESS_SUFFIX)] + REPORT_SUFFIX)
 
 
+def visible_start(line: str) -> int:
+    """Index of the first character of `line` a READER CAN SEE — where a token may legitimately begin.
+
+    Tests by CATEGORY, never by a list of code points, so a character nobody has thought of yet is not a
+    new hole: `str.isspace()` covers Zs/Zl/Zp and the ASCII whitespace controls, and `not
+    str.isprintable()` covers the rest of Cc plus all of Cf (U+FEFF, U+200B–U+200F, U+2060, U+00AD,
+    U+061C, U+180E), Cs, Co and Cn. `str.lstrip()` alone is not enough: U+FEFF is Cf with
+    `isspace() == False`, so a report whose first line still carries a decoded byte-order mark keeps it
+    attached to the token — and `read_text` decodes as `utf-8`, never `utf-8-sig`, on purpose, so that
+    what the tool reads is what the file says.
+    """
+    i = 0
+    while i < len(line) and (line[i].isspace() or not line[i].isprintable()):
+        i += 1
+    return i
+
+
 def parse_report(progress: Path) -> "dict[str, str | None]":
     """Read one exact terminal result from the active attempt's report.
 
@@ -1306,12 +1323,15 @@ def parse_report(progress: Path) -> "dict[str, str | None]":
             "'VERDICT: DEFERRED — <one-line reason>'"
         )
 
-    # DETECT on the stripped line, JUDGE the original. Detection has to see an indented line, because the
-    # line is optional now: a line the detector misses is indistinguishable from one that was never written,
-    # so a malformed `RESIDUAL-RISK:` would be silently read as absent instead of refused. Everything below
-    # — the count, the placement, and `RESIDUAL_RISK_RE` — still reads the ORIGINAL unstripped line, so an
-    # indented line is detected and then refused for its shape. This is not whitespace tolerance.
-    residual_lines = [n for n, line in enumerate(lines) if line.lstrip().startswith("RESIDUAL-RISK:")]
+    # DETECT past every INVISIBLE prefix (`visible_start` owns which those are), JUDGE the original.
+    # Detection has to see a line the token does not start at column 0 of — indented, or led by a decoded
+    # byte-order mark or any other character that leaves no mark on screen — because the line is optional
+    # now: a line the detector misses is indistinguishable from one that was never written, so a malformed
+    # `RESIDUAL-RISK:` would be silently read as absent instead of refused. Everything below — the count,
+    # the placement, and `RESIDUAL_RISK_RE` — still reads the ORIGINAL unstripped line, so such a line is
+    # detected and then refused for its shape. This WIDENS refusal; it is not whitespace tolerance.
+    residual_lines = [n for n, line in enumerate(lines)
+                      if line.startswith("RESIDUAL-RISK:", visible_start(line))]
     residual: "str | None" = None
     if verdict == SATISFIED:
         if len(residual_lines) > 1:

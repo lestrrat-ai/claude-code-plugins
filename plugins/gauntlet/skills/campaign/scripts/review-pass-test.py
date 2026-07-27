@@ -789,13 +789,24 @@ class Tables:
                 "want": UNUSABLE, "needle": "residual risk must be exactly",
                 "why": "the residual-risk fields and em dash have one exact shape",
             },
-            # The line being OPTIONAL is exactly what makes this case load-bearing: a detector that only
-            # sees column 0 reads an indented line as ABSENT, so a malformed line is silently accepted
-            # instead of refused. Present-but-malformed and never-written must stay distinguishable.
+            # The line being OPTIONAL is exactly what makes these two load-bearing: a detector that only
+            # sees column 0 reads an INVISIBLY PREFIXED line as ABSENT, so a malformed line is silently
+            # accepted instead of refused. Present-but-malformed and never-written must stay
+            # distinguishable. `visible_start` in review-pass.py owns which prefixes count as invisible;
+            # these two sample it — one prefix a reader would notice as blank space, one they would not.
             "indented-residual-risk": {
                 "report": "Report body.\n  RESIDUAL-RISK: parser — hard\nVERDICT: SATISFIED\n",
                 "want": UNUSABLE, "needle": "residual risk must be exactly",
                 "why": "an indented line is present and malformed, not absent",
+            },
+            # U+FEFF is Cf, so `str.lstrip()` never removes it. Placed MID-FILE deliberately: reading the
+            # report as `utf-8-sig` would not reach this line, so the case pins the DETECTOR, not a
+            # decoding choice — `read_text` stays `utf-8` so the tool reads what the file says.
+            "bom-prefixed-residual-risk": {
+                "report": "Report body.\n\ufeffRESIDUAL-RISK: parser contract - wrong separator\n"
+                          "VERDICT: SATISFIED\n",
+                "want": UNUSABLE, "needle": "residual risk must be exactly",
+                "why": "an invisible prefix hides a malformed line from the detector, not from the report",
             },
             "misplaced-residual-risk": {
                 "report": "RESIDUAL-RISK: parser — hard\nand then more prose\nVERDICT: SATISFIED\n",
