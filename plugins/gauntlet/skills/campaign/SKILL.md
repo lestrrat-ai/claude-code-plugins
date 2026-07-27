@@ -233,9 +233,9 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
     `followups.py add`: record it the moment it is noticed, never in driver prose, which dies with the
     driver's context; recording one never discharges a finding (`references/followups.md`).
 26. Every PR merged or set aside -> run `carryover.py distill` to write the carryover ledger (it projects
-    the terminal ledger, exactly once). If a later verified MERGED result changes one already-distilled
-    aborted row, run `carryover.py reconcile-merged` for that PR before the final report. Otherwise refresh
-    the lease and reschedule.
+    the terminal ledger, exactly once); if a later verified MERGED result changes one already-distilled
+    aborted row, run `carryover.py reconcile-merged` for that PR before the final report. Then emit the
+    final report and do not reschedule. Otherwise refresh the lease and reschedule.
 
 ## Bundled Scripts
 
