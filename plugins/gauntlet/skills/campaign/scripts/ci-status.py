@@ -2730,6 +2730,13 @@ def main() -> int:
     # during promotion, or as a verdict about the PR — is a defect reported against the wrong thing.
     check_head_sha(args.head_sha)
     check_rundir(args.rundir)
+    # `--repo` IS an operator input here exactly as it is under `required-set`, and it belongs in THIS block
+    # for the reason the block exists: unvalidated, a typo'd slug is spent on a fetch that 404s, and the
+    # caller's mistake comes back as `unusable` — a VERDICT ABOUT THE PR, whose `unusable_refetches` strike
+    # then walks the row toward the refetch cap and PARKS it. Fail-closed, but reported against the wrong
+    # thing. ONE validator, called from BOTH subcommands that accept the flag.
+    if args.repo is not None:
+        check_repo(args.repo)
     # The required set is the ROW's effective set when a ledger is named (the production form); an explicit
     # `--required-set` is the pure/test path AND, with `--ledger`, an assertion. One of the two is required —
     # a derive with NEITHER would have no set to decide under, and defaulting one is the false green this
