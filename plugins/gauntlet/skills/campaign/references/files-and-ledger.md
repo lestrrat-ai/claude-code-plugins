@@ -662,16 +662,23 @@ written into a real ledger, and a truncated SHA escape into a command.
 **`table` is a PROJECTION — NEVER a source to read a value back out of.** Its output is *formatted for a
 human*, and the formatting is lossy in four ways:
 
-- **It shows only SOME ROWS.** The default view **hides finished work** — a row that reached the run's
-  *successful* terminal state and needs nothing further from anyone. It is **not** "terminal rows": an
-  `aborted` PR is terminal too and it **stays visible**, because it is the run's *unfinished business* —
-  left open for its owner, with an `abort-<id>.md` a human is meant to read. Everything still in play,
-  parked included, always shows. **The omission is NEVER silent**: whenever the view drops a row, `table`
-  prints an out-of-band line stating **how many** rows it hid and the flag that reveals them, and **`--all`
-  shows every row** (it composes with `--fields` — one picks the rows, the other the columns). So **a
-  missing ROW is not a missing PR**, exactly as a missing column is not a missing value. Which statuses the
-  default hides is owned by `TABLE_HIDDEN_STATUSES` in `scripts/ledger.py` and named **live** in `ledger.py
-  table --help`; when this paragraph and that output disagree, **the script is right**.
+- **It shows only SOME ROWS.** The default view **hides the rows campaign is done with** — the ones it
+  will take no further action on, however they ended. Everything still in play, parked included, always
+  shows. **The omission is NEVER silent**: whenever the view drops a row, `table` prints an out-of-band
+  line stating **how many** rows it hid, **which statuses** they were dropped for — naming only the ones
+  actually dropped, so the line stays true when the ledger holds none of a kind — and the flag that
+  reveals them, and **`--all` shows every row** (it composes with `--fields` — one picks the rows, the
+  other the columns). So **a missing ROW is not a missing PR**, exactly as a missing column is not a
+  missing value. Which statuses the default hides is owned by `TABLE_HIDDEN_STATUSES` in
+  `scripts/ledger.py` and named **live** in `ledger.py table --help`; when this paragraph and that output
+  disagree, **the script is right**.
+
+  A hidden row includes the **`aborted`** one — the run's *unfinished business*, left open for its owner
+  with an `abort-<id>.md` a human is meant to read. That is not the status view dropping the thing a human
+  must act on: the **final report** enumerates every aborted PR, why, and where its log is
+  (`bailout-and-final-report.md`, "Final report"); the disclosure line **names `aborted` by status**
+  whenever such a row was dropped; and `--all` brings it straight back. A row hidden **with disclosure**,
+  reported in full elsewhere, is not a row buried.
 - **It shows only SOME fields.** The default view is a **SUBSET** of the row fields, and **NEITHER the
   shown nor the hidden set is enumerated here** — both are **DERIVED from the live schema**, never retyped
   on this page. The shown set is `TABLE_DEFAULT_FIELDS` in `scripts/ledger.py`, printed **live** by
@@ -705,7 +712,7 @@ human*, and the formatting is lossy in four ways:
   block, the empty-grid markers, the hidden-count line), so **no row can ever forge one**. That is what
   makes the omission notice trustworthy, and it is why an empty grid always **says which empty it is** —
   a ledger that holds nothing and a ledger whose every row is hidden print **different** markers, so an
-  end-of-run table where everything merged can never be misread as a campaign that adopted no PRs.
+  end-of-run table where every PR has finished can never be misread as a campaign that adopted no PRs.
 
 It rejects an unknown field name (listing the valid ones), refuses a duplicate `pr` on `add-row`,
 errors on a missing row for `set`/`get`, and creates the file with the header if it is missing. It also

@@ -642,8 +642,8 @@ def t_empty_marker_not_forgeable(L: ModuleType, tmp: Path) -> None:
                   f"[{name}/{field}] a line of a NON-EMPTY table is the empty marker:\n{out}")
 
 
-def t_table_hides_merged(L: ModuleType, tmp: Path) -> None:
-    """The DEFAULT view drops `merged` rows and shows everything else; `--all` shows the whole ledger.
+def t_table_hides_terminal(L: ModuleType, tmp: Path) -> None:
+    """The DEFAULT view drops TERMINAL rows — `merged` and `aborted` alike — and shows everything else.
 
     This is the projection's ROW rule, and it is the mirror of the FIELD rule: a missing row is not a
     missing PR. Both are pinned here — the default really does hide, and `--all` really does reveal.
@@ -652,7 +652,7 @@ def t_table_hides_merged(L: ModuleType, tmp: Path) -> None:
         tmp / "mix.jsonl", header_line(L),
         row_line(L, pr="1", status="merged"),
         row_line(L, pr="2", status="in_review"),
-        row_line(L, pr="3", status="merged"),
+        row_line(L, pr="3", status="aborted"),
         row_line(L, pr="4", status="awaiting-user"),
     )
     code, out, err = cli(L, ["--file", str(path), "table"])
@@ -660,7 +660,9 @@ def t_table_hides_merged(L: ModuleType, tmp: Path) -> None:
     _, _, cells = grid(L, out, L.TABLE_DEFAULT_FIELDS)
     col = L.TABLE_DEFAULT_FIELDS.index("pr")
     check([c[col] for c in cells] == ["2", "4"],
-          f"the default view did not hide exactly the merged rows: {[c[col] for c in cells]!r}\n{out}")
+          f"the default view did not hide exactly the terminal rows: {[c[col] for c in cells]!r}\n{out}")
+    check(notices(out) == [L.hidden_notice(2, ("merged", "aborted"))],
+          f"the table hid one merged and one aborted row and said {notices(out)!r}\n{out}")
 
     code, out, err = cli(L, ["--file", str(path), "table", "--all"])
     check(code == 0, f"table --all exited {code}: {err!r}")
@@ -676,71 +678,78 @@ def t_table_hidden_count(L: ModuleType, tmp: Path) -> None:
     A filtered view that does not say what it hid is a lie by omission: nothing is fabricated, the reader
     is simply never told they are looking at a SUBSET. This repo has already shipped that bug twice (a
     summary that quietly dropped its caveats, a `gh pr list` that silently capped at 30). So the notice is
-    pinned on all three counts: it APPEARS whenever a row is dropped, it is ABSENT when none is, and the
-    number in it is the number actually dropped — a notice with a wrong count is a new lie, not a fix.
+    pinned on all four counts: it APPEARS whenever a row is dropped, it is ABSENT when none is, the number
+    in it is the number actually dropped, and it names exactly the statuses those rows were dropped for —
+    a notice with a wrong count, or one naming a status nothing was hidden for, is a new lie, not a fix.
     """
-    for merged in range(0, 4):
-        for live in (0, 2):
-            path = write_lines(
-                tmp / f"n{merged}-{live}.jsonl", header_line(L),
-                *(row_line(L, pr=str(i), status="merged") for i in range(1, merged + 1)),
-                *(row_line(L, pr=str(100 + i), status="in_review") for i in range(live)),
-            )
-            code, out, err = cli(L, ["--file", str(path), "table"])
-            check(code == 0, f"table exited {code}: {err!r}")
-            _, _, cells = grid(L, out, L.TABLE_DEFAULT_FIELDS)
-            check(len(cells) == live, f"[{merged}/{live}] {len(cells)} rows shown, not {live}\n{out}")
+    for merged in range(0, 3):
+        for aborted in range(0, 3):
+            for live in (0, 2):
+                tag = f"{merged}m/{aborted}a/{live}"
+                path = write_lines(
+                    tmp / f"n{merged}-{aborted}-{live}.jsonl", header_line(L),
+                    *(row_line(L, pr=str(i), status="merged") for i in range(1, merged + 1)),
+                    *(row_line(L, pr=str(50 + i), status="aborted") for i in range(aborted)),
+                    *(row_line(L, pr=str(100 + i), status="in_review") for i in range(live)),
+                )
+                code, out, err = cli(L, ["--file", str(path), "table"])
+                check(code == 0, f"table exited {code}: {err!r}")
+                _, _, cells = grid(L, out, L.TABLE_DEFAULT_FIELDS)
+                check(len(cells) == live, f"[{tag}] {len(cells)} rows shown, not {live}\n{out}")
 
-            said = [n for n in notices(out)
-                    if n not in (L.TABLE_EMPTY_MARKER, L.TABLE_ALL_HIDDEN_MARKER)]  # the DISCLOSURE line only
-            if not merged:
-                check(said == [], f"[{merged}/{live}] nothing was hidden, yet the table says {said!r}\n{out}")
-                continue
-            check(said == [L.hidden_notice(merged)],
-                  f"[{merged}/{live}] the table hid {merged} row(s) and reported {said!r} — the omission "
-                  f"must be stated, and stated CORRECTLY\n{out}")
-            check(str(merged) in said[0] and "--all" in said[0],
-                  f"[{merged}/{live}] the notice names neither the count nor the flag: {said[0]!r}")
-            # …and the count is the number of rows `--all` reveals that the default did not. Derived from
-            # the OUTPUT, not from the fixture's own arithmetic — otherwise it only checks itself.
-            code, allout, _ = cli(L, ["--file", str(path), "table", "--all"])
-            _, _, allcells = grid(L, allout, L.TABLE_DEFAULT_FIELDS)
-            check(len(allcells) - len(cells) == merged,
-                  f"[{merged}/{live}] the notice claims {merged} hidden, but --all reveals "
-                  f"{len(allcells) - len(cells)} more rows")
+                hidden = merged + aborted
+                # the STATUSES the notice may name are the ones a row was actually dropped for
+                want = tuple(s for s, n in (("merged", merged), ("aborted", aborted)) if n)
+                said = [n for n in notices(out)
+                        if n not in (L.TABLE_EMPTY_MARKER, L.TABLE_ALL_HIDDEN_MARKER)]  # the DISCLOSURE line
+                if not hidden:
+                    check(said == [], f"[{tag}] nothing was hidden, yet the table says {said!r}\n{out}")
+                    continue
+                check(said == [L.hidden_notice(hidden, want)],
+                      f"[{tag}] the table hid {hidden} row(s) and reported {said!r} — the omission "
+                      f"must be stated, and stated CORRECTLY\n{out}")
+                check(str(hidden) in said[0] and "--all" in said[0],
+                      f"[{tag}] the notice names neither the count nor the flag: {said[0]!r}")
+                # …and the count is the number of rows `--all` reveals that the default did not. Derived
+                # from the OUTPUT, not from the fixture's own arithmetic — otherwise it only checks itself.
+                code, allout, _ = cli(L, ["--file", str(path), "table", "--all"])
+                _, _, allcells = grid(L, allout, L.TABLE_DEFAULT_FIELDS)
+                check(len(allcells) - len(cells) == hidden,
+                      f"[{tag}] the notice claims {hidden} hidden, but --all reveals "
+                      f"{len(allcells) - len(cells)} more rows")
 
 
-def t_table_all_merged(L: ModuleType, tmp: Path) -> None:
-    """EVERY row merged is a REAL end-of-run state — and it must NEVER read as an empty ledger.
+def t_table_all_terminal(L: ModuleType, tmp: Path) -> None:
+    """EVERY row terminal is a REAL end-of-run state — and it must NEVER read as an empty ledger.
 
     The default view shows no rows here, exactly as it does for a ledger that adopted nothing. Those are
-    OPPOSITE facts — "nothing was ever adopted" vs "everything finished" — and printing `# (no rows)` for
-    both would tell the reader at the end of a successful run that their campaign did nothing at all.
+    OPPOSITE facts — "nothing was ever adopted" vs "everything reached an end" — and printing `# (no rows)`
+    for both would tell the reader at the end of a run that their campaign did nothing at all.
     So the two cases print DIFFERENT markers, and the all-hidden one also carries the count.
     """
     done = write_lines(tmp / "done.jsonl", header_line(L, run_id="r1"),
-                       row_line(L, pr="1", status="merged"), row_line(L, pr="2", status="merged"))
+                       row_line(L, pr="1", status="merged"), row_line(L, pr="2", status="aborted"))
     empty = write_lines(tmp / "none.jsonl", header_line(L, run_id="r1"))
 
     code, out, err = cli(L, ["--file", str(done), "table"])
     check(code == 0, f"table exited {code}: {err!r}")
     _, _, cells = grid(L, out, L.TABLE_DEFAULT_FIELDS)
-    check(cells == [], f"an all-merged ledger showed rows by default: {cells!r}\n{out}")
-    check(notices(out) == [L.TABLE_ALL_HIDDEN_MARKER, L.hidden_notice(2)],
-          f"an all-merged ledger must say the ledger is NOT empty, and how many rows it hid: "
+    check(cells == [], f"an all-terminal ledger showed rows by default: {cells!r}\n{out}")
+    check(notices(out) == [L.TABLE_ALL_HIDDEN_MARKER, L.hidden_notice(2, ("merged", "aborted"))],
+          f"an all-terminal ledger must say the ledger is NOT empty, and how many rows it hid: "
           f"{notices(out)!r}\n{out}")
     check(L.TABLE_EMPTY_MARKER not in out.split("\n"),
-          f"an all-merged ledger printed the EMPTY-LEDGER marker — it reads as 'no PRs at all':\n{out}")
+          f"an all-terminal ledger printed the EMPTY-LEDGER marker — it reads as 'no PRs at all':\n{out}")
 
     code, blank, err = cli(L, ["--file", str(empty), "table"])
     check(code == 0, f"table exited {code}: {err!r}")
     check(notices(blank) == [L.TABLE_EMPTY_MARKER],
           f"a genuinely empty ledger must say exactly {L.TABLE_EMPTY_MARKER!r}: {notices(blank)!r}\n{blank}")
     check(out != blank,
-          f"an all-merged ledger renders EXACTLY what an EMPTY ledger renders — the two are "
+          f"an all-terminal ledger renders EXACTLY what an EMPTY ledger renders — the two are "
           f"indistinguishable:\n{out}")
 
-    # …and `--all` on the all-merged ledger brings every row back, with nothing left to disclose.
+    # …and `--all` on the all-terminal ledger brings every row back, with nothing left to disclose.
     code, out, err = cli(L, ["--file", str(done), "table", "--all"])
     check(code == 0, f"table --all exited {code}: {err!r}")
     _, _, cells = grid(L, out, L.TABLE_DEFAULT_FIELDS)
@@ -748,25 +757,60 @@ def t_table_all_merged(L: ModuleType, tmp: Path) -> None:
     check(notices(out) == [], f"--all hid nothing, yet the table claims it did: {notices(out)!r}")
 
 
-def t_table_aborted_is_visible(L: ModuleType, tmp: Path) -> None:
-    """`aborted` STAYS VISIBLE by default — the design call, pinned.
+def t_table_live_statuses_all_visible(L: ModuleType, tmp: Path) -> None:
+    """ONLY the terminal statuses hide. Everything still in play shows — parked rows included.
 
-    It is terminal like `merged`, so a rule that hid "terminal" rows would drop it. It must not: an
-    aborted PR is the run's UNFINISHED BUSINESS — left open for its owner, with an `abort-<id>.md` a human
-    is meant to read (`bailout-and-final-report.md`). Hiding the one row that still wants attention is the
-    exact failure a status view exists to prevent. Every non-`merged` status shows; only `merged` hides.
+    The hidden set is drawn at "campaign will take no further action on this row", NOT at "this row is
+    quiet". A parked PR is waiting on the user and a `repairing` one is waiting on a reassessment; both are
+    live work, and a status view that dropped them would hide the very rows the reader has to act on.
     """
-    statuses = ("in_review", "aborted", "awaiting-api", "awaiting-user", "pending", "merged")
+    statuses = ("in_review", "awaiting-api", "awaiting-user", L.REPAIR_STATUS, "merged", "aborted")
     path = write_lines(tmp / "st.jsonl", header_line(L),
                        *(row_line(L, pr=str(i + 1), status=s) for i, s in enumerate(statuses)))
     code, out, err = cli(L, ["--file", str(path), "table", "--fields", "pr,status"])
     check(code == 0, f"table exited {code}: {err!r}")
     _, _, cells = grid(L, out, ("pr", "status"))
     shown = [c[1] for c in cells]
-    check(shown == [s for s in statuses if s != "merged"],
-          f"the default view hid something other than `merged` — it shows {shown!r}\n{out}")
-    check("aborted" in shown, "an ABORTED row was hidden — the run's unfinished business is invisible")
-    check(notices(out) == [L.hidden_notice(1)], f"exactly one merged row should be hidden: {notices(out)!r}")
+    check(shown == [s for s in statuses if s not in L.TABLE_HIDDEN_STATUSES],
+          f"the default view hid something other than the terminal statuses — it shows {shown!r}\n{out}")
+    check(notices(out) == [L.hidden_notice(2, ("merged", "aborted"))],
+          f"one merged and one aborted row should be hidden, and named: {notices(out)!r}")
+
+
+def t_table_notice_names_what_was_dropped(L: ModuleType, tmp: Path) -> None:
+    """THE DISCLOSURE NAMES THE STATUSES ACTUALLY DROPPED — never the view's configured hidden set.
+
+    The two hidden statuses mean opposite things to a reader: `merged` is finished work, `aborted` is the
+    run's unfinished business, left open for its owner with an `abort-<id>.md` a human is meant to read
+    (`bailout-and-final-report.md`). A line reading `merged` while four aborted rows sit behind it tells
+    the reader the view is complete on exactly the rows they most need — worse than no line at all. The
+    mirror error is as false: naming `aborted` when every hidden row merged invents a PR the run gave up
+    on. So the wording is pinned LITERALLY here, in every combination, INCLUDING zero of one kind — and
+    the joint form is pinned against fixture ORDER too, since the names come from the hidden set's order,
+    never the rows'.
+    """
+    cases = (
+        (("merged",), "# 1 merged row hidden — pass --all to show every row"),
+        (("merged", "merged"), "# 2 merged rows hidden — pass --all to show every row"),
+        (("aborted",), "# 1 aborted row hidden — pass --all to show every row"),
+        (("aborted", "aborted"), "# 2 aborted rows hidden — pass --all to show every row"),
+        (("merged", "aborted"), "# 2 merged/aborted rows hidden — pass --all to show every row"),
+        (("aborted", "merged", "merged"), "# 3 merged/aborted rows hidden — pass --all to show every row"),
+    )
+    for i, (hidden, want) in enumerate(cases):
+        path = write_lines(
+            tmp / f"named{i}.jsonl", header_line(L),
+            row_line(L, pr="1", status="in_review"),
+            *(row_line(L, pr=str(10 + j), status=s) for j, s in enumerate(hidden)),
+        )
+        code, out, err = cli(L, ["--file", str(path), "table"])
+        check(code == 0, f"[{hidden!r}] table exited {code}: {err!r}")
+        said = [n for n in notices(out) if n not in (L.TABLE_EMPTY_MARKER, L.TABLE_ALL_HIDDEN_MARKER)]
+        check(said == [want], f"[{hidden!r}] the table said {said!r}, not {[want]!r}\n{out}")
+        # …and a status NOTHING was hidden for is never named: that claim is as false as omitting one.
+        for absent in (s for s in L.TABLE_HIDDEN_STATUSES if s not in hidden):
+            check(absent not in said[0],
+                  f"[{hidden!r}] the notice names `{absent}`, of which no row was hidden: {said[0]!r}")
 
 
 def t_table_all_composes_with_fields(L: ModuleType, tmp: Path) -> None:
@@ -779,7 +823,7 @@ def t_table_all_composes_with_fields(L: ModuleType, tmp: Path) -> None:
     check(code == 0, f"table exited {code}: {err!r}")
     _, _, cells = grid(L, out, fields)
     check(cells == [["live", "in_review"]], f"--fields did not hide the merged row: {cells!r}\n{out}")
-    check(notices(out) == [L.hidden_notice(1)],
+    check(notices(out) == [L.hidden_notice(1, ("merged",))],
           f"--fields dropped the hidden-count notice: {notices(out)!r}\n{out}")
 
     code, out, err = cli(L, ["--file", str(path), "table", "--all", "--fields", ",".join(fields)])
@@ -821,10 +865,10 @@ def t_hidden_row_cannot_reach_the_output(L: ModuleType, tmp: Path) -> None:
         check(code == 0, f"[{fields}] table exited {code}: {err!r}")
         code, got, err = cli(L, ["--file", str(poisoned), *argv])
         check(code == 0, f"[{fields}] table exited {code}: {err!r}")
-        check(notices(got) == [L.hidden_notice(n)],
+        check(notices(got) == [L.hidden_notice(n, ("merged",))],
               f"[{fields}] the hidden hostile rows were not disclosed: {notices(got)!r}")
         # strip ONLY the disclosure line; everything else must be byte-identical to the clean ledger
-        stripped = "".join(l + "\n" for l in got.split("\n")[:-1] if l != L.hidden_notice(n))
+        stripped = "".join(l + "\n" for l in got.split("\n")[:-1] if l != L.hidden_notice(n, ("merged",)))
         check(stripped == want,
               f"[{fields}] a HIDDEN row changed the VISIBLE output — it reached the widths or the grid.\n"
               f"--- with hidden rows ---\n{stripped}--- without them ---\n{want}")
@@ -853,9 +897,10 @@ def t_out_of_band_lines_not_forgeable(L: ModuleType, tmp: Path) -> None:
                              row_line(L, pr="9", status="merged"))
     for name, forgery in (
         ("all-hidden-marker", L.TABLE_ALL_HIDDEN_MARKER),
-        ("notice", L.hidden_notice(1)),
+        ("notice", L.hidden_notice(1, ("merged",))),
         ("notice-zero", "# 0 merged rows hidden — pass --all to show every row"),
-        ("notice-padded", L.hidden_notice(1) + "  "),
+        ("notice-padded", L.hidden_notice(1, ("merged",)) + "  "),
+        ("notice-joint", L.hidden_notice(2, ("merged", "aborted"))),
     ):
         for field in ("slug", "branch", "pr"):
             path = write_lines(tmp / f"{name}-{field}.jsonl", header_line(L, run_id="r1"),
@@ -871,7 +916,8 @@ def t_out_of_band_lines_not_forgeable(L: ModuleType, tmp: Path) -> None:
             # …and no LINE of it IS one of the out-of-band lines (the escaped cell may CONTAIN the text —
             # `\# 1 merged row hidden…` does — but the `\` in front is exactly what the namespace buys).
             body = out.split("\n\n", 1)[1].split("\n")
-            for line in (L.TABLE_ALL_HIDDEN_MARKER, L.hidden_notice(1), L.TABLE_EMPTY_MARKER):
+            for line in (L.TABLE_ALL_HIDDEN_MARKER, L.hidden_notice(1, ("merged",)),
+                         L.hidden_notice(2, ("merged", "aborted")), L.TABLE_EMPTY_MARKER):
                 check(line not in body,
                       f"[{name}/{field}] a line of a table with a VISIBLE row IS {line!r}:\n{out}")
 
@@ -2838,10 +2884,11 @@ CASES = [
     ("table-missing-file", "a missing ledger is a fresh start: defaults, `# (no rows)`", t_table_missing_file),
     ("table-no-rows", "a header-only ledger says `# (no rows)`", t_table_no_rows),
     ("empty-marker-safe", "no ROW can forge the empty-ledger marker — it lives where no cell can reach", t_empty_marker_not_forgeable),
-    ("table-hides-merged", "the default view hides merged rows; --all shows every row", t_table_hides_merged),
+    ("table-hides-terminal", "the default view hides terminal rows (merged AND aborted); --all shows every row", t_table_hides_terminal),
     ("table-hidden-count", "the omission is NEVER silent — the hidden count is stated, and it is correct", t_table_hidden_count),
-    ("table-all-merged", "an all-merged ledger never reads as an EMPTY one — different marker, plus the count", t_table_all_merged),
-    ("table-aborted-visible", "aborted is terminal but STAYS VISIBLE — only `merged` hides", t_table_aborted_is_visible),
+    ("table-all-terminal", "an all-terminal ledger never reads as an EMPTY one — different marker, plus the count", t_table_all_terminal),
+    ("table-live-visible", "every LIVE status shows, parked included — only the terminal ones hide", t_table_live_statuses_all_visible),
+    ("table-notice-names-dropped", "the notice names the statuses actually dropped, never the configured set", t_table_notice_names_what_was_dropped),
     ("table-all-and-fields", "--all picks the rows, --fields the columns — they compose", t_table_all_composes_with_fields),
     ("hidden-row-inert", "a hostile value in a HIDDEN row cannot change one byte of the visible table", t_hidden_row_cannot_reach_the_output),
     ("out-of-band-safe", "no ROW can forge the all-hidden marker or the hidden-count notice", t_out_of_band_lines_not_forgeable),
