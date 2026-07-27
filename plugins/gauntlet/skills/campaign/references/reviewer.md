@@ -91,8 +91,8 @@ command writes the one prompt every route receives and returns the active attemp
 not derive its paths, bind its intent, or reconstruct its record here. **The prompt IS the contract**:
 whatever it
 requires of a `codex exec` reviewer it requires of a native worker — the same question ("does this PR achieve its
-stated Purpose…"), the same emit-only rule, the same anchored findings, the same `RESIDUAL-RISK` +
-single-`VERDICT:` ending. Its terminal result and artifacts are read and verified by the same `review-pass.py verify`
+stated Purpose…"), the same emit-only rule, the same anchored findings, the same single-`VERDICT:` ending
+with its optional `RESIDUAL-RISK` line above it. Its terminal result and artifacts are read and verified by the same `review-pass.py verify`
 (Stage 2a, "Does this pass COUNT?"), so a pass dispatched without those inputs is not a lighter pass — it is
 an `unusable` one.
 

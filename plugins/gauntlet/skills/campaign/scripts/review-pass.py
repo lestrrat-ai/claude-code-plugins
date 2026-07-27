@@ -1306,7 +1306,12 @@ def parse_report(progress: Path) -> "dict[str, str | None]":
             "'VERDICT: DEFERRED — <one-line reason>'"
         )
 
-    residual_lines = [n for n, line in enumerate(lines) if line.startswith("RESIDUAL-RISK:")]
+    # DETECT on the stripped line, JUDGE the original. Detection has to see an indented line, because the
+    # line is optional now: a line the detector misses is indistinguishable from one that was never written,
+    # so a malformed `RESIDUAL-RISK:` would be silently read as absent instead of refused. Everything below
+    # — the count, the placement, and `RESIDUAL_RISK_RE` — still reads the ORIGINAL unstripped line, so an
+    # indented line is detected and then refused for its shape. This is not whitespace tolerance.
+    residual_lines = [n for n, line in enumerate(lines) if line.lstrip().startswith("RESIDUAL-RISK:")]
     residual: "str | None" = None
     if verdict == SATISFIED:
         if len(residual_lines) > 1:

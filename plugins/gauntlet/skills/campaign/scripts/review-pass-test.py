@@ -789,6 +789,14 @@ class Tables:
                 "want": UNUSABLE, "needle": "residual risk must be exactly",
                 "why": "the residual-risk fields and em dash have one exact shape",
             },
+            # The line being OPTIONAL is exactly what makes this case load-bearing: a detector that only
+            # sees column 0 reads an indented line as ABSENT, so a malformed line is silently accepted
+            # instead of refused. Present-but-malformed and never-written must stay distinguishable.
+            "indented-residual-risk": {
+                "report": "Report body.\n  RESIDUAL-RISK: parser — hard\nVERDICT: SATISFIED\n",
+                "want": UNUSABLE, "needle": "residual risk must be exactly",
+                "why": "an indented line is present and malformed, not absent",
+            },
             "misplaced-residual-risk": {
                 "report": "RESIDUAL-RISK: parser — hard\nand then more prose\nVERDICT: SATISFIED\n",
                 "want": UNUSABLE, "needle": "last nonblank line",
