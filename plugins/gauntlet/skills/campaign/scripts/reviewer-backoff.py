@@ -53,6 +53,7 @@ DURATION_RE = re.compile(
 )
 TIMER_PHRASE_RE = re.compile(
     r"\b(?:retry(?:ing)?|try\s+again|backoff|wait)\b"
+    r"(?=\s*(?:after|in|for|at|on)\b|\s*:\s*|\s+\d)"
     r"|\b(?:reset(?:s)?|available|unavailable)\b"
     r"(?=\s*(?:after|in|for|at|on)\b|\s*:\s*|\s+\d)",
     re.IGNORECASE,
@@ -634,7 +635,11 @@ def transition(
     if not _valid_state(prior):
         prior = ExternalReviewSessionState(external_disabled=True)
         failure = _permanent("external session state was malformed")
-    elif state is not None and pr_number is None:
+    elif (
+        state is not None
+        and pr_number is None
+        and not (isinstance(failure, ExternalReviewFailure) and failure.kind == REFUSAL)
+    ):
         failure = _permanent("external review PR number was omitted for a session transition")
     elif pr_number is not None and (type(pr_number) is not int or pr_number <= 0):
         failure = _permanent("external review PR number was malformed")

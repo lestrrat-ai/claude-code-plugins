@@ -191,9 +191,14 @@ exhaustive: refusal wording it does not match stays `unrecognized` and takes the
 Permanent markers come next, taking precedence over timers and transient markers;
 valid timer text takes precedence over generic transient markers. Malformed or unsupported timer text,
 including fractional or unrepresentable delays, unknown zones, and a numeric offset that is invalid for
-the named zone at the target local time, is `permanent`. A named zone's valid offsets include both sides
-of a DST fold. An unrecognized failure is opaque text that falls back natively without disabling this
-external route for the current session.
+the named zone at the target local time, is `permanent`, and because it is `permanent` it also outranks
+any transient marker in the same message. A named zone's valid offsets include both sides
+of a DST fold. Text is a timer attempt at all only when a retry, reset, or availability word actually
+introduces a value — a connector such as `after` or `in`, a colon, or a digit follows it. A retry word that
+introduces nothing, as in `please try again`, is not a broken timer and never reaches that `permanent`
+precedence: the message keeps the class its own markers give it, `transient` when a transient marker
+matches and `unrecognized` otherwise. An unrecognized failure is opaque text that falls back natively
+without disabling this external route for the current session.
 
 `ExternalReviewSessionState` is process/session memory owned by the active orchestrator. Update it only
 from the returned transition or decision. **Never write `external_disabled` or
@@ -203,8 +208,11 @@ preferences, run artifacts, or any other durable campaign record. `timer_identit
 timer for the same PR owns its `retry_at`, even when earlier; a timer for another PR falls back natively
 and retains the existing deadline and owner. Matching timer text and deadline alone never prove re-entry.
 A new session starts with an empty state. **Require the current positive `pr_number` before storing any
-timer, including on the initial empty-state transition.** A missing or malformed PR owner is permanent,
-disables the external route for the session, and stores no deadline or timer identity.
+timer, including on the initial empty-state transition.** A malformed PR owner is permanent for every
+failure class: it disables the external route for the session and stores no deadline or timer identity. An
+omitted PR owner is permanent the same way for every class except `refusal` — a refusal stores no deadline
+or timer identity and owns no timer, so there is no owner to require, and its `stop-and-ask` (the `refusal`
+row below) outranks the requirement.
 
 ```text
 review_transition(

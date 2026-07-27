@@ -956,6 +956,103 @@ def test_reviewer_refusal_preserves_active_session_backoff() -> None:
           "reviewer refusal changed the active timer owner")
 
 
+def test_reviewer_refusal_without_pr_still_stops_and_asks() -> None:
+    """A refusal writes no session state and owns no timer, so an omitted PR must not downgrade it."""
+
+    now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    result = MODULE.transition(
+        MODULE.Failure(MODULE.REFUSAL, None, None, "refusal marker: cannot assist"),
+        now=now,
+        state=MODULE.SessionState(),
+        pr_number=None,
+    )
+    check(result.kind == MODULE.REFUSAL,
+          "an omitted PR number rewrote a reviewer refusal")
+    check(result.action == MODULE.STOP_AND_ASK,
+          "a refusal without a PR number did not stop and ask")
+    check(result.external_disabled is False,
+          "a refusal without a PR number disabled the session route")
+    check(result.state.external_backoff_until is None,
+          "a refusal without a PR number stored a session deadline")
+
+    payload = run_cli(
+        "decide",
+        "--message",
+        "I'm sorry, but I can't help with that.",
+        "--now",
+        "2026-07-25T12:00:00Z",
+    )
+    check(payload["kind"] == MODULE.REFUSAL, "CLI without --pr did not report the refusal kind")
+    check(payload["action"] == MODULE.STOP_AND_ASK,
+          "CLI without --pr did not report the stop-and-ask action")
+    check(payload["external_disabled"] is False,
+          "CLI refusal without --pr disabled the session route")
+
+
+def test_refusal_pr_exemption_keeps_other_guards_closed() -> None:
+    """The refusal exemption at the PR-owner guard must not reach any other fail-closed path."""
+
+    now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    refusal = MODULE.Failure(MODULE.REFUSAL, None, None, "refusal marker: cannot assist")
+
+    class UntypedFailure:
+        kind = MODULE.REFUSAL
+
+    for label, failure, state, pr_number in (
+        ("refusal with malformed session state",
+         refusal, MODULE.SessionState(external_disabled="yes"), None),
+        ("untyped failure claiming the refusal kind",
+         UntypedFailure(), MODULE.SessionState(), None),
+        ("failure object without a kind attribute",
+         object(), MODULE.SessionState(), None),
+        ("refusal with a malformed PR number",
+         refusal, MODULE.SessionState(), -5),
+        ("timer without a PR owner",
+         MODULE.Failure(MODULE.TIMER, 90, now, "retry after 90 seconds"),
+         MODULE.SessionState(), None),
+    ):
+        result = MODULE.transition(failure, now=now, state=state, pr_number=pr_number)
+        check(result.kind == MODULE.PERMANENT, f"{label} was not normalized to permanent")
+        check(result.action == MODULE.FALLBACK_NATIVE, f"{label} did not fall back natively")
+        check(result.external_disabled, f"{label} left the external route enabled")
+
+
+def test_retry_phrase_without_a_value_keeps_transient_classification() -> None:
+    """A bare retry phrase carries no timer value, so it must not outrank a transient marker."""
+
+    now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    for message in (
+        "Request timed out, please try again.",
+        "Gateway timeout. The server is temporarily unavailable, please retry.",
+    ):
+        result = MODULE.decide(message, now=now, pr_number=188)
+        check(result.kind == MODULE.TRANSIENT,
+              f"a bare retry phrase overrode a transient marker: {message!r}")
+        check(result.action == MODULE.RETRY_EXTERNAL,
+              f"a recognized transient failure did not retry: {message!r}")
+        check(result.external_disabled is False,
+              f"a bare retry phrase disabled the external route: {message!r}")
+        check(result.state.external_disabled is False,
+              f"a bare retry phrase disabled the session route: {message!r}")
+
+
+def test_retry_phrase_without_a_value_falls_back_without_disabling() -> None:
+    """Unmatched wording carrying a bare retry phrase stays unrecognized, not permanent."""
+
+    now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    for message in (
+        "error sending request; retrying",
+        "retry later",
+    ):
+        result = MODULE.decide(message, now=now, pr_number=188)
+        check(result.kind == MODULE.UNRECOGNIZED,
+              f"a bare retry phrase forced the malformed-timer path: {message!r}")
+        check(result.action == MODULE.FALLBACK_NATIVE,
+              f"unrecognized wording did not fall back natively: {message!r}")
+        check(result.external_disabled is False,
+              f"unrecognized wording disabled the external route: {message!r}")
+
+
 def test_cli_reports_reviewer_refusal() -> None:
     payload = run_cli(
         "decide",
@@ -1035,6 +1132,10 @@ CASES = [
     ("refusal-marker-precedence", "refusal precedes permanent and timer markers", test_reviewer_refusal_precedes_other_markers),
     ("refusal-after-retry", "spent retry never downgrades a refusal to fallback", test_reviewer_refusal_after_retry_still_stops_and_asks),
     ("refusal-keeps-backoff", "refusal preserves an active session deadline", test_reviewer_refusal_preserves_active_session_backoff),
+    ("refusal-missing-pr", "refusal without a PR number still stops and asks", test_reviewer_refusal_without_pr_still_stops_and_asks),
+    ("refusal-pr-exemption-bounds", "the refusal PR exemption leaves every other guard closed", test_refusal_pr_exemption_keeps_other_guards_closed),
+    ("valueless-retry-phrase-transient", "a valueless retry phrase keeps a transient classification", test_retry_phrase_without_a_value_keeps_transient_classification),
+    ("valueless-retry-phrase-unrecognized", "a valueless retry phrase falls back without disabling", test_retry_phrase_without_a_value_falls_back_without_disabling),
     ("cli-refusal", "CLI reports the refusal kind and stop-and-ask action", test_cli_reports_reviewer_refusal),
 ]
 
