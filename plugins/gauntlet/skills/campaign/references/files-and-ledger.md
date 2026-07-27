@@ -484,9 +484,18 @@ Header field notes (the header fields above; per-row fields follow):
   (not an API change, or not yet decided) | `approved@<iso>` | `declined@<iso>`. Written the moment
   the user answers, so a later heartbeat — or a fresh agent that adopted the run — reads it and never
   re-asks about a PR already decided. It records the decision (an input); `status` stays the
-  live position, so the two never contradict: `approved` pairs with the PR back in normal
-  gate flow, `declined` with a terminal `aborted`. A one-off approval lands here only; it never flips
-  the run-wide `api_changes` header.
+  live position, so the two never contradict **on the transitions campaign itself makes**: `approved`
+  pairs with the PR back in normal gate flow, `declined` with a terminal `aborted`.
+
+  **`declined` does NOT pin `status` after that.** The abort leaves the PR OPEN for its owner
+  (`bailout-and-final-report.md`), so the user may merge it themselves; the terminal-aborted follow-up
+  verifies that live and writes `status` = `merged`, leaving `api_approval` untouched as the historical
+  decision (`loop-control.md` step 4, "An already-terminal `aborted` row routed by Step 1 RECORDS a
+  `merged` disposition"). A row holding `declined@<iso>` with `status` = `merged` is that recorded
+  disposition — the decision-versus-live-position split this bullet already draws, not a contradiction.
+  `carryover.md` owns what the run's projections do with the pair.
+
+  A one-off approval lands here only; it never flips the run-wide `api_changes` header.
 - `status` — `in_review` → `merged`, or `aborted`; plus the **HELD** (non-terminal) statuses below.
 
 ### `status` held and parked taxonomy
