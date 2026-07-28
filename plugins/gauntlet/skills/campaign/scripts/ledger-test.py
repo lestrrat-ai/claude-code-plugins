@@ -1307,7 +1307,7 @@ def t_verdict_counts_rounds(L: ModuleType, tmp: Path) -> None:
           f"the NS streak must ACCUMULATE: {row!r}")
     row = verdict("satisfied")
     check((row["review_rounds"], row["reviews_ok"], row["ns_streak"]) == ("3", "1", "0"),
-          f"a SATISFIED adds one to the tally and CLEARS the streak — and only a SATISFIED does: {row!r}")
+          f"a SATISFIED adds one to the tally and CLEARS the streak — the only verdict that does: {row!r}")
     row = verdict("not-satisfied")
     check((row["review_rounds"], row["reviews_ok"], row["ns_streak"]) == ("4", "0", "1"),
           f"a NOT SATISFIED VOIDS the tally — one pass saying the content is wrong is enough: {row!r}")
@@ -1322,7 +1322,13 @@ def t_review_rounds_never_reset(L: ModuleType, tmp: Path) -> None:
 
     Not a fix, not a rebase, not a content change, not a re-triage. The rule is enforced by the ABSENCE of
     a flag rather than by a promise: `set --review-rounds 0` and `add-row --review-rounds 0` are refused by
-    ARGPARSE, which does not know what the field means and cannot be talked round. `ns_streak` is the same.
+    ARGPARSE, which does not know what the field means and cannot be talked round.
+
+    `ns_streak` has the same absent door, and that is what this fixture pins for it — NOT "nothing clears
+    it". Two TOOL writes do: a SATISFIED verdict, and a non-abort `repair-pass.py decide`
+    (`repair-pass.md`, "A repair that changes the terms clears the streak", and the fixture there). Neither
+    is reachable by typing a flag, which is the property under test. `review_rounds` has no second writer
+    at all and must never grow one.
 
     A rule that says "never reset it" is an exhortation, and the loop it guards ran for eight hours under
     three of those. Removing the door is a mechanism.
@@ -1353,7 +1359,8 @@ def t_review_rounds_never_reset(L: ModuleType, tmp: Path) -> None:
     check(out == "2\n", f"a gate reset took `review_rounds` with it ({out!r}) — this is THE bug: the loop "
                         f"erases the evidence that it is looping, at the exact moment that evidence matters")
     code, out, _ = cli(L, ["--file", str(path), "get", "--pr", "1", "--field", "ns_streak"])
-    check(out == "2\n", f"a gate reset cleared `ns_streak` ({out!r}) — only a SATISFIED may")
+    check(out == "2\n", f"a gate reset cleared `ns_streak` ({out!r}) — a content change is not a verdict "
+                        f"and not a repair, and those two tool writes are the only things that may clear it")
 
 
 def t_set_cannot_raise_the_tally(L: ModuleType, tmp: Path) -> None:
@@ -3262,7 +3269,7 @@ CASES = [
     ("default-non-goals-broadening-guard", "a BROADENING default_non_goals change is refused while a non-terminal PR holds review credit; an add, or no active credit, is allowed", t_default_non_goals_broadening_guard),
     ("null-reads-as-default", "a present JSON null reads back as the field default, not the string \"None\"", t_null_reads_as_default),
     ("verdict-counts-rounds", "`verdict` bumps review_rounds on EVERY verdict and applies the tally atomically", t_verdict_counts_rounds),
-    ("rounds-never-reset", "NOTHING resets review_rounds/ns_streak — there is no flag, at any door", t_review_rounds_never_reset),
+    ("rounds-never-reset", "review_rounds/ns_streak have no flag at any door; a gate reset touches neither", t_review_rounds_never_reset),
     ("tally-floor-only", "`set` may VOID reviews_ok, NEVER raise it — only a verdict adds a verdict", t_set_cannot_raise_the_tally),
     ("escalation-reset-atomic", "the depth-raising reset writes deeper tier + voided tally in ONE atomic set", t_escalation_reset_is_one_atomic_write),
     ("deescalation-tier-only", "a de-escalation writes the tier ALONE and preserves the standing tally", t_deescalation_is_a_tier_only_write),

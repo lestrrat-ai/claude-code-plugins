@@ -222,7 +222,12 @@ ROW_FIELDS = (
     #
     # A heartbeat is a fresh agent instance. A counter that lives in the driver's head does not exist.
     "review_rounds",   # landed verdicts, ever, for this PR. MONOTONE — NEVER reset, by anything.
-    "ns_streak",       # consecutive NOT SATISFIED. Reset ONLY by a SATISFIED.
+    # Consecutive NOT SATISFIED. TWO writers clear it, and NEITHER is a `set` flag: a SATISFIED verdict
+    # (`cmd_verdict`), and a NON-ABORT reassessment decision (`repair-pass.py decide`). The second exists
+    # because a repair CHANGES WHAT THE REVIEWER MEASURES AGAINST, so a streak earned under the old terms
+    # says nothing about the new ones — without it a repair that works buys exactly one round before the
+    # cap fires again. `review_rounds` is reset by neither, so `ROUND_CAP` still bounds the whole life.
+    "ns_streak",
     # THE HEAD A BASE-PREFLIGHT `proceed` WAS LAST DECIDED FOR — the MECHANICAL form of the
     # rebase-before-review precondition (stage-2-review-gate.md, "Recording a verdict"). `base-preflight.py
     # check` writes it (through `base-ok`, the ONLY sanctioned writer) when — and only when — it decides
@@ -364,14 +369,20 @@ NO_SET_HEADER = {
         "never carry",
 }
 
-# The two fields `verdict` OWNS — and the ONLY reason they are not settable through `set`/`add-row` is
-# that a door which can write them is a door that can RESET them.
+# The two fields with NO `set`/`add-row` flag because a door which can write them is a door that can
+# RESET them. The name says `verdict` because that is the door the DRIVER goes through; it is the
+# exclusion from the hand-write doors, NOT a claim that `verdict` is the sole writer of both.
 #
 # `review_rounds` is the loop's only memory across fresh-context heartbeats, and its whole value is that it is
 # MONOTONE. A rule stating "never reset it" is an exhortation; REMOVING THE DOOR is a mechanism. So there
 # is no `--review-rounds` flag to type: `verdict` increments them, and nothing else writes them at all.
 # (`reviews_ok` is different — a content change legitimately voids the tally, so `set --reviews-ok 0`
 # must stay. What `set` may NOT do is RAISE it: see `check_tally`.)
+#
+# `ns_streak` is the one asymmetry, and it is deliberate: `repair-pass.py decide` ALSO clears it, on a
+# non-abort decision. That is a second TOOL door, not a hand-write door — the field's own comment above
+# owns why, and the exclusion here is exactly what stops a driver from clearing it without spending a
+# repair. `review_rounds` has no such second writer and must never grow one.
 VERDICT_OWNED = ("review_rounds", "ns_streak")
 
 # The repair's own fields, owned by `repair-pass.py` and settable through NO flag — the same mechanism as
@@ -1137,7 +1148,9 @@ def settable(name: str) -> bool:
 
     `pr` is the row key (passed via --pr) and `id` is derived from it. `VERDICT_OWNED` is the new
     exclusion, and it is the mechanism behind "`review_rounds` is NEVER reset": a door that can write a
-    counter is a door that can zero it, so those two fields simply have NO flag. `verdict` writes them.
+    counter is a door that can zero it, so those two fields simply have NO flag. `verdict` is the only
+    writer of `review_rounds`; `ns_streak` has a second TOOL writer and still no flag at either door (the
+    `VERDICT_OWNED` comment owns that asymmetry).
     `REPAIR_OWNED` is the same mechanism for the repair's bound: a driver that could zero `repair_count`
     could repair forever, so only `repair-pass.py decide` writes what a PR has spent. `PREFLIGHT_OWNED` is
     the same mechanism for the base-currency precondition: a door that can hand-write `base_ok_sha` could
@@ -1315,8 +1328,9 @@ def cmd_set(path: Path, args) -> int:
 
 
 def cmd_verdict(path: Path, args) -> int:
-    """Record ONE landed review verdict — the ONLY sanctioned way, and the only door that writes the
-    counters (stage-2-review-gate.md, "Recording a verdict").
+    """Record ONE landed review verdict — the ONLY sanctioned way, and the only door that writes
+    `review_rounds` (stage-2-review-gate.md, "Recording a verdict"). It is NOT the only writer of
+    `ns_streak`; the bullet for that field below names the other one.
 
     It does THREE things in one atomic write, and the whole point is that they cannot be done separately:
 
@@ -1327,7 +1341,9 @@ def cmd_verdict(path: Path, args) -> int:
         tool to argue with;
       * applies the TALLY — `satisfied` adds one to `reviews_ok`; `not-satisfied` VOIDS it (the SHA's
         verdicts are worthless the moment one pass says the content is wrong);
-      * moves `ns_streak` — up on `not-satisfied`, back to 0 on a `satisfied` and on nothing else.
+      * moves `ns_streak` — up on `not-satisfied`, back to 0 on a `satisfied`. This door is not its only
+        writer: `repair-pass.py decide` also clears it on a non-abort reassessment decision, because a
+        repair changes the terms the streak was measuring. Nothing else writes it, and there is no flag.
 
     **The head SHA is checked against the row, and a mismatch is REFUSED.** A verdict describes the
     content the pass RAN on. If the tip has moved since, that verdict describes content that is no longer
@@ -1925,7 +1941,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--pr", required=True, help="PR number (row key)")
     add_row_field_opts(s, creating=False)  # set may NOT write CREATE_ONLY fields — no --base-branch flag
 
-    # The ONE door that records a review verdict — and the only writer of `review_rounds`/`ns_streak`.
+    # The ONE door that records a review verdict — and the only writer of `review_rounds`. It also moves
+    # `ns_streak`, which has a second tool writer (`repair-pass.md`, "A repair that changes the terms
+    # clears the streak").
     v = sub.add_parser("verdict", help="record ONE landed review verdict: bumps review_rounds, applies "
                                        "the tally, moves ns_streak — atomically. NEVER set reviews_ok by hand")
     v.add_argument("--pr", required=True, help="PR number (row key)")

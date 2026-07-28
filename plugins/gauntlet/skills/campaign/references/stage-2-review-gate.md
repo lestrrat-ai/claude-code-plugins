@@ -849,10 +849,12 @@ indistinguishable from an earned one, so the door is simply not there.
 (`set --reviews-ok 0` stays available and is still correct: **voiding** the tally on a PR-content change is
 not a verdict — no round happened — and the table below lists every site that owes it.)
 
-**`review_rounds` and `ns_streak` are the loop's only memory across fresh-context heartbeats, and neither is
-ever reset** — not by a fix, a rebase, a content change, or a re-triage. Both are written **and READ** by
-`verdict` itself; see `files-and-ledger.md` (the `review_rounds` / `ns_streak` field definitions) for what
-the counters mean and why the reader is fused into the door that cannot be skipped.
+**`review_rounds` and `ns_streak` are the loop's only memory across fresh-context heartbeats, and NOTHING a
+gate reset touches ever clears either** — not a fix, a rebase, a content change, or a re-triage.
+`review_rounds` is never reset by anything at all. `ns_streak` is cleared by a SATISFIED, and by a non-abort
+reassessment decision (`repair-pass.md` owns that second writer and why it is safe). Both are written **and
+READ** by `verdict` itself; see `files-and-ledger.md` (the `review_rounds` / `ns_streak` field definitions)
+for what the counters mean and why the reader is fused into the door that cannot be skipped.
 
 **At a review-loop cap, `verdict` sets `status = repairing` and EXITS NON-ZERO.** The PR has stopped
 converging: **do NOT dispatch a fix subagent and do NOT launch another review pass for it.** Run

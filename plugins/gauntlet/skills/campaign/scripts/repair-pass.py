@@ -1116,6 +1116,28 @@ def cmd_decide(path: Path, args) -> int:
         # Terminal. The driver still runs the abort PROCEDURE (leave the PR OPEN, drop this run's labels,
         # write abort-<id>.md) — `bailout-and-final-report.md` owns it, and this does not replace it.
         row["status"] = "aborted"
+    else:
+        # A NON-ABORT REPAIR CHANGES WHAT THE REVIEWER MEASURES AGAINST, so the streak it accumulated
+        # under the OLD terms is no longer evidence about the NEW ones. Zero it here, at the same write
+        # that spends the budget.
+        #
+        # Without this, a repair that WORKS buys exactly ONE round. That is not hypothetical: PR #201 took
+        # `ns_streak` to the cap over five rounds of one finding class, spent repair 1 on a REPAIR-INTENT
+        # that provably closed that class — the next round raised nothing from it and found four unrelated
+        # defects instead — and was then forced to abort, because the streak was still sitting at the cap
+        # and one more NOT SATISFIED tripped it again. The mechanism meant to rescue a stuck PR killed a
+        # PR it had just unstuck.
+        #
+        # ABORT is excluded because it is terminal: the row leaves the gate, so there is no next round for
+        # a reset to serve. A legacy DEMOTE never reaches this branch — `decide` refuses a row that already
+        # carries a `repair_decision`, so a demote row returns to `in_review` through its own procedure with
+        # its streak untouched (`repair-pass.md`, "Complete a legacy DEMOTE").
+        #
+        # WHY THIS CANNOT BECOME A LOOP, which is the only reason it is safe: `review_rounds` is NOT reset
+        # here and never is, so `ROUND_CAP` still bounds the PR's whole life no matter how many streaks are
+        # cleared. Total exposure stays what it always was — `ROUND_CAP` rounds and `REPAIR_CAP` repairs —
+        # and this only changes WHICH cap fires first for a PR whose terms changed mid-loop.
+        row["ns_streak"] = "0"
     L.dump(path, header, rows)
     print(json.dumps({f: row[f] for f in L.ROW_FIELDS}))
 
