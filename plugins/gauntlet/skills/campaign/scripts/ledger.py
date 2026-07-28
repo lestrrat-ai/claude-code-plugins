@@ -1148,7 +1148,9 @@ def settable(name: str) -> bool:
 
     `pr` is the row key (passed via --pr) and `id` is derived from it. `VERDICT_OWNED` is the new
     exclusion, and it is the mechanism behind "`review_rounds` is NEVER reset": a door that can write a
-    counter is a door that can zero it, so those two fields simply have NO flag. `verdict` writes them.
+    counter is a door that can zero it, so those two fields simply have NO flag. `verdict` is the only
+    writer of `review_rounds`; `ns_streak` has a second TOOL writer and still no flag at either door (the
+    `VERDICT_OWNED` comment owns that asymmetry).
     `REPAIR_OWNED` is the same mechanism for the repair's bound: a driver that could zero `repair_count`
     could repair forever, so only `repair-pass.py decide` writes what a PR has spent. `PREFLIGHT_OWNED` is
     the same mechanism for the base-currency precondition: a door that can hand-write `base_ok_sha` could
@@ -1326,8 +1328,9 @@ def cmd_set(path: Path, args) -> int:
 
 
 def cmd_verdict(path: Path, args) -> int:
-    """Record ONE landed review verdict — the ONLY sanctioned way, and the only door that writes the
-    counters (stage-2-review-gate.md, "Recording a verdict").
+    """Record ONE landed review verdict — the ONLY sanctioned way, and the only door that writes
+    `review_rounds` (stage-2-review-gate.md, "Recording a verdict"). It is NOT the only writer of
+    `ns_streak`; the bullet for that field below names the other one.
 
     It does THREE things in one atomic write, and the whole point is that they cannot be done separately:
 
@@ -1938,7 +1941,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--pr", required=True, help="PR number (row key)")
     add_row_field_opts(s, creating=False)  # set may NOT write CREATE_ONLY fields — no --base-branch flag
 
-    # The ONE door that records a review verdict — and the only writer of `review_rounds`/`ns_streak`.
+    # The ONE door that records a review verdict — and the only writer of `review_rounds`. It also moves
+    # `ns_streak`, which has a second tool writer (`repair-pass.md`, "A repair that changes the terms
+    # clears the streak").
     v = sub.add_parser("verdict", help="record ONE landed review verdict: bumps review_rounds, applies "
                                        "the tally, moves ns_streak — atomically. NEVER set reviews_ok by hand")
     v.add_argument("--pr", required=True, help="PR number (row key)")
