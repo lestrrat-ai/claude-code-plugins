@@ -1251,19 +1251,70 @@ def report_path(progress: Path) -> Path:
     return progress.parent / (progress.name[: -len(PROGRESS_SUFFIX)] + REPORT_SUFFIX)
 
 
+# The Default_Ignorable_Code_Point members that are BOTH printable and non-space — the part of "renders as
+# nothing" that `str.isspace()` and `not str.isprintable()` cannot reach (267 code points as of Unicode
+# 15.0, the version this was transcribed against; the ranges are the fact, the count is illustration).
+# Python classes them Mn or Lo: a Hangul filler is a LETTER and a variation selector is a MARK, and both
+# print as nothing. Every other member of the property (U+00AD, U+061C, U+200B–U+200F, U+202A–U+202E,
+# U+2060–U+206F, U+FEFF, U+FFF0–U+FFF8, U+1BCA0–U+1BCA3, U+1D173–U+1D17A, and the Cf and unassigned parts
+# of U+E0000–U+E0FFF) is already Cf or Cn, so the category tests below already catch it.
+#
+# UNICODE OWNS THIS LIST; this file only transcribes it. It is a NAMED property with fixed membership, not
+# a catalogue of characters somebody happened to run into, which is why enumerating code points here does
+# not reopen the hole the category tests avoid. Regenerate it from `DerivedCoreProperties.txt` for the
+# running Python's Unicode version — `unicodedata.unidata_version` — if that version ever adds a member;
+# never extend it by hand with a character that merely looks suspicious.
+#
+#   U+034F         combining grapheme joiner          U+3164          Hangul filler
+#   U+115F–U+1160  Hangul choseong/jungseong fillers  U+FE00–U+FE0F   variation selectors 1–16
+#   U+17B4–U+17B5  Khmer inherent vowels AQ/AA        U+FFA0          halfwidth Hangul filler
+#   U+180B–U+180D, U+180F  Mongolian free variation selectors 1–4
+#   U+E0100–U+E01EF        variation selectors supplement 17–256
+_DEFAULT_IGNORABLE = (
+    (0x034F, 0x034F), (0x115F, 0x1160), (0x17B4, 0x17B5), (0x180B, 0x180D), (0x180F, 0x180F),
+    (0x3164, 0x3164), (0xFE00, 0xFE0F), (0xFFA0, 0xFFA0), (0xE0100, 0xE01EF),
+)
+
+
+def _default_ignorable(ch: str) -> bool:
+    """Is `ch` a Default_Ignorable code point the category tests in `visible_start` do not already reach?"""
+    point = ord(ch)
+    return any(low <= point <= high for low, high in _DEFAULT_IGNORABLE)
+
+
 def visible_start(line: str) -> int:
     """Index of the first character of `line` a READER CAN SEE — where a token may legitimately begin.
 
-    Tests by CATEGORY, never by a list of code points, so a character nobody has thought of yet is not a
-    new hole: `str.isspace()` covers Zs/Zl/Zp and the ASCII whitespace controls, and `not
-    str.isprintable()` covers the rest of Cc plus all of Cf (U+FEFF, U+200B–U+200F, U+2060, U+00AD,
-    U+061C, U+180E), Cs, Co and Cn. `str.lstrip()` alone is not enough: U+FEFF is Cf with
-    `isspace() == False`, so a report whose first line still carries a decoded byte-order mark keeps it
-    attached to the token — and `read_text` decodes as `utf-8`, never `utf-8-sig`, on purpose, so that
-    what the tool reads is what the file says.
+    Two KINDS of test, and together they are COMPLETE for that meaning. The CATEGORY tests carry the
+    open-ended part, so a character nobody has thought of yet is not a new hole: `str.isspace()` covers
+    Zs/Zl/Zp and the ASCII whitespace controls, and `not str.isprintable()` covers the rest of Cc plus all
+    of Cf (U+FEFF, U+200B–U+200F, U+2060, U+00AD, U+061C, U+180E), Cs, Co, Cn. `_DEFAULT_IGNORABLE` carries
+    what no category test can: the code points that ARE printable and non-space and still render as
+    nothing. Its listing of code points is not the ad-hoc enumeration the category tests exist to avoid —
+    it transcribes one NAMED CLOSED Unicode property, and that property is what makes this complete: after
+    it there is no further category of invisible character to add.
+
+    `str.lstrip()` alone is not enough: U+FEFF is Cf with `isspace() == False`, so a report whose first
+    line still carries a decoded byte-order mark keeps it attached to the token — and `read_text` decodes
+    as `utf-8`, never `utf-8-sig`, on purpose, so that what the tool reads is what the file says.
+
+    THE BOUNDARY IS "INVISIBLE", AND IT MUST NOT MOVE OUTWARD — a claim about this code, checkable here.
+    A VISIBLE prefix (a markdown bullet or quote marker, bold markers, a spacing combining mark such as
+    U+0301, a lowercase spelling) is read as ABSENT on purpose: such a line does not present as the exact
+    token, and the exact form is `RESIDUAL_RISK_RE`'s to own. The wider rule that would close that whole
+    prefix class — skip every leading non-alphanumeric — was trialled, and it REFUSES VALID REPORTS. A
+    reviewer's SATISFIED report that quotes the intent bullet forbidding a residual-risk line on a
+    NOT SATISFIED or DEFERRED result (a bullet handed verbatim to every reviewer in the review prompt, so
+    quoting it is ordinary) is refused EVEN WHEN that report also carries a well-formed residual-risk line
+    of its own: the wider rule skips the quoted bullet's leading punctuation, counts the quotation as a
+    second occurrence, and the at-most-one check in `parse_report` fires. To falsify this, swap the loop
+    condition below for `not line[i].isalnum()` and count the detections in such a report — two, not one.
+    Destroying complete passes is the exact harm this parser exists to prevent.
     """
     i = 0
-    while i < len(line) and (line[i].isspace() or not line[i].isprintable()):
+    while i < len(line) and (
+        line[i].isspace() or not line[i].isprintable() or _default_ignorable(line[i])
+    ):
         i += 1
     return i
 

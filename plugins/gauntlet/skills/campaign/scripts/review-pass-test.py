@@ -789,11 +789,15 @@ class Tables:
                 "want": UNUSABLE, "needle": "residual risk must be exactly",
                 "why": "the residual-risk fields and em dash have one exact shape",
             },
-            # The line being OPTIONAL is exactly what makes these two load-bearing: a detector that only
+            # The line being OPTIONAL is exactly what makes these three load-bearing: a detector that only
             # sees column 0 reads an INVISIBLY PREFIXED line as ABSENT, so a malformed line is silently
             # accepted instead of refused. Present-but-malformed and never-written must stay
             # distinguishable. `visible_start` in review-pass.py owns which prefixes count as invisible;
-            # these two sample it — one prefix a reader would notice as blank space, one they would not.
+            # these three sample one prefix per branch of its rule: whitespace a reader sees as blank space
+            # (`isspace`), a format character that renders nothing (`not isprintable`), and a
+            # Default_Ignorable code point that is printable and non-space, which only the named Unicode
+            # property reaches. A VISIBLE prefix (`- `, `> `, a spacing combining mark) is NOT in this set:
+            # such a line does not present as the exact token, so it is read as absent by contract.
             "indented-residual-risk": {
                 "report": "Report body.\n  RESIDUAL-RISK: parser — hard\nVERDICT: SATISFIED\n",
                 "want": UNUSABLE, "needle": "residual risk must be exactly",
@@ -807,6 +811,15 @@ class Tables:
                           "VERDICT: SATISFIED\n",
                 "want": UNUSABLE, "needle": "residual risk must be exactly",
                 "why": "an invisible prefix hides a malformed line from the detector, not from the report",
+            },
+            # U+034F COMBINING GRAPHEME JOINER is Mn, so it is BOTH printable and non-space: neither
+            # `isspace()` nor `not isprintable()` reaches it, only Default_Ignorable_Code_Point does. Its
+            # category is not the discriminator — U+0301 is Mn too and renders a visible acute.
+            "default-ignorable-prefixed-residual-risk": {
+                "report": "Report body.\n\u034fRESIDUAL-RISK: parser contract - wrong separator\n"
+                          "VERDICT: SATISFIED\n",
+                "want": UNUSABLE, "needle": "residual risk must be exactly",
+                "why": "a code point that renders as nothing is a prefix the reader cannot see",
             },
             "misplaced-residual-risk": {
                 "report": "RESIDUAL-RISK: parser — hard\nand then more prose\nVERDICT: SATISFIED\n",
