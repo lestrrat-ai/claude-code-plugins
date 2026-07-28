@@ -8,9 +8,10 @@ EVERY FIXTURE PINS A RULE WITH TEETH: it asserts the outcome on one side of a bo
 opposite outcome on the other, so an implementation that returned a constant would go red.
 
 The suite's own shape enforces the design's central promise. `t_no_message_disables_the_route` runs
-every fixture message plus the ten real provider messages that defeated the predecessor's exact
-parser, and requires that not one of them ends the external route beyond the current pass. That is
-the rule the old design broke, so it is checked over the whole corpus rather than case by case.
+BOTH corpora this file declares — the ten real provider messages that defeated the predecessor's
+exact parser, and the other shapes these fixtures pin — and requires that not one of them ends the
+external route beyond the current pass. That is the rule the old design broke, so it is checked over
+a corpus rather than case by case. Add a message shape to a fixture, add it to a corpus too.
 """
 
 from __future__ import annotations
@@ -85,6 +86,14 @@ OTHER_MESSAGES = (
     "ECONNREFUSED 127.0.0.1:443",
     "opaque provider failure",
     "reviewed 40 files in 12 seconds and then died",
+    # The shapes that reached the wrong class before the matching layer was made uniform. They are
+    # listed here as well as in their own fixtures so the route-disable promise below covers them.
+    "provider response is unquotable",
+    "bash: unterminated quotation mark in the prompt",
+    "I’m sorry, but I can’t help with that.",
+    "I am sorry, but I can't\nhelp with that request.",
+    "retry after -2 hours",
+    "retry after 1,800 seconds",
 )
 
 
@@ -171,6 +180,67 @@ def t_refusal_stops_and_asks() -> None:
           "an unrecognised refusal shape escalated instead of taking the safe unknown landing")
 
 
+def t_a_marker_matches_whole_words_only() -> None:
+    # The anchor is UNIFORM: every marker matches as a whole word, so none of them can claim a class
+    # from inside an unrelated word. Both of these read `usage-limit` when `quota` matched as a bare
+    # substring — one waiting five minutes for a limit nobody hit.
+    for text in ("provider response is unquotable",
+                 "bash: unterminated quotation mark in the prompt"):
+        check(kind(text) == B.UNKNOWN,
+              f"{text!r} claimed a class from a marker buried inside an unrelated word")
+        check(wait(text) == B.DEFAULT_WAIT_SECONDS[B.UNKNOWN],
+              f"{text!r} took another class's default delay")
+    # …and the other side of that boundary: the anchor must not cost the plain and PLURAL wordings a
+    # provider actually uses. A trailing `\b` right after the marker loses every one of these, which
+    # is why `_marker_pattern` admits one trailing `s` inside the anchor.
+    for text, expected in (("quota exceeded for this org", B.USAGE_LIMIT),
+                           ("monthly quotas exceeded for this org", B.USAGE_LIMIT),
+                           ("you have exceeded your rate limits", B.USAGE_LIMIT),
+                           ("your limit resets in 2 hours 30 minutes", B.USAGE_LIMIT),
+                           ("two connection resets in a row", B.TRANSIENT),
+                           ("error: unknown options `--nope` `--nah`", B.NOT_FOUND)):
+        check(kind(text) == expected, f"{text!r} classified {kind(text)!r}, not {expected!r}")
+    # The `-ies` plural is the shape the trailing `s` does NOT cover, so those markers keep their own
+    # entry. Both spellings must still reach the operator.
+    for text in ("This request violates the content policy.",
+                 "Your request is forbidden by our content policies."):
+        check(kind(text) == B.REFUSAL, f"a policy refusal ({text!r}) stopped being a refusal")
+
+
+def t_a_refusal_survives_typography_and_wrapping() -> None:
+    # A refusal that fails to reach the operator is the WORST outcome this file has: it falls back to
+    # the orchestrator's own engine and silently drops the gate's engine diversity. So one refusal is
+    # pinned in every spelling a provider actually emits it in.
+    #
+    # The apostrophe variants, none of which NFKC would fold to ASCII:
+    for text in ("I’m sorry, but I can’t help with that.",       # U+2019
+                 "I‘m sorry, but I can‘t help with that.",       # U+2018
+                 "I canʼt help with that.",                      # U+02BC
+                 "I canʹt help with that.",                      # U+02B9
+                 "I can＇t help with that.",                      # U+FF07
+                 "I can′t help with that.",                      # U+2032
+                 "I can´t help with that.",                      # U+00B4
+                 "I can`t help with that.",                      # U+0060
+                 "I can't help with that.",                      # the ASCII original
+                 # …and the wrapping captured stderr does to any of them at the terminal width.
+                 "I am sorry, but I can't\nhelp with that request.",
+                 "I can't  help with that.",
+                 "I can’t\thelp with that.",
+                 "I can’t\n  help with that."):
+        check(kind(text) == B.REFUSAL, f"a genuine refusal ({text!r}) was lost to {kind(text)!r}")
+        check(action(text) == B.STOP_AND_ASK,
+              f"a genuine refusal ({text!r}) fell back to a same-engine reviewer")
+    # …and the other side of that boundary, twice over. Whitespace inside a marker absorbs a WRAP,
+    # never arbitrary words: the marker's words must still be adjacent.
+    for text in ("I can't decide whether to help with that",
+                 "I can't, on reflection, help with that"):
+        check(kind(text) != B.REFUSAL,
+              f"{text!r} matched a marker across words that are not adjacent")
+    # And folding an apostrophe manufactures no marker where none was written.
+    check(kind("the model can t help itself to more tokens") != B.REFUSAL,
+          "a message with no apostrophe at all was folded into a refusal")
+
+
 def t_refused_to_needs_the_infinitive() -> None:
     # `refused to` / `refusal to` and not the bare stems: transport wording, in either the verb or
     # the noun spelling, must not manufacture a stop-and-ask.
@@ -240,6 +310,11 @@ def t_line_anchored_usage_banner() -> None:
           "telemetry prose `token usage:` was read as a CLI help dump")
     check(kind("  usage: codex\nmemory usage: 82%") == B.NOT_FOUND,
           "an indented help banner on a later line stopped matching")
+    # A banner that opens a LATER line is the case that makes the line structure load-bearing. It is
+    # why `_normalize` folds apostrophes but never collapses newlines: rewrite the message's
+    # whitespace to "complete" that fix and this banner is mid-line prose and stops matching.
+    check(kind("codex exec failed\nusage: codex exec [OPTIONS] [PROMPT]") == B.NOT_FOUND,
+          "a help banner opening a later line stopped matching; the message's lines were collapsed")
     # …and the banner is the WEAK half of not-found: alongside a real limit message, the limit wins,
     # so the case this helper exists for keeps its wait and its one external retry.
     riding_along = "usage: rate limit exceeded; retry after 60 seconds"
@@ -316,6 +391,34 @@ def t_first_readable_pair_wins() -> None:
           "telemetry beat the provider's real delay to the first readable pair")
     check(action(hijack) == B.FALLBACK_NATIVE and wait(hijack) != B.MIN_WAIT_SECONDS,
           "a 45-minute limit relaunched the external reviewer instead of reviewing natively")
+
+
+def t_the_scan_never_starts_inside_a_number() -> None:
+    # One rule, every shape: the scan must not re-anchor in the MIDDLE of a number a provider wrote,
+    # whatever character precedes the digits it lands on. Each of these answered a number nobody
+    # stated — `-2 hours` as 7200, `1,800 seconds` as 800, and `10,000 seconds` as 0, which waited
+    # five seconds and relaunched the external reviewer into a limit hours long.
+    for text in ("retry after -2 hours", "retry after +2 hours", "retry in -30 seconds",
+                 "retry after 1,800 seconds", "retry after 10,000 seconds",
+                 "retry after 1.5 seconds"):
+        check(B.guess_delay_seconds(text) is None,
+              f"{text!r} started reading inside a written number")
+        check(action(text) == B.WAIT_EXTERNAL,
+              f"{text!r} escalated instead of taking its class default")
+        check(wait(text) == B.DEFAULT_WAIT_SECONDS[kind(text)],
+              f"{text!r} did not take its class default")
+    # …and the other side of that boundary, which is the whole difficulty: a character that sits
+    # BETWEEN two numbers is not part of either. The `-` in a RANGE separates two numbers instead of
+    # signing one, and a range keeps guessing its high end; a `,` followed by a space punctuates a
+    # sentence instead of grouping digits. A bare `[-+]` in the lookbehind passes every check above
+    # and breaks the first two of these.
+    for text, expected in (("try again in 30-60 seconds", 60),
+                           ("please wait 30-60 seconds before retrying", 60),
+                           ("wait, 60 seconds", 60),
+                           ("retry after 2 hours", 7200),
+                           ("retrying in 214 ms", 1)):
+        check(B.guess_delay_seconds(text) == expected,
+              f"{text!r} guessed {B.guess_delay_seconds(text)!r}, not {expected}")
 
 
 def t_wait_is_clamped_at_both_ends() -> None:
@@ -419,10 +522,22 @@ def t_cli_reports_the_decision_as_json() -> None:
     check(payload["attempts_spent"] == 1, "the CLI lost the attempt count it was given")
     code, out, _err = capture_cli(B.main, ["classify", "--message", "codex: command not found"])
     check(code == 0 and json.loads(out)["kind"] == B.NOT_FOUND, "the CLI lost the classify result")
-    code, _out, err = capture_cli(B.main, ["decide", "--message", "x", "--message-file", "y"])
+    code, _out, err = capture_cli(B.main, ["decide", "--message", "x", "--message-file", "y",
+                                           "--attempts-spent", "0"])
     check(code != 0 and "exactly one" in err, "the CLI accepted two message sources")
-    code, _out, err = capture_cli(B.main, ["decide"])
+    code, _out, err = capture_cli(B.main, ["decide", "--attempts-spent", "0"])
     check(code != 0 and "exactly one" in err, "the CLI accepted no message source at all")
+    # The attempt count is the ONLY thing that reaches the cap, so the CLI must refuse to guess it.
+    # Defaulted to 0, a caller that follows the prose and omits it waits and retries forever.
+    code, _out, err = capture_cli(B.main, ["decide", "--message", "usage limit reached"])
+    check(code != 0 and "attempts-spent" in err,
+          "the CLI ran `decide` without the attempt count and defaulted the retry budget")
+    # …and the other side: the count it IS given is honoured at both ends of the cap.
+    for spent, expected in ((1, B.WAIT_EXTERNAL), (B.MAX_EXTERNAL_ATTEMPTS, B.FALLBACK_NATIVE)):
+        code, out, _err = capture_cli(B.main, ["decide", "--message", "usage limit reached",
+                                               "--attempts-spent", str(spent)])
+        check(code == 0 and json.loads(out)["action"] == expected,
+              f"the CLI at {spent} spent attempts did not return {expected!r}")
 
 
 CASES = [
@@ -432,6 +547,10 @@ CASES = [
      t_ten_provider_messages_land_where_documented),
     ("refusal-stops", "a reviewer refusal reaches the operator, never a same-engine fallback",
      t_refusal_stops_and_asks),
+    ("marker-word-anchor", "a marker claims a class as a whole word, plural included, never as a "
+     "substring inside another word", t_a_marker_matches_whole_words_only),
+    ("refusal-typography", "a refusal reaches the operator in every apostrophe and line-wrap "
+     "spelling a provider emits it in", t_a_refusal_survives_typography_and_wrapping),
     ("refused-to-anchor",
      "`refused to` / `refusal to` need their infinitive, so transport wording is not a refusal",
      t_refused_to_needs_the_infinitive),
@@ -445,6 +564,8 @@ CASES = [
     ("unreadable-delay", "unreadable delay text takes the default instead of escalating",
      t_unreadable_delay_shapes_are_not_errors),
     ("first-pair", "the guess reads the first readable number-and-unit pair", t_first_readable_pair_wins),
+    ("number-anchored", "the scan never starts inside a written number, while a range still guesses "
+     "its high end", t_the_scan_never_starts_inside_a_number),
     ("wait-clamped", "the wait has a floor, and past the cap the pass reviews natively",
      t_wait_is_clamped_at_both_ends),
     ("scan-bounded", "the delay guess reads a bounded slice, while the marker scan reads it all",

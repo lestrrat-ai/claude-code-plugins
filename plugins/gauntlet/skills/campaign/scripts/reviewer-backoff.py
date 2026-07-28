@@ -78,8 +78,16 @@ DEFAULT_WAIT_SECONDS = {USAGE_LIMIT: 300, TRANSIENT: 30, UNKNOWN: 60}
 
 # --- markers -----------------------------------------------------------------
 #
-# Marker vocabulary, not grammar. A class is claimed by a fixed phrase appearing anywhere in the
-# captured text; nothing here parses the message's structure.
+# Marker vocabulary, not grammar. A class is claimed by a fixed phrase at ANY POSITION in the
+# captured text — position-independent, though never inside a longer word (the rule below) — and
+# nothing here parses the message's structure.
+#
+# ONE matching rule covers EVERY marker, and `_marker_pattern` is its only implementation. A marker
+# matches when it stands as a WHOLE WORD — never as a substring inside a longer word — with any run
+# of whitespace standing in for each of its spaces and an optional trailing `s` for the plural. The
+# digit and line-leading shapes below are REFINEMENTS of that rule, tightening it for one kind of
+# marker; they are NOT the only markers that carry an anchor. `classify()` folds the apostrophe
+# variants once before any of this runs. Add a marker and it inherits all of it.
 
 REFUSAL_MARKERS = (
     "can't help",
@@ -103,9 +111,11 @@ REFUSAL_MARKERS = (
     # its noun spelling, and `decline` in all four of its — for one reason: a refusal marker must
     # carry its own refusal sense, and none of these bare stems does. `refused`/`refusal` also
     # matched transport wording — a connection "refused by the upstream", a "connection refusal by
-    # the upstream", a peer that "refused the connection" — and, because a non-digit marker compiles
-    # with no word boundary, `refused` matched as a pure substring inside `ECONNREFUSED`. The bare
-    # stem `decline` matched the same way in billing, auth, and gateway wording, where it is a
+    # the upstream", a peer that "refused the connection". Every one of those is the bare stem as a
+    # WHOLE WORD, so the uniform anchor `_marker_pattern` now applies does not separate them; only
+    # the following infinitive does. (The anchor did retire one of this vocabulary's original
+    # reasons: a bare stem can no longer match inside a longer word such as `ECONNREFUSED`.) The
+    # bare stem `decline` matched the same way in billing, auth, and gateway wording, where it is a
     # REQUEST that was declined — a credential or payment outcome, not an agent refusing a task.
     # Each of those manufactured a stop-and-ask and ended autonomous handling of the PR. Wording
     # these markers no longer match lands in `auth`, `transient` or `unknown`, and falls back or is
@@ -121,11 +131,12 @@ REFUSAL_MARKERS = (
     "declined to",
     "declining to",
     # The policy spellings below are the only markers here with a plural at all, and their `-y` ->
-    # `-ies` plural is NOT a superstring of the singular, so both forms are spelled out. A plural
-    # that merely appends `s` would need no second entry, because a marker matches as a substring;
-    # the `-ies` shape is exactly the case that substring rule does not cover. Spell the plural in
-    # FULL rather than truncating to a stem: `decide()` interpolates the matched marker into the
-    # operator-facing reason, so a stem would surface there.
+    # `-ies` plural is NOT the singular plus `s`, so both forms are spelled out. A plural that
+    # merely appends `s` needs no second entry, because `_marker_pattern` admits one trailing `s`
+    # inside the word anchor; the `-ies` shape is exactly the case that rule does not cover. That is
+    # the ONLY reason a second entry appears here — do not add one for an `-s` plural. Spell the
+    # plural in FULL rather than truncating to a stem: `decide()` interpolates the matched marker
+    # into the operator-facing reason, so a stem would surface there.
     #
     # Disclosed residual, deliberately NOT narrowed: these six are BARE NOUN PHRASES, so they also
     # match infrastructure prose that merely NAMES one of those systems instead of reporting a
@@ -225,13 +236,58 @@ CANNOT_RUN = (NOT_FOUND, AUTH)
 #: `memory usage: 82%`).
 _LINE_ANCHORED_MARKERS = frozenset({"usage:"})
 
+#: Every character routinely typed or rendered where an ASCII apostrophe belongs, folded to `'`
+#: before any marker is matched. Five refusal markers spell an ASCII apostrophe, and the model
+#: families this campaign reviews with emit the typographic form routinely; unfolded, a genuine
+#: refusal reaches `unknown`, waits, and is then answered by the orchestrator's OWN engine — the one
+#: outcome this file exists to prevent. NFKC is NOT the tool for it: NFKC leaves U+2019 and U+2018
+#: exactly as they are, so the set is explicit. Every entry is one character wide, so folding shifts
+#: no offset the delay guess later measures.
+_APOSTROPHE_FOLD = {
+    ord(character): "'"
+    for character in "‘’‛ʹʼ′´＇`"
+}
+
+
+def _phrase(marker: str) -> str:
+    """One marker as a pattern whose spaces match ANY run of whitespace. Captured stderr is wrapped
+    at the terminal width as a matter of course, so a two-word marker arrives split across a newline
+    routinely; a hard-coded single space loses it."""
+
+    return r"\s+".join(re.escape(word) for word in marker.split(" "))
+
 
 def _marker_pattern(marker: str) -> "re.Pattern[str]":
-    if marker.isdigit():
-        return re.compile(rf"(?<![\w.]){re.escape(marker)}(?![\w.])")
+    """Compile one marker under the single rule the section header states: a WHOLE-WORD match, any
+    whitespace run for a space, an optional trailing `s`. The two shapes below REFINE that rule for
+    one kind of marker each — a narrower anchor for the same purpose — and never leave a marker
+    unanchored.
+
+    Disclosed consequence of the word anchor, and the reason it is worth it anyway: a marker glued
+    to more letters no longer matches, so a runtime's `TimeoutError` or `ConnectTimeout` classifies
+    `unknown` rather than `transient`. Both are retryable, so that costs the unknown default wait
+    instead of the transient one — while the anchor is what stops `quota` from claiming a usage
+    limit inside `unquotable` or `quotation`."""
+
     if marker in _LINE_ANCHORED_MARKERS:
-        return re.compile(rf"(?m)^[ \t]*{re.escape(marker)}", re.IGNORECASE)
-    return re.compile(re.escape(marker), re.IGNORECASE)
+        # A banner marker must OPEN a line. That is stricter than the word anchor, so it replaces it.
+        return re.compile(rf"(?m)^[ \t]*{_phrase(marker)}", re.IGNORECASE)
+    if marker.isdigit():
+        # A status code takes the word anchor plus `.`, so `429` is not read out of `1.429` or a
+        # version string — and no plural, because `429s` names no other status code.
+        return re.compile(rf"(?<![\w.]){_phrase(marker)}(?![\w.])")
+    return re.compile(rf"(?<!\w){_phrase(marker)}s?(?!\w)", re.IGNORECASE)
+
+
+def _normalize(message: str) -> str:
+    """Fold the apostrophe variants so one spelling of each marker suffices.
+
+    Applied ONCE to the whole message before any marker is matched — not per marker, not per class —
+    so a marker added later inherits it. Whitespace is deliberately NOT rewritten here: collapsing
+    newlines would destroy the line structure the line-leading `usage:` banner depends on, and
+    `_marker_pattern` already absorbs a wrapped line inside each marker instead."""
+
+    return message.translate(_APOSTROPHE_FOLD)
 
 
 _PATTERNS = {
@@ -260,14 +316,26 @@ _UNIT_ALTERNATION = (
     r"|hours?|hrs?|h"
     r"|days?|d"
 )
-#: `(?<![\d.])` keeps the scan off the tail of a longer number and off a fraction's decimals, so
-#: `1.5 seconds` reads as no delay at all (default) rather than as 5 seconds. `\b` after the unit
-#: keeps `3pm` and `2026-07-25T13:00:00Z` from yielding one. The value group is deliberately
-#: UNBOUNDED: `MAX_READABLE_DIGITS` bounds the conversion instead, because a width limit in the
-#: pattern makes an over-width run match NOTHING (the lookbehind blocks re-anchoring inside the
-#: digits), which reads a stated over-cap delay as `unreadable` rather than as over-cap.
+#: THE LOOKBEHINDS HAVE ONE JOB: never start reading in the MIDDLE of a number a provider wrote.
+#: So they exclude every character a written number can contain or lead with — a digit, a decimal
+#: point, a thousands separator, a sign — rather than the particular one each reported case used.
+#: Re-anchoring past any of them answers a number nobody stated: `1,800 seconds` read as 800, and
+#: `10,000 seconds` as 0, which relaunched the external reviewer five seconds into a limit hours
+#: long and burned the pass's attempt. `(?<![\d.,])` covers the first three, so `1.5 seconds` and
+#: `1,800 seconds` both read as no delay at all and take the class default. `\b` after the unit
+#: keeps `3pm` and `2026-07-25T13:00:00Z` from yielding one. `(?<!(?<![\d.])[-+])` covers the sign:
+#: `retry after -2 hours` states no wait this code can honour, so it too must read as unreadable
+#: rather than re-anchor past the minus and answer 7200. The INNER lookbehind is what keeps a RANGE
+#: readable — in `30-60 seconds` the `-` follows a digit, so it separates two numbers rather than
+#: signing one, and the pair still guesses 60 exactly as the section header above says it does. A
+#: bare `[-+]` in the lookbehind would break that. Unread is the ORDINARY landing for every one of
+#: these; a mis-read is not, because the caller acts on it.
+#: The value group is deliberately UNBOUNDED: `MAX_READABLE_DIGITS` bounds the conversion instead,
+#: because a width limit in the pattern makes an over-width run match NOTHING (the lookbehind blocks
+#: re-anchoring inside the digits), which reads a stated over-cap delay as `unreadable` rather than
+#: as over-cap.
 DELAY_RE = re.compile(
-    rf"(?<![\d.])(?P<value>\d+)\s*(?P<unit>{_UNIT_ALTERNATION})\b",
+    rf"(?<!(?<![\d.])[-+])(?<![\d.,])(?P<value>\d+)\s*(?P<unit>{_UNIT_ALTERNATION})\b",
     re.IGNORECASE,
 )
 #: A number only means a delay when something retry-ish introduces it. Without this, `attempt 2 of
@@ -308,6 +376,8 @@ MAX_READABLE_DIGITS = 9
 #: no per-match state, so it costs no more on a huge message, while bounding it would drop a refusal
 #: marker sitting past the bound and silently turn a `stop-and-ask` into the same-engine native
 #: fallback this file exists to prevent. Do not "complete" this fix by bounding `classify()` too.
+#: `_normalize` ahead of that scan is one linear `str.translate` and keeps no per-match state
+#: either, so it leaves that reasoning intact.
 MAX_SCANNED_CHARS = 65536
 
 
@@ -396,24 +466,33 @@ def classify(message: object) -> Failure:
     Unrecognized text is `unknown`, never a class that ends the external route for anything beyond
     the current pass. Non-text and empty input is `unknown` too: the caller loses nothing but this
     pass's external attempt, and a native pass is a complete pass.
+
+    `_normalize` runs first and its result is what BOTH halves read, so the marker scan and the
+    delay guess can never disagree about what the message says.
     """
 
     if not isinstance(message, str) or not message.strip():
         return Failure(UNKNOWN, None, None)
+    text = _normalize(message)
     for kind, markers in CLASS_ORDER:
         for marker in markers:
-            if _PATTERNS[marker].search(message):
-                return Failure(kind, marker, guess_delay_seconds(message))
-    return Failure(UNKNOWN, None, guess_delay_seconds(message))
+            if _PATTERNS[marker].search(text):
+                return Failure(kind, marker, guess_delay_seconds(text))
+    return Failure(UNKNOWN, None, guess_delay_seconds(text))
 
 
-def decide(message: object, attempts_spent: object = 0) -> Decision:
+def decide(message: object, attempts_spent: object) -> Decision:
     """Classify one failure and return the next action for THIS review pass.
 
     ``attempts_spent`` is how many external launches the pass has already made. It is the caller's
     whole memory: no deadline, no disable flag, nothing durable. A value that is not a non-negative
     integer is treated as exhausted, so a caller bug costs one native pass instead of an unbounded
     retry loop.
+
+    It has NO default, here or at the CLI, and must not be given one. A default of 0 reads every
+    failure as the pass's first, so a caller that omits it gets `wait-external` forever and never
+    reaches ``MAX_EXTERNAL_ATTEMPTS`` — which would defeat the whole point of bounding the retries.
+    Omitting it must fail loudly instead.
     """
 
     failure = classify(message)
@@ -510,7 +589,9 @@ def main(argv: list[str] | None = None) -> int:
         command.add_argument("--message")
         command.add_argument("--message-file", type=Path)
         if name == "decide":
-            command.add_argument("--attempts-spent", type=int, default=0)
+            # Required, never defaulted — see `decide`'s docstring: a default silently restarts the
+            # retry count at every failure and the cap is then never reached.
+            command.add_argument("--attempts-spent", type=int, required=True)
     sub.add_parser("self-test")
     args = parser.parse_args(argv)
     if args.command == "self-test":

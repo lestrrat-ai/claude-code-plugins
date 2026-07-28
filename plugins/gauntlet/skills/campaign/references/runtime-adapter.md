@@ -163,7 +163,8 @@ review_transition(
 ```
 
 `failure_text` is the captured external-process output. It is set only for `external-system-failure`,
-and it is what the row below hands to `reviewer-backoff.py decide`; every other event passes `null`.
+and it is the failure text the row below hands to `reviewer-backoff.py decide`; every other event
+passes `null`.
 
 **`ReviewAction` is an action NAME, never a record** — the "Review preparation mapping" table below
 enumerates it. The caller runs `decide` itself and KEEPS the whole `BackoffDecision`, so `wait_seconds`
@@ -175,7 +176,7 @@ This operation owns every route change:
 | Input | Action |
 |---|---|
 | selected cross-engine route, paired CLI available | `launch-external` at native-limitation level (no stronger-boundary claim) |
-| `external-system-failure` | run `reviewer-backoff.py decide` over the captured failure text, then take exactly the action it returns — `wait-external`, `fallback-native`, or `stop-and-ask`. "External reviewer failure — marker class and rough backoff" below owns the classes and the schedule |
+| `external-system-failure` | run `reviewer-backoff.py decide` over the captured failure text AND this pass's external-launch count, then take exactly the action it returns — `wait-external`, `fallback-native`, or `stop-and-ask`. "External reviewer failure — marker class and rough backoff" below owns the classes, the schedule, and the exact invocation |
 | `wait-external`, its `wait_seconds` elapsed | re-evaluate capability, then `retry-external` only if still available |
 | selected cross-engine route unavailable before launch (paired CLI absent) | report the failure, then `fallback-native` (disclosed) |
 | native route/fallback can follow the installed contract | `launch-native` with the native limitations below |
@@ -191,6 +192,19 @@ complete the installed contract after its budget does. `reviewer.md` owns the re
 **On `external-system-failure`, run `reviewer-backoff.py decide` and take the action it returns.** This
 section is its single owner. The helper answers only: is the reviewer unusable and in what way, roughly
 how long to wait, and may the pass try the external route again.
+
+Both arguments are REQUIRED, and the command refuses to run without either one:
+
+```text
+run_argv(["python3", backoff_script, "decide",
+          "--message-file", captured_failure_text_file,
+          "--attempts-spent", external_launches_this_pass_has_already_made],
+         repository.project_root)
+```
+
+`--message` takes the text directly in place of `--message-file`; exactly one of the two is accepted.
+**Never omit `--attempts-spent` and never re-send `0`** after a failure that already spent a launch: the
+count is what reaches the cap, so a caller that restarts it waits and retries forever.
 
 ```text
 decide(message: Text, attempts_spent: NonNegativeInt) -> BackoffDecision
