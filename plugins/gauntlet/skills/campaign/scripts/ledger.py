@@ -246,10 +246,11 @@ ROW_FIELDS = (
     # a LEGACY FALLBACK for a row that carries none. `effective_base(header, row)` is the schema-owned
     # resolver — an explicit row value, else the header. files-and-ledger.md, "Base branch", owns the field.
     #
-    # It is TOOL-OWNED and CREATION-ONLY (`CREATE_ONLY`): `add-row` writes it when the row appears and
-    # NOTHING changes it after — there is no `--base-branch` flag at `set`. The campaign never migrates a row
-    # to a new base; a live base that no longer matches the recorded one is an unsupported change a consumer
-    # parks for the user, never a value `set` rewrites.
+    # It is TOOL-OWNED and CREATION-ONLY (`CREATE_ONLY`): `add-row` writes it when the row appears and no
+    # driver door changes it after — there is no `--base-branch` flag at `set`. The campaign never migrates
+    # a row to a new base; a live base that no longer matches the recorded one is an unsupported change a
+    # consumer parks for the user, never a value `set` rewrites. (`CREATE_ONLY` below names the one write
+    # outside those doors — the terminal GitHub-owned refresh, which is not a retarget.)
     #
     # The default is `-`, the schema's own "not set" spelling AND its "inherit the legacy header" signal:
     # an old ledger's rows read back `-` and resolve through the header, exactly as they always did. A `-`
@@ -389,12 +390,19 @@ PREFLIGHT_OWNED = ("base_ok_sha",)
 
 # The row fields that `add-row` may write ONCE, at row creation, and that `set` may NEVER change afterward.
 # `base_branch` is the target `baseRefName` recorded from live GitHub at adoption; the campaign never
-# migrates a row to a new base, so the field is TOOL-OWNED and IMMUTABLE after creation. The mechanism is
-# the same absent-door one `PREFLIGHT_OWNED` uses, but ASYMMETRIC across the two write doors: the flag is
-# present at `add-row` (creation must be able to record the base) and ABSENT at `set` (argparse then refuses
-# `set --base-branch`, so nothing can rewrite it). A field here is still `settable()`; CREATE_ONLY narrows
-# only WHICH door may write it. (`required_set` is NOT here — the grouped required-set refresh
-# rewrites it through `set`, so that door stays open; only the base itself is fixed for a row's life.)
+# migrates a LIVE row to a new base, so the field is TOOL-OWNED and fixed for the row's working life. The
+# mechanism is the same absent-door one `PREFLIGHT_OWNED` uses, but ASYMMETRIC across the two write doors:
+# the flag is present at `add-row` (creation must be able to record the base) and ABSENT at `set` (argparse
+# then refuses `set --base-branch`, so no driver can retarget a row it is still driving). A field here is
+# still `settable()`; CREATE_ONLY narrows only WHICH door may write it. (`required_set` is NOT here — the
+# grouped required-set refresh rewrites it through `set`, so that door stays open.)
+#
+# ONE writer sits outside those doors, and it is not a retarget: `merge.py`'s TERMINAL write refreshes the
+# GitHub-owned fields — `base_branch` among them — when it records a merge the campaign did not perform
+# (`references/files-and-ledger.md`, "GitHub-owned vs campaign-owned row fields"). It fires only on a row
+# that is already terminal, so no rebase, review, or merge can ever read the refreshed value; what reads it
+# is the final report and the carryover projection, which are exactly what must name the base the PR
+# actually merged into. CREATE_ONLY still binds every door a LIVE row is written through.
 CREATE_ONLY = ("base_branch",)
 
 # The park/unpark TRANSITIONS `park`/`unpark` own — the same mechanism as VERDICT_OWNED, one level up at the

@@ -12,6 +12,12 @@ that landed but never finished: the single live view distinguishes MERGED (resum
 cleanup / terminal-write phases) from CLOSED-without-merge (the terminal close-out — record `aborted`, no
 merge, no cleanup, because unmerged branch content must never be destroyed).
 
+An already-`aborted` row whose live view reports MERGED is the third outcome: the user merged the PR this
+run gave up on. That is RECORDED, never resumed — the terminal write flips `status` to `merged` and
+refreshes the whole GITHUB-OWNED field set from that same view in one atomic write, and nothing else runs
+(no merge, no base-sync, no cleanup of the resources the abort handed back). `references/files-and-ledger.md`,
+"GitHub-owned vs campaign-owned row fields", owns which fields those are and why the rest stay frozen.
+
     merge.py run --ledger <state.jsonl> --pr <N> --project-root <dir> --repo <owner/name> \
         [--merge-method squash|merge|rebase]
     merge.py self-test
@@ -54,6 +60,12 @@ VIEW_FIELDS = (
     "state,headRefOid,headRefName,baseRefName,labels,"
     "mergeable,mergeStateStatus,isDraft"
 )
+# The GITHUB-OWNED ledger row fields, each paired with the live `gh pr view` field it CACHES. GitHub is the
+# authority for every pair and the row only holds a copy, so a terminal write that records a merge this
+# campaign did not perform refreshes all of them from the ONE view it decided on — never `status` alone.
+# `references/files-and-ledger.md`, "GitHub-owned vs campaign-owned row fields", is the owner of that rule,
+# of this set's membership, and of why every other row field stays frozen. Never retype either list.
+GITHUB_OWNED_FIELDS = (("head_sha", "headRefOid"), ("base_branch", "baseRefName"))
 
 
 class Refusal(RuntimeError):
@@ -189,9 +201,12 @@ def _validate_state(header: dict, row: dict, pr: str, root: Path, view: dict,
     # between a bug and a destroyed worktree is never relaxed.
     #   * `check_live_refs=False` drops the live head/base/branch equality pins — the checks a MERGE needs to
     #     land on the exact reviewed tip, and the head pin a MERGED-resume keeps to confirm OUR reviewed head
-    #     is what landed. Only the CLOSED terminal paths drop it: a push or a base/branch rename before a
-    #     CLOSE is irrelevant to a row that only records terminal `aborted`, and a CLOSED PR never re-enters
-    #     the open snapshot to have its head_sha refreshed, so pinning it there would wedge the row forever.
+    #     is what landed. Only the LEDGER-ONLY paths drop it — the classification block in `execute` names
+    #     that set and owns why. A push or a base/branch rename before a CLOSE is irrelevant to a row that
+    #     only records terminal `aborted`, and neither a CLOSED nor an externally MERGED PR re-enters the
+    #     open snapshot to have its cache refreshed, so pinning it there would wedge the row forever. Where
+    #     the drift DOES matter — the externally merged `aborted` row, which records `merged` — the terminal
+    #     write refreshes the GitHub-owned fields from the same view instead of pinning them (`_mark_terminal`).
     #   * `require_resolved_ownership=False` drops the fail-closed that BOTH ownership fields are RESOLVED
     #     (∈{yes,no}). That fail-closed is a MERGE-INITIATING sanity gate: a HALF-ADOPTION (pr-adopt.py
     #     registers the ledger row BEFORE it resolves the worktree, so its documented git-failure path leaves
@@ -566,19 +581,56 @@ def _cleanup(root: Path, row: dict) -> dict:
     }
 
 
-def _mark_terminal(ledger: Path, pr: str, status: str) -> None:
+def _github_owned(root: Path, view: dict) -> dict:
+    """The GITHUB-OWNED row values read from ONE live view, VALIDATED before either can reach the store.
+
+    Both values are network-supplied, and both are pasted into commands and compared for equality by every
+    later reader, so each is checked against the same shape its own field already promises: `head_sha` is a
+    full 40-char lowercase object id, and `base_branch` is a name `git check-ref-format` accepts. A view
+    that cannot satisfy both is refused here, before any mutation — the store never caches an unusable copy
+    of a GitHub-owned field.
+    """
+    values: dict = {}
+    for field, live in GITHUB_OWNED_FIELDS:
+        values[field] = view[live]
+    if not SHA_RE.match(values["head_sha"]):
+        raise Refusal(
+            f"live headRefOid {values['head_sha']!r} is not a full lowercase 40-character object id")
+    _validate_ref(root, values["base_branch"], "live baseRefName")
+    return values
+
+
+def _mark_terminal(ledger: Path, pr: str, status: str, *,
+                   github_owned: "dict[str, str] | None" = None) -> None:
     """Write a TERMINAL ledger status (`merged` after a landed merge, `aborted` after a closed-without-merge
-    close-out) as the last, resumable phase. A same-value write is a no-op, so a re-run finalizes idempotently."""
+    close-out) as the last, resumable phase. A same-value write is a no-op, so a re-run finalizes idempotently.
+
+    `github_owned` (from `_github_owned`) refreshes the GitHub-owned cache in the SAME atomic write. It is
+    passed by the ONE path whose validation had to relax the live head/base pins — the already-`aborted` row
+    GitHub now reports MERGED — because that is exactly the path on which the cached copies may no longer
+    describe the PR. Writing `status = merged` there while `head_sha`/`base_branch` still held their
+    abort-time values would leave the row claiming a merge of the wrong commit into the wrong branch. Every
+    other terminal write pinned those fields to the live view already (`_validate_state`, `check_live_refs`),
+    so it has nothing to refresh and passes nothing.
+
+    `head_sha` is written through the schema owner's `apply_head_sha` accessor, so a genuine head move fires
+    the head-move reset AT THE DOOR exactly as every other head write does (`stage-2-ci.md`, "THE LIVENESS
+    COUNTERS", reset-site class 1). This site therefore hand-resets nothing.
+    """
     header, rows = L.load(ledger)
     row = L.find_row(rows, pr)
     if row is None:
         raise Refusal(f"ledger row for PR {pr} disappeared before terminal write")
-    if row["status"] != status:
-        row["status"] = status
-        try:
-            L.save(ledger, header, rows, activity=True)
-        except OSError as exc:
-            raise Refusal(f"terminal ledger write failed: {exc}") from exc
+    updates = {"status": status, **(github_owned or {})}
+    if all(row.get(field) == value for field, value in updates.items()):
+        return
+    if "head_sha" in updates:
+        L.apply_head_sha(row, updates.pop("head_sha"))
+    row.update(updates)
+    try:
+        L.save(ledger, header, rows, activity=True)
+    except OSError as exc:
+        raise Refusal(f"terminal ledger write failed: {exc}") from exc
 
 
 def execute(ledger: Path, pr: str, project_root: Path, repo: str,
@@ -619,12 +671,21 @@ def execute(ledger: Path, pr: str, project_root: Path, repo: str,
     #     merged PR reports MERGED, not CLOSED), left to the terminal status gate below.
     #   * aborted_repeat: an already-`aborted` row whose PR is still CLOSED — the terminal-repeat no-op,
     #     symmetric with the `merged`-repeat below.
-    #   Both are LEDGER-ONLY (record `aborted`/no-op, merge and clean nothing), so both drop the live
-    #   head/base/branch pins (`check_live_refs=False`): a push or base/branch rename before the CLOSE must
-    #   not wedge a settled row, and a CLOSED PR never re-enters the open snapshot to be re-gated.
+    #   * aborted_external_merge: an already-`aborted` row whose PR GitHub now reports MERGED — the user
+    #     merged the PR this run gave up on. RECORDING that disposition, never resuming a merge: the abort
+    #     already handed the owned worktree and branch back to the user, and whatever landed is the user's
+    #     own later work, not this run's reviewed tip. So no `_sync_base` and no `_cleanup` — only the
+    #     terminal write, which refreshes the GITHUB-OWNED fields from this same view.
+    #   All three are LEDGER-ONLY (record `aborted`/`merged`/no-op, merge and clean nothing), so all three
+    #   drop the live head/base/branch pins (`check_live_refs=False`): a push or base/branch rename before
+    #   the terminal outcome must not wedge a settled row, and no terminal row re-enters this run's gate.
+    #   Dropping the pins is what MAKES the GitHub-owned refresh necessary — the cached copies are exactly
+    #   what those pins used to guarantee — and it removes no protection from any resource: `_cleanup`'s own
+    #   identity guards are what refuse a foreign worktree or branch, and no ledger-only path calls it.
     close_out = view["state"] == "CLOSED" and row["status"] not in ("merged", "aborted")
     aborted_repeat = row["status"] == "aborted" and view["state"] == "CLOSED"
-    ledger_only = close_out or aborted_repeat
+    aborted_external_merge = row["status"] == "aborted" and view["state"] == "MERGED"
+    ledger_only = close_out or aborted_repeat or aborted_external_merge
     # merge_initiating is the ONE path that STARTS a merge — a live OPEN state on an in_review row. It is the
     # only path that requires the full merge-tip pins, RESOLVED ownership, and this run's OWN-label presence:
     # a half-adoption (unresolved ownership, no own label yet) must never be merged. Every other path only
@@ -640,13 +701,20 @@ def execute(ledger: Path, pr: str, project_root: Path, repo: str,
         return {"status": "closed-unmerged", "pr": pr, "cleanup": {}}
 
     if row["status"] == "aborted":
+        if view["state"] == "MERGED":
+            # The user merged the PR this campaign abandoned. Record the disposition, and record it WHOLE:
+            # `status` and every GitHub-owned field move together, from this one view, in one write. Nothing
+            # else runs — the `aborted_external_merge` classification above owns why.
+            _mark_terminal(ledger, pr, "merged", github_owned=_github_owned(root, view))
+            return {"status": "merged", "pr": pr, "cleanup": {}}
         # Terminal-repeat, symmetric with the `merged` no-op below (both terminal statuses are safe to
         # repeat). A CLOSED live state confirms the recorded abort still holds -> the same already-complete
-        # no-op, no ledger write. A live OPEN or MERGED state CONTRADICTS the terminal `aborted` row (the PR
-        # is no longer closed-without-merge); refuse naming the mismatch, never a silent no-op.
+        # no-op, no ledger write. A live OPEN state CONTRADICTS the terminal `aborted` row (the PR is
+        # neither closed-without-merge nor merged); refuse naming the mismatch, never a silent no-op.
         if view["state"] != "CLOSED":
             raise Refusal(
-                f"terminal ledger row says aborted but GitHub state is {view['state']!r}, not CLOSED")
+                f"terminal ledger row says aborted but GitHub state is {view['state']!r}, "
+                "not CLOSED or MERGED")
         return {"status": "already-complete", "pr": pr, "cleanup": {}}
 
     if row["status"] == "merged":

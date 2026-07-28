@@ -132,7 +132,11 @@ branch — the repo's "Automatically delete head branches" setting alone governs
 
 Each phase leaves a durable or safely repeatable checkpoint. Re-run the same command after any failure:
 GitHub `MERGED` skips the merge call; base updates are fast-forward-only; absent owned worktrees/branches
-count as completed cleanup; a terminal ledger row is a no-op.
+count as completed cleanup; a terminal ledger row is a no-op — except an `aborted` row whose live view
+reports MERGED, which is the user merging the PR this run gave up on. That is RECORDED: one terminal write
+flips `status` to `merged` and refreshes the GitHub-owned fields from the same view, and nothing else runs —
+no merge, no base-sync, and no cleanup of the worktree and branch the abort handed back. `files-and-ledger.md`,
+"GitHub-owned vs campaign-owned row fields", owns which fields move and which deliberately do not.
 
 When the checked-out local base is what git fast-forwards and an unrelated actor's **uncommitted** edits in
 that checkout block it, the command **refuses and lists the blocking paths it detected** (each staged, unstaged,

@@ -19,7 +19,7 @@ Two entry paths feed it (see "Run identity and concurrency" for the full grammar
   reported blocker before adoption.
 
 Each adopted PR **records its own live `baseRefName`** on its ledger row — the row's `base_branch`, written
-**once at creation** by `pr-adopt.py` (`add-row --base-branch`) and **immutable** afterward (`files-and-ledger.md`,
+**once at creation** by `pr-adopt.py` (`add-row --base-branch`) and **never retargeted** afterward (`files-and-ledger.md`,
 the row `base_branch` field). Resolve a row's base through `ledger.py`'s `effective_base` (an explicit row
 value, else the legacy header fallback), never the raw header field. **Adopting several PRs at once does
 NOT require their bases to agree** — one run may hold PRs targeting different bases (some on `v3`, others on
