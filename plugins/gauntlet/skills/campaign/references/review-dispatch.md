@@ -89,7 +89,8 @@ shortens, or duplicates the template, and it never asks the reviewer to contact 
 
 The shared prompt tells every route to review the whole `origin/<base>...HEAD` diff against the intent and plan,
 record progress/findings/amendments only through the bundled tools, perform the adversarial sweep, obey
-the finding-anchor rule, and return the exact residual-risk/verdict ending. These are prompt contents,
+the finding-anchor rule, and return the exact verdict ending with its optional residual-risk line above
+it. These are prompt contents,
 not a second dispatch procedure; edit and test the bundled template when that contract changes.
 
 ### Launch the prepared attempt

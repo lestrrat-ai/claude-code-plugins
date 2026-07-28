@@ -780,6 +780,17 @@ def check_document_contract() -> None:
     ):
         require(needle in prompt, f"review-prompt.txt lost reviewer operation: {needle}")
 
+    # The prompt IS the reviewer's contract, so the parser accepting a SATISFIED report without a
+    # RESIDUAL-RISK line has to be SAID here, not only in the references that summarise this file. Without
+    # it the prompt gives an unqualified order and a reviewer with no honest least-certain area is left
+    # between "output one line" and "do not manufacture a concern to fill it".
+    for needle in (
+        "The line is REQUESTED, not required",
+        "SATISFIED report WITHOUT it is accepted and counts in full",
+    ):
+        require(needle in prompt,
+                f"review-prompt.txt no longer states the residual-risk line is optional: {needle}")
+
     require("producer rule applies to initial launch, relaunch, and native fallback" in reviewer,
             "native report producer no longer covers every attempt state")
     reviewer_flat = " ".join(reviewer.split())

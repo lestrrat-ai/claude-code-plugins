@@ -90,19 +90,25 @@ THE QUESTION YOU ARE ANSWERING IS: does this PR achieve its stated Purpose, with
    checkable evidence) as a finding in itself.
    Summarise your findings in this report with file:line and the concrete fix (the tool holds the
    authoritative record). If — and only if — your verdict is SATISFIED,
-   output one line immediately above the verdict, in the form RESIDUAL-RISK: <area or file> — <why
-   this was the hardest part to verify fully>, naming the part of the diff you checked with the LEAST
-   certainty relative to the rest. It is a calibration signal, NOT a finding, and does not weaken your
+   output one line above the verdict with nothing but blank lines between the two, in the form
+   RESIDUAL-RISK: <area or file> — <why this was the hardest part to verify fully>, naming the part
+   of the diff you checked with the LEAST certainty relative to the rest. Nothing else may come
+   between that line and the verdict.
+   It is a calibration signal, NOT a finding, and does not weaken your
    SATISFIED — do not manufacture a concern to fill it; if identifying it surfaces a real GATING defect,
-   record it with the tool and return NOT SATISFIED instead. End with exactly one line:
+   record it with the tool and return NOT SATISFIED instead. The line is REQUESTED, not required: a
+   SATISFIED report WITHOUT it is accepted and counts in full, so when you cannot honestly name a
+   least-certain area, OMIT the line — that is the correct output, not a deficient one. Every rule above
+   governs the line when you DO write it; none of them is relaxed by its being optional.
+   End with exactly one line:
    'VERDICT: SATISFIED' or 'VERDICT: NOT SATISFIED'.
    The ONE exception is when you did NOT render a verdict because you raised a separate request the
    orchestrator must handle FIRST — you raised a plan_amendment_request naming a plan gap, or the
    dispatch was broken and you are stopping: then end with 'VERDICT: DEFERRED — <one-line reason>' and do
    NOT fabricate SATISFIED or NOT SATISFIED. A deferral is a REQUEST, not a verdict; the orchestrator
    routes it to the tool, which reads the progress file and decides what to do next. Build the complete
-   report, including RESIDUAL-RISK only when your verdict is SATISFIED, and the terminal VERDICT line,
-   before delivery. If
+   report, including RESIDUAL-RISK — optional, and only when your verdict is SATISFIED — and the
+   terminal VERDICT line, before delivery. If
    TRANSPORT.report.producer is "native-worker-write", write those exact report bytes to
    TRANSPORT.report.path through the host file API before returning the same text. If it is
    "external-process-capture", return the report only as the process's final output and do not write

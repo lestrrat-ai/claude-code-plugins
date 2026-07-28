@@ -718,7 +718,7 @@ class Tables:
         self.REPORT_CASES: "dict[str, dict]" = {
             "valid-satisfied": {
                 "report": SAT_REPORT, "want": OK, "needle": "report verdict satisfied",
-                "why": "the parser derives SATISFIED and its immediately preceding residual risk",
+                "why": "the parser derives SATISFIED and the residual risk last before the verdict",
             },
             "valid-not-satisfied": {
                 "report": NOT_SAT_REPORT, "findings": [finding()], "want": OK,
@@ -776,26 +776,68 @@ class Tables:
                 "want": OK, "needle": "report verdict satisfied",
                 "why": "the active attempt's result wins while the dead attempt stays inert",
             },
-            "missing-residual-risk": {
-                "report": "VERDICT: SATISFIED\n", "want": UNUSABLE,
-                "needle": "exactly one `RESIDUAL-RISK:`",
-                "why": "SATISFIED carries the required calibration line",
+            # The calibration line is OPTIONAL. It never was a gate input, so its absence never made a
+            # verdict less usable — but requiring it discarded four complete review passes across two
+            # engines. A SATISFIED report without one counts.
+            "satisfied-without-residual-risk": {
+                "report": "Report body.\nVERDICT: SATISFIED\n", "want": OK,
+                "needle": "report verdict satisfied",
+                "why": "a missing calibration line does not block a SATISFIED verdict",
             },
             "malformed-residual-risk": {
                 "report": "RESIDUAL-RISK: parser contract - wrong separator\nVERDICT: SATISFIED\n",
                 "want": UNUSABLE, "needle": "residual risk must be exactly",
                 "why": "the residual-risk fields and em dash have one exact shape",
             },
+            # The line being OPTIONAL is exactly what makes these three load-bearing: a detector that only
+            # sees column 0 reads an INVISIBLY PREFIXED line as ABSENT, so a malformed line is silently
+            # accepted instead of refused. Present-but-malformed and never-written must stay
+            # distinguishable. `visible_start` in review-pass.py owns which prefixes count as invisible;
+            # these three sample one prefix per branch of its rule: whitespace a reader sees as blank space
+            # (`isspace`), a format character that renders nothing (`not isprintable`), and a
+            # Default_Ignorable code point that is printable and non-space, which only the named Unicode
+            # property reaches. A VISIBLE prefix (`- `, `> `, a spacing combining mark) is NOT in this set:
+            # such a line does not present as the exact token, so it is read as absent by contract.
+            "indented-residual-risk": {
+                "report": "Report body.\n  RESIDUAL-RISK: parser — hard\nVERDICT: SATISFIED\n",
+                "want": UNUSABLE, "needle": "residual risk must be exactly",
+                "why": "an indented line is present and malformed, not absent",
+            },
+            # U+FEFF is Cf, so `str.lstrip()` never removes it. Placed MID-FILE deliberately: reading the
+            # report as `utf-8-sig` would not reach this line, so the case pins the DETECTOR, not a
+            # decoding choice — `read_text` stays `utf-8` so the tool reads what the file says.
+            "bom-prefixed-residual-risk": {
+                "report": "Report body.\n\ufeffRESIDUAL-RISK: parser contract - wrong separator\n"
+                          "VERDICT: SATISFIED\n",
+                "want": UNUSABLE, "needle": "residual risk must be exactly",
+                "why": "an invisible prefix hides a malformed line from the detector, not from the report",
+            },
+            # U+034F COMBINING GRAPHEME JOINER is Mn, so it is BOTH printable and non-space: neither
+            # `isspace()` nor `not isprintable()` reaches it, only Default_Ignorable_Code_Point does. Its
+            # category is not the discriminator — U+0301 is Mn too and renders a visible acute.
+            "default-ignorable-prefixed-residual-risk": {
+                "report": "Report body.\n\u034fRESIDUAL-RISK: parser contract - wrong separator\n"
+                          "VERDICT: SATISFIED\n",
+                "want": UNUSABLE, "needle": "residual risk must be exactly",
+                "why": "a code point that renders as nothing is a prefix the reader cannot see",
+            },
             "misplaced-residual-risk": {
-                "report": "RESIDUAL-RISK: parser — hard\n\nVERDICT: SATISFIED\n",
-                "want": UNUSABLE, "needle": "immediately above",
-                "why": "the residual-risk line has one exact position",
+                "report": "RESIDUAL-RISK: parser — hard\nand then more prose\nVERDICT: SATISFIED\n",
+                "want": UNUSABLE, "needle": "last nonblank line",
+                "why": "prose between the line and the verdict detaches the signal from the verdict",
+            },
+            # Real reviewers on two engines separated the two with a blank line. Nothing of substance
+            # intervenes, so the line still belongs to this verdict and the pass counts.
+            "blank-line-above-verdict-residual-risk": {
+                "report": "Report body.\nRESIDUAL-RISK: parser — hard\n\nVERDICT: SATISFIED\n",
+                "want": OK, "needle": "report verdict satisfied",
+                "why": "blank lines between the residual risk and the verdict do not detach it",
             },
             "duplicate-residual-risk": {
                 "report": "RESIDUAL-RISK: first — hard\nRESIDUAL-RISK: second — hard\n"
                           "VERDICT: SATISFIED\n",
-                "want": UNUSABLE, "needle": "exactly one `RESIDUAL-RISK:`",
-                "why": "one accepting pass contributes one residual-risk record",
+                "want": UNUSABLE, "needle": "at most one `RESIDUAL-RISK:`",
+                "why": "one accepting pass contributes at most one residual-risk record",
             },
             "residual-on-not-satisfied": {
                 "report": "RESIDUAL-RISK: parser — hard\nVERDICT: NOT SATISFIED\n",
