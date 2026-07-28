@@ -8,14 +8,18 @@ EVERY FIXTURE PINS A RULE WITH TEETH: it asserts the outcome on one side of a bo
 opposite outcome on the other, so an implementation that returned a constant would go red.
 
 Several of these are REGRESSIONS, not new rules — each pins a defect a reviewer actually found in a
-predecessor of this file: `unquotable` and `quotation mark` reading as a limit, a combining mark
-defeating the word anchor, a plural `quotas` no longer matching, prose delay text producing a wait
-nobody stated, and a documented call that omitted the attempt count. Do not relax one.
+predecessor of this file: `unquotable` and `quotation mark` reading as a limit, a combining mark or a
+zero-width format character defeating the word anchor, a plural `quotas` no longer matching, a plural
+`s` appended to a marker that already ended in one, prose delay text producing a wait nobody stated,
+and a documented call that omitted the attempt count. Do not relax one.
+
+One fixture pins the opposite: a DISCLOSED residual (`dotless-i`) that the file keeps deliberately, so
+that a later round cannot quietly convert it into a rewrite the file's Non-goals refuse.
 
 Every non-ASCII character in a fixture is written as an ESCAPE, never as a literal: a literal
-combining mark is invisible in a diff, and one normalisation pass over this file would silently
-rewrite it into a fixture that pins nothing. `COMBINING_ACUTE` below is the only one, and the fixture
-that uses it asserts the character survived.
+combining mark or zero-width character is invisible in a diff, and one normalisation pass over this
+file would silently rewrite it into a fixture that pins nothing. Every such character has a named
+constant below, and every fixture using one asserts the character survived.
 """
 
 from __future__ import annotations
@@ -45,6 +49,20 @@ L = _load_owner()
 LIMIT = "codex: usage limit reached for this account"
 #: U+0301 COMBINING ACUTE ACCENT, as an escape. Never spell it as a literal — see the module docstring.
 COMBINING_ACUTE = "\u0301"
+#: Unicode FORMAT characters (general category `Cf`), as escapes. Each of the first four renders
+#: `quota` + itself + `tion` as the single displayed word `quotation`, so an unfolded one satisfies
+#: the trailing word anchor instead of closing it. `BYTE_ORDER_MARK` is the same category in the
+#: OPPOSITE position: it opens a BOM-prefixed capture rather than continuing a word.
+ZERO_WIDTH_JOINER = "\u200d"
+ZERO_WIDTH_NON_JOINER = "\u200c"
+WORD_JOINER = "\u2060"
+SOFT_HYPHEN = "\u00ad"
+BYTE_ORDER_MARK = "\ufeff"
+#: U+0131 LATIN SMALL LETTER DOTLESS I and U+00E9 LATIN SMALL LETTER E WITH ACUTE, as escapes. The
+#: first is one of the three non-ASCII characters `re.IGNORECASE` folds into a marker's letters; the
+#: second is an ordinary letter that `re.ASCII` would stop counting as one.
+DOTLESS_I = "\u0131"
+E_ACUTE = "\u00e9"
 #: Non-ASCII decimal digits, as escapes. Python's `\d` matches every one of these and `int()` converts
 #: them, so each is a spelling that `\d` would read as RFC 9110's ASCII-only delta-seconds.
 ARABIC_INDIC_60 = "\u0666\u0660"          # ARABIC-INDIC SIX, ZERO
@@ -101,6 +119,67 @@ def t_a_combining_mark_cannot_defeat_the_word_anchor() -> None:
           "a combining mark defeated the word anchor — the mark fold is gone")
     # The other side: the same letters with a real word break ARE the marker.
     check(L.is_limit("quota tion"), "`quota` no longer matches as a standalone word")
+
+
+def t_a_format_character_cannot_defeat_the_word_anchor() -> None:
+    """REGRESSION. A Unicode format character is not `\\w` either, so an unfolded one BETWEEN two
+    letters satisfies the trailing word anchor exactly as a combining mark did: `quota` + U+200D +
+    `tion` claimed a usage limit on text that displays as the single word `quotation`."""
+
+    for name, character in (("U+200D ZERO WIDTH JOINER", ZERO_WIDTH_JOINER),
+                            ("U+200C ZERO WIDTH NON-JOINER", ZERO_WIDTH_NON_JOINER),
+                            ("U+2060 WORD JOINER", WORD_JOINER),
+                            ("U+00AD SOFT HYPHEN", SOFT_HYPHEN)):
+        joined = "quota" + character + "tion marks were unbalanced"
+        check(not joined.isascii(), f"the {name} fixture lost its character and now pins nothing")
+        check(not L.is_limit(joined),
+              f"{name} defeated the word anchor — the format-character fold is gone")
+    # The other side, and the reason that fold is FLANKED rather than unconditional: U+FEFF is a
+    # format character too, but a BOM-prefixed capture OPENS with it, where it precedes the first word
+    # instead of continuing one. Folding every format character puts a `\w` character in front of
+    # `quota` and this plainly stated limit stops matching.
+    prefixed = BYTE_ORDER_MARK + "quota exceeded for this account"
+    check(not prefixed.isascii(), "the BOM fixture lost its byte order mark and now pins nothing")
+    check(L.is_limit(prefixed),
+          "a BOM-prefixed limit no longer matches — the format fold became unconditional")
+
+
+def t_the_plural_suffix_skips_a_marker_already_ending_in_s() -> None:
+    """REGRESSION. The optional trailing `s` was appended to every non-digit marker, including the one
+    of the six that already ends in `s`, so `too many requestss` — neither one of the six phrases nor
+    a plural of one — claimed a usage limit."""
+
+    check(not L.is_limit("too many requestss were queued"),
+          "`too many requestss` matched — the plural `s` is back on a marker that ends in `s`")
+    # Both other sides: that marker still matches itself, and the plural still covers the markers it
+    # is a real spelling for.
+    check(L.is_limit("the provider reported too many requests"),
+          "`too many requests` no longer matches at all")
+    check(L.is_limit("HTTP 429 Too Many Requests"),
+          "the documented provider line no longer matches")
+    check(L.is_limit("monthly quotas exceeded for this org"),
+          "the optional plural is gone from the markers that do not end in `s`")
+
+
+def t_the_case_fold_keeps_its_disclosed_non_ascii_tail() -> None:
+    """A DISCLOSED RESIDUAL, pinned so a later round cannot quietly rewrite it. `re.IGNORECASE` folds
+    Unicode, and across all of it exactly three non-ASCII characters fold into the markers' letters
+    (`_marker_pattern` states which), so `rate l` + U+0131 + `m` + U+0131 + `t` classifies as a limit.
+    It STAYS: it is a case fold rather than a homoglyph one, so the matched text still reads as the
+    marker itself as a whole word, and the whole cost is one bounded wait."""
+
+    dotless = "rate l" + DOTLESS_I + "m" + DOTLESS_I + "t reached for this account"
+    check(not dotless.isascii(), "the fixture lost its dotless i and now pins nothing")
+    check(L.is_limit(dotless),
+          "the disclosed non-ASCII case fold was removed — see `_marker_pattern` for why it stays")
+    # The other side, and what each ASCII-only rewrite would cost: `re.ASCII` stops counting an
+    # ordinary accented letter as a word character, so the word anchor opens and `quota` matches
+    # inside an unrelated word again — the exact over-match the anchors and the mark fold exist to
+    # stop.
+    unrelated = "quota" + E_ACUTE + "ion marks were unbalanced"
+    check(not unrelated.isascii(), "the fixture lost its accented letter and now pins nothing")
+    check(not L.is_limit(unrelated),
+          "`quota` matched inside an unrelated accented word — the word anchor is ASCII-only now")
 
 
 def t_retry_after_is_read_exactly() -> None:
@@ -282,6 +361,13 @@ CASES = [
      "substring inside another word", t_a_marker_matches_whole_words_only),
     ("combining-mark", "a combining mark cannot defeat the word anchor",
      t_a_combining_mark_cannot_defeat_the_word_anchor),
+    ("format-character", "a format character between two letters cannot defeat the word anchor, "
+     "while a leading byte order mark still leaves the first word matchable",
+     t_a_format_character_cannot_defeat_the_word_anchor),
+    ("plural-suffix", "the optional plural `s` is skipped for the marker that already ends in one",
+     t_the_plural_suffix_skips_a_marker_already_ending_in_s),
+    ("dotless-i", "the case fold keeps its disclosed non-ASCII tail rather than an ASCII-only rewrite",
+     t_the_case_fold_keeps_its_disclosed_non_ascii_tail),
     ("retry-after", "the `Retry-After` delta-seconds header is read exactly",
      t_retry_after_is_read_exactly),
     ("header-spelling", "only the ASCII delta-seconds spelling with a colon-adjacent field name is "

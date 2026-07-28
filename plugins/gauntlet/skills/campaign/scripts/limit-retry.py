@@ -71,13 +71,14 @@ MAX_READABLE_DIGITS = 9
 #: failure class this file has; see the module docstring for why it must stay the only one.
 LIMIT_MARKERS = ("usage limit", "rate limit", "quota", "too many requests", "limit reset", "429")
 
-#: What a Unicode COMBINING MARK (general category `M*`) folds to before any marker is matched. A mark
-#: continues the word its base letter starts, but Python's `\w` is `str.isalnum()`-based and a mark is
-#: not alphanumeric, so an unfolded mark SATISFIES a word anchor instead of closing it: `quota` +
-#: U+0301 + `tion` claimed a usage limit and waited five minutes for a limit nobody hit, on text that
-#: is one ordinary word. `_` is the stand-in because it is `\w`-true and exactly one character wide, so
-#: the anchors see the word continuation that is really there. It is never shown to anyone: `decide()`
-#: reports no slice of the folded text.
+#: What a WORD-CONTINUING character folds to before any marker is matched — a Unicode COMBINING MARK
+#: (general category `M*`), and a FORMAT character (`Cf`) standing between two `\w` characters. Each
+#: continues the word its neighbours spell, but Python's `\w` is `str.isalnum()`-based and neither is
+#: alphanumeric, so an unfolded one SATISFIES a word anchor instead of closing it: `quota` + U+0301 +
+#: `tion`, and equally `quota` + U+200D + `tion`, claimed a usage limit and waited five minutes for a
+#: limit nobody hit, on text that displays as one ordinary word. `_` is the stand-in because it is
+#: `\w`-true and exactly one character wide, so the anchors see the word continuation that is really
+#: there. It is never shown to anyone: `decide()` reports no slice of the folded text.
 _MARK_STAND_IN = "_"
 
 
@@ -91,39 +92,72 @@ def _phrase(marker: str) -> str:
 
 def _marker_pattern(marker: str) -> "re.Pattern[str]":
     """Compile one marker under a single rule: a WHOLE-WORD match, any whitespace run for a space, an
-    optional trailing `s` for the plural. The digit shape below REFINES that rule for one kind of
-    marker — a narrower anchor for the same purpose — and never leaves a marker unanchored.
+    optional trailing `s` for the plural of a marker that does not already end in one. The digit shape
+    below REFINES that rule for one kind of marker — a narrower anchor for the same purpose — and
+    never leaves a marker unanchored.
 
     The word anchor is what stops `quota` from claiming a usage limit inside `unquotable` or
-    `quotation`, while `monthly quotas exceeded` still matches through the optional plural.
+    `quotation`, while `monthly quotas exceeded` still matches through the optional plural. That
+    plural is skipped for the one marker of the six that already ends in `s`: appending another to
+    `too many requests` matches `requestss`, which is neither one of the six phrases nor a plural of
+    one, so the suffix widens the class there instead of covering a spelling of it.
 
     `\\w` alone does NOT decide what continues a word here, and reading this pattern as if it did is
     how the anchor was believed to hold when it did not. `_fold_marks` has already folded every
-    combining mark into a `\\w` character by the time this runs — see `_MARK_STAND_IN` — and that fold
-    is half of the guarantee this docstring states."""
+    word-continuing character into a `\\w` character by the time this runs — see `_MARK_STAND_IN` —
+    and that fold is half of the guarantee this docstring states."""
 
     if marker.isdigit():
         # A status code takes the word anchor plus `.`, so `429` is not read out of `1.429` or a
         # version string — and no plural, because `429s` names no other status code.
         return re.compile(rf"(?<![\w.]){_phrase(marker)}(?![\w.])")
-    return re.compile(rf"(?<!\w){_phrase(marker)}s?(?!\w)", re.IGNORECASE)
+    plural = "" if marker.endswith("s") else "s?"
+    # `re.IGNORECASE` folds UNICODE, not just ASCII, and that fold has a non-ASCII tail this file
+    # KEEPS. Across all of Unicode exactly three characters fold into the fourteen letters the six
+    # markers spell: U+0130 and U+0131 into `i`, U+017F into `s`. Nothing else does. So `rate l` +
+    # U+0131 + `m` + U+0131 + `t` classifies as a limit, and the `dotless-i` fixture pins that it
+    # still does. The residual stays because it is a CASE fold, not a homoglyph one: the matched text
+    # still reads as the marker itself as a WHOLE WORD, never as a substring of an unrelated word, so
+    # it is not what the anchors here exist to stop, and its whole cost is one bounded wait.
+    # ASCII-only folding is REFUSED because both spellings of it are worse than the residual.
+    # `re.ASCII` breaks the word anchor outright — under `re.IGNORECASE | re.ASCII` the pattern for
+    # `quota` matches inside `quota` + U+00E9 + `ion`, manufacturing exactly the unrelated-word
+    # over-match `_fold_marks` and these anchors close. A case-folding pass over the message is the
+    # other spelling, and that is a second reading layer over provider text, which the Non-goals
+    # delete.
+    return re.compile(rf"(?<!\w){_phrase(marker)}{plural}(?!\w)", re.IGNORECASE)
 
 
 def _fold_marks(message: str) -> str:
-    """Fold every Unicode combining mark to `_MARK_STAND_IN`, so the word anchors read a mark as the
-    word continuation it is. See `_MARK_STAND_IN` for why this is not a character class inside each
-    pattern.
+    """Fold every Unicode combining mark, and every format character that CONTINUES a word, to
+    `_MARK_STAND_IN`, so the word anchors read each as the word continuation it is. See
+    `_MARK_STAND_IN` for why this is not a character class inside each pattern.
+
+    A combining mark folds WHEREVER it stands: it modifies a base character by definition, so it never
+    opens a word. A format character (`Cf`) folds only where it is FLANKED by `\\w` on both sides, and
+    that condition is load-bearing, not caution. U+FEFF is `Cf` too, and a BOM-prefixed capture opens
+    with one — there it precedes the first word rather than continuing one, so folding it
+    unconditionally puts a `\\w` character in front of `quota exceeded` and the leading anchor then
+    REFUSES a message that plainly states a limit. Flanked, the fold closes U+200D, U+200C, U+2060 and
+    U+00AD — each of which renders `quota` + itself + `tion` as the single word `quotation` — and
+    leaves that BOM alone.
 
     The category test runs over the message's DISTINCT characters, so the cost is one pass to collect
-    them and one `str.translate`, both linear in the message and neither keeping per-match state. An
-    all-ASCII message, the ordinary one, returns unchanged without a single category lookup."""
+    them, one `str.translate`, and one `re.sub` over only the format characters actually present: all
+    linear in the message, none keeping per-match state. An all-ASCII message, the ordinary one,
+    returns unchanged without a single category lookup."""
 
     if message.isascii():
         return message
-    table = {ord(character): _MARK_STAND_IN
-             for character in set(message)
-             if unicodedata.category(character).startswith("M")}
-    return message.translate(table) if table else message
+    categories = {character: unicodedata.category(character) for character in set(message)}
+    marks = {ord(character): _MARK_STAND_IN
+             for character, category in categories.items() if category.startswith("M")}
+    text = message.translate(marks) if marks else message
+    formats = "".join(re.escape(character)
+                      for character, category in sorted(categories.items()) if category == "Cf")
+    if not formats:
+        return text
+    return re.sub(rf"(?<=\w)[{formats}]+(?=\w)", _MARK_STAND_IN, text)
 
 
 _PATTERNS = tuple(_marker_pattern(marker) for marker in LIMIT_MARKERS)
