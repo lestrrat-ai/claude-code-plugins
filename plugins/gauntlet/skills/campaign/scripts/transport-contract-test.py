@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 REFS = ROOT / "references"
 COPILOT = ROOT.parent / "copilot-address-reviews"
 DISPATCH_PATH = ROOT / "scripts" / "review-dispatch.py"
+BACKOFF_PATH = ROOT / "scripts" / "reviewer-backoff.py"
 
 
 def _load_dispatch():
@@ -30,6 +31,16 @@ def _load_dispatch():
 
 
 DISPATCH = _load_dispatch()
+
+
+def _load_backoff():
+    mod = load_module_from_path("transport_contract_reviewer_backoff", BACKOFF_PATH, register=True)
+    if mod is None:
+        raise RuntimeError(f"cannot load the reviewer backoff owner at {BACKOFF_PATH}")
+    return mod
+
+
+BACKOFF = _load_backoff()
 
 
 def require(condition: bool, message: str) -> None:
@@ -736,6 +747,21 @@ def check_document_contract() -> None:
         "<TRANSPORT-RECORD>",
         '"native-worker-write" | "external-process-capture"',
         "ReviewIsolationCapability",
+        "### External reviewer failure — marker class and rough backoff",
+        "decide(message: Text, attempts_spent: NonNegativeInt) -> BackoffDecision",
+        'action: "wait-external" | "fallback-native" | "stop-and-ask"',
+        'kind: "refusal" | "not-found" | "auth" | "usage-limit" | "transient" | "unknown"',
+        "wait_seconds: NonNegativeInt",
+        "attempts_cap: PositiveInt",
+        "`attempts_spent` is the ONLY state",
+        "never written",
+        "The class comes from a MARKER, never from grammar",
+        "| `refusal` | the reviewer declined the task on content or policy grounds | `stop-and-ask` |",
+        "GUESSTIMATE and unreadable delay text is a NORMAL outcome, never an error",
+        "No message can disable the external route beyond the current pass",
+        "A predecessor made unparseable timer text session-permanent",
+        "`stop-and-ask` is the one action that ends autonomous handling",
+        "are session actions, not process launches",
         "external_retry_spent: Bool",
         'event: "selected" | "external-system-failure" | "native-system-failure"',
         "current Claude Code and Codex adapters",
@@ -750,6 +776,8 @@ def check_document_contract() -> None:
         "`external-process-capture` | `codex-recovery` |",
         "| `retry-external` + `external-claude` | `external-claude` | "
         "`external-process-capture` | `standard` |",
+        "| `wait-external` | no preparation | no preparation | no preparation |",
+        "| `stop-and-ask` | no preparation | no preparation | no preparation |",
         "| `launch-native` / `fallback-native` | `native` | `native-worker-write` | `standard` |",
         "attempt `2` fails → prepare fresh native fallback attempt `3`",
         "dead or unusable attempt `3` → `park-machine-blocker`",
@@ -794,10 +822,14 @@ def check_document_contract() -> None:
     require("producer rule applies to initial launch, relaunch, and native fallback" in reviewer,
             "native report producer no longer covers every attempt state")
     reviewer_flat = " ".join(reviewer.split())
-    require("does not inspect provider error text" in reviewer_flat and
+    require("never chooses a route or prompt profile from provider error text" in reviewer_flat and
+            "A reviewer that REFUSED the task is `stop-and-ask`" in reviewer_flat and
+            "never let it fall back to a native worker" in reviewer_flat and
+            "never cost more than this pass's external attempts" in reviewer_flat and
             "never resumes the failed external session" in reviewer_flat and
             "does not require a model switch" in reviewer_flat,
-            "reviewer retry recovered provider matching, session resume, or model switching")
+            "reviewer failure handling lost the refusal stop, the bounded blast radius, profile "
+            "selection, session resume, or the model boundary")
     stage_flat = " ".join(stage.split())
     require('"--file", ledger_file' in stage_flat and
             '"--prompt-profile", prompt_profile' in stage_flat,
@@ -1118,7 +1150,7 @@ def run_repository_context_fixtures() -> None:
 
 
 def review_action(capability: Mapping[str, object], external_retry_spent: bool = False,
-                  external_failed: bool = False, native_exhausted: bool = False) -> str:
+                  external_failure: str | None = None, native_exhausted: bool = False) -> str:
     # Every route launches on `fresh_conversation` + `launch_mechanism_present` alone. The three
     # `os_filesystem_isolation` properties are an optional stronger-boundary CLAIM and MUST NOT gate
     # launch — the function deliberately never reads them.
@@ -1127,8 +1159,16 @@ def review_action(capability: Mapping[str, object], external_retry_spent: bool =
     if route.startswith("external-"):
         if not launchable:
             return "fallback-native"
-        if external_failed:
-            return "fallback-native" if external_retry_spent else "retry-external"
+        if external_failure is not None:
+            # An external process failure is never decided here: the captured text goes to the backoff
+            # owner and the transition takes exactly what it returns. `wait-external` means wait, then
+            # `retry-external` — it is a session action, not a launch.
+            spent = BACKOFF.MAX_EXTERNAL_ATTEMPTS if external_retry_spent else 1
+            decision = BACKOFF.decide(external_failure, spent)
+            require(decision.action in (BACKOFF.WAIT_EXTERNAL, BACKOFF.FALLBACK_NATIVE,
+                                        BACKOFF.STOP_AND_ASK),
+                    f"reviewer backoff returned an unmapped action: {decision.action}")
+            return decision.action
         return "launch-external"
     # Native is the last-resort route: if it cannot launch (unavailable — no fresh conversation or no
     # launch mechanism), there is nothing left to fall back to, which is exactly `park-machine-blocker`.
@@ -1159,10 +1199,39 @@ def run_isolation_transition_fixtures() -> None:
         }
         require(review_action(shipped) == "launch-external",
                 f"shipped {route} did not launch cross-engine at native-limitation level")
-        require(review_action(shipped, external_failed=True) == "retry-external",
+        # A retryable failure keeps its retry — through a bounded wait, which the transition table
+        # turns into `retry-external` once `wait_seconds` elapse.
+        require(review_action(shipped, external_failure="upstream timeout") == "wait-external",
                 f"{route} first failure lost its retry")
-        require(review_action(shipped, external_failed=True, external_retry_spent=True) == "fallback-native",
+        require(review_action(shipped, external_failure="upstream timeout",
+                              external_retry_spent=True) == "fallback-native",
                 f"{route} retry failure did not fall back to native")
+
+        # A REFUSAL is the one failure that reaches the operator through no other route: no retry, no
+        # wait, and no native fallback that would swap in a same-engine reviewer for a task the
+        # reviewer declined on content or policy grounds.
+        for spent in (False, True):
+            require(review_action(shipped, external_failure="I'm sorry, but I can't help with that.",
+                                  external_retry_spent=spent) == "stop-and-ask",
+                    f"{route} reviewer refusal did not reach the operator (retry spent: {spent})")
+
+        # A tool that cannot run at all, or a credential that cannot authenticate, falls back at once:
+        # a wait changes neither.
+        for text in ("codex: command not found", "authentication failed: invalid api key"):
+            require(review_action(shipped, external_failure=text) == "fallback-native",
+                    f"{route} waited on a failure a wait cannot fix: {text!r}")
+
+        # The property the predecessor broke: text the classifier cannot read costs at most this
+        # pass's external attempts. It never stops the campaign and never disables the route.
+        for text in ("", "opaque provider failure", "retry after 2026-07-25T13:00:00Z"):
+            first = review_action(shipped, external_failure=text)
+            require(first == "wait-external",
+                    f"{route} escalated unreadable provider text {text!r} to {first}")
+            require(review_action(shipped, external_failure=text,
+                                  external_retry_spent=True) == "fallback-native",
+                    f"{route} did not fall back after unreadable text spent the retry")
+            require(review_action(shipped) == "launch-external",
+                    f"{route} let provider text {text!r} disable the route for later launches")
 
         # Paired CLI absent -> unavailable -> immediate native fallback, no retry consumed.
         absent = dict(shipped, launch_mechanism_present=False)

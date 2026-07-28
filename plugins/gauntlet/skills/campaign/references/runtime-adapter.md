@@ -166,8 +166,9 @@ This operation owns every route change:
 | Input | Action |
 |---|---|
 | selected cross-engine route, paired CLI available | `launch-external` at native-limitation level (no stronger-boundary claim) |
-| `external-system-failure`, external retry not spent | re-evaluate capability, then `retry-external` only if still available |
-| selected cross-engine route unavailable before launch (paired CLI absent), or `external-system-failure` after retry | report the failure, then `fallback-native` (disclosed) |
+| `external-system-failure` | run `reviewer-backoff.py decide` over the captured failure text, then take exactly the action it returns — `wait-external`, `fallback-native`, or `stop-and-ask`. "External reviewer failure — marker class and rough backoff" below owns the classes and the schedule |
+| `wait-external`, its `wait_seconds` elapsed | re-evaluate capability, then `retry-external` only if still available |
+| selected cross-engine route unavailable before launch (paired CLI absent) | report the failure, then `fallback-native` (disclosed) |
 | native route/fallback can follow the installed contract | `launch-native` with the native limitations below |
 | native attempts cannot follow the installed contract or produce valid artifacts and their budget is exhausted | `park-machine-blocker` |
 
@@ -175,6 +176,74 @@ A pre-launch cross-engine capability miss (the paired CLI is absent) has no proc
 consumes no retry and takes the fresh native fallback immediately.
 Missing native OS/startup controls alone never select `park-machine-blocker`; only actual inability to
 complete the installed contract after its budget does. `reviewer.md` owns the retry budget, while this table owns the transition meaning.
+
+### External reviewer failure — marker class and rough backoff
+
+**On `external-system-failure`, run `reviewer-backoff.py decide` and take the action it returns.** This
+section is its single owner. The helper answers only: is the reviewer unusable and in what way, roughly
+how long to wait, and may the pass try the external route again.
+
+```text
+decide(message: Text, attempts_spent: NonNegativeInt) -> BackoffDecision
+
+BackoffDecision {
+  action: "wait-external" | "fallback-native" | "stop-and-ask",
+  kind: "refusal" | "not-found" | "auth" | "usage-limit" | "transient" | "unknown",
+  marker: Text | null,
+  wait_seconds: NonNegativeInt,
+  attempts_spent: NonNegativeInt,
+  attempts_cap: PositiveInt,
+  reason: Text
+}
+```
+
+**`attempts_spent` is the ONLY state, it lives in the calling process, and it is never written
+anywhere.** No deadline, no disable flag, no ledger/history/run-artifact/preference write. A pending
+wait dies with the session, and that is intended: a fresh session simply starts the pass over. Every
+delay is therefore RELATIVE — `wait_seconds` from now — so absolute dates, month names, timezones, and
+DST are out of scope by construction.
+
+**The class comes from a MARKER, never from grammar**, and the four unusable-ness kinds act differently:
+
+| `kind` | What it means | Action |
+|---|---|---|
+| `refusal` | the reviewer declined the task on content or policy grounds | `stop-and-ask` |
+| `not-found` | the tool cannot run — missing binary, bad flag, CLI help dump | `fallback-native` |
+| `auth` | the account cannot authenticate | `fallback-native` |
+| `usage-limit` | the account is out of budget for now | `wait-external`, then `retry-external` |
+| `transient` | the transport hiccuped | `wait-external`, then `retry-external` |
+| `unknown` | no marker matched | `wait-external`, then `retry-external` |
+
+`not-found` and `auth` skip the wait because waiting cannot change either one. The three retryable
+kinds wait, and each carries its own default delay, because a usage limit is minutes and a network
+blip is seconds.
+
+**`wait_seconds` is a GUESSTIMATE and unreadable delay text is a NORMAL outcome, never an error.** The
+helper reads the first number-and-unit pair sitting near a retry-ish word and converts it
+approximately; anything it cannot read yields the kind's default. Two bounds finish the schedule: a
+guess longer than the wait cap returns `fallback-native` instead — reviewing natively now beats
+stalling the campaign for a reset hours away — and a guess under the floor is raised to it, so a
+sub-second hint never becomes a spin. `reviewer-backoff.py` owns the cap, the floor, and the defaults
+as named constants; never restate their values.
+
+**No message can disable the external route beyond the current pass.** There is no such state to set.
+Unrecognized text is `unknown` and takes a retry like any other retryable kind; non-text and empty
+input are `unknown` too. The worst outcome any provider text can force is one native review pass,
+which is a complete, valid pass. **A predecessor made unparseable timer text session-permanent and
+every unreadable phrasing became a session-wide outage — never reintroduce a class that outlives the
+pass.**
+
+**`stop-and-ask` is the one action that ends autonomous handling.** Report the refusal and the PR to
+the operator and stop that PR's review there. Never retry it and never let it fall back: falling back
+runs the orchestrator's OWN engine, silently dropping the engine diversity the gate relies on. The
+refusal marker set is deliberately NOT exhaustive — wording it does not match arrives as `unknown` and
+takes the ordinary retry-then-fallback path.
+
+`wait-external` and `stop-and-ask` are session actions, not process launches: they consume no
+`launch_attempt` and call no `review-dispatch.py prepare`. For `wait-external`, use the heartbeat or
+another bounded wait to spend `wait_seconds`, then take `retry-external` through the transition table
+above. `attempts_cap` matches the external half of the attempt budget below (attempt `1` plus its one
+retry); the helper never authorizes a third external launch.
 
 ### Review preparation mapping
 
@@ -186,16 +255,19 @@ are different enums:
 | `launch-external` | selected capability's external route | `external-process-capture` | `standard` |
 | `retry-external` + `external-codex` | `external-codex` | `external-process-capture` | `codex-recovery` |
 | `retry-external` + `external-claude` | `external-claude` | `external-process-capture` | `standard` |
+| `wait-external` | no preparation | no preparation | no preparation |
+| `stop-and-ask` | no preparation | no preparation | no preparation |
 | `launch-native` / `fallback-native` | `native` | `native-worker-write` | `standard` |
 | `park-machine-blocker` | no preparation | no preparation | no preparation |
 
 Selected capability's external route is exactly `external-codex` or `external-claude`; never pass the
 `ReviewAction` string as `--route`.
 
-**Allocate `launch_attempt` monotonically for every reviewer launch passed to `prepare`.** An unavailable
+**Allocate `launch_attempt` monotonically for every reviewer launch passed to `prepare`.** A
+`wait-external` is not a launch and consumes no number. An unavailable
 external route is never prepared and consumes no number, so its immediate native fallback takes the
-current next number. Once an attempt exists, recovery is fixed: attempt `1` fails → prepare the selected route's
-one retry as attempt `2`; attempt `2` fails → prepare fresh native fallback attempt `3`.
+current next number. Once an attempt exists, recovery is fixed: attempt `1` fails → classify it, then prepare the selected route's
+one retry as attempt `2` when the backoff decision permits it; attempt `2` fails → prepare fresh native fallback attempt `3`.
 **A dead or unusable attempt `3` → `park-machine-blocker`.** Never reuse an attempt's artifacts, and never
 allocate attempt `4`.
 
@@ -476,6 +548,7 @@ section states only the per-host default and where the transport pieces live:
 
 The cross-engine route launches at the **same native-limitation level** as a native worker whenever the
 paired CLI is present ("Review isolation capability and transition" above). Capability-gated cross-engine
-argv lives in `cross-agent-reviewers.md`; the external-reviewer retry budget in `reviewer.md`; the
+argv lives in `cross-agent-reviewers.md`; failure classes and the backoff schedule in "External reviewer
+failure — marker class and rough backoff" above; the external-reviewer retry budget in `reviewer.md`; the
 transition itself in `ReviewIsolationCapability` above. “Fallback” always means a fresh native worker on
 the active host.

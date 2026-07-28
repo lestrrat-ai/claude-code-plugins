@@ -31,10 +31,10 @@ note it in the final report. Resolve in priority order:
    file can reach the selection.
 3. **Default — the cross-engine route for the active host.** No preference → Claude Code reviews with
    Codex (`codex exec`) and Codex reviews with Claude Code (`claude -p`), launched at native-limitation
-   level whenever the paired CLI is present. When the paired CLI is absent, or the cross-engine process
-   fails after its one retry, fall back to a fresh, context-isolated **native worker** on the active host,
-   disclosed in the final report. **No paired CLI is required for the campaign to run** — the native
-   fallback is always available.
+   level whenever the paired CLI is present. When the paired CLI is absent, or the backoff decision
+   directs fallback after a cross-engine process failure, use a fresh, context-isolated **native worker**
+   on the active host, disclosed in the final report. **No paired CLI is required for the campaign to
+   run** — the native fallback is always available.
 
 **Reviewer diversity is the default, not an add-on — and it also reduces native-worker cost.** The gate's
 passes are already fresh, context-isolated re-rolls, but two native workers share the orchestrator's model,
@@ -43,8 +43,8 @@ so they are less independent than a *different* engine would be. So the default 
 `claude -p`. It launches at native-limitation level whenever the paired CLI is present — engine diversity
 needs no OS sandbox. A same-engine process (Codex → another `codex exec`, Claude Code → another `claude
 -p`) provides fresh context only and must not be reported as diversity. A fresh native worker on the
-active host is the complete, valid **fallback** when the paired CLI is absent or the cross-engine process
-fails after its retry. The cost benefit compounds the diversity one: review passes dominate campaign's
+active host is the complete, valid **fallback** when the paired CLI is absent or the backoff decision
+directs it after a cross-engine process failure. The cost benefit compounds the diversity one: review passes dominate campaign's
 native-worker spend — each re-reads the **whole** `origin/<base>...HEAD` diff (where `<base>` is the
 selected PR row's **effective base** — its explicit `base_branch`, else the legacy header fallback,
 resolved through `ledger.py`'s `effective_base`, never the one header base), runs `required(tier)` times
@@ -66,8 +66,8 @@ class or review contract.
 **A NATIVE-WORKER REVIEWER RUNS THE SAME REVIEW PASS AS EVERY OTHER REVIEWER — the one `stage-2-review-gate.md`
 defines, whole.** “Native worker” names **who executes it**, and nothing else. It does not name a
 lighter contract, a shorter prompt, or an older protocol, and there is no such thing to name. It is the
-**fallback** for an absent or failed cross-engine reviewer, and it is what an explicit user selection of a
-native reviewer runs.
+**fallback** for an absent cross-engine reviewer and for a failed one whose backoff decision directs
+fallback, and it is what an explicit user selection of a native reviewer runs.
 
 It is also a verdict renderer, so use `runtime-adapter.md`'s **native-worker** isolation contract, not the
 stronger external-process contract. The worker MUST be a fresh conversational context, but the native API
@@ -83,7 +83,7 @@ RECORDS, not prose", "Does this pass COUNT?"), and the one time this section car
 the summary went stale: it still described a plan/progress/verdict protocol with **no intent, no findings
 artifact and no gating rule**, months after those became the contract. Following it recreated exactly the
 open-ended review — *"is anything wrong with this code?"* — that the intent block exists to kill, **on the
-native-worker path**, which is the fallback whenever a cross-engine reviewer is absent or fails. A stale
+native-worker path**, which is the fallback whenever the backoff decision selects native. A stale
 summary is worse than no summary: it is the version people actually read, and it is believed.
 
 **Prepare it with `review-dispatch.py prepare`, using the exact invocation in `review-dispatch.md`.** The
@@ -123,20 +123,32 @@ attempt-scoped prompt artifact.** Never pass the prompt as a command argument an
 the former puts untrusted bytes at the wrong boundary, while the latter can stay open forever.
 
 An external reviewer can fail in a way that yields **no usable verdict**: quota/rate-limit
-exhaustion, auth failures, timeouts, or other system errors. Distinguish this from a real review — a
+exhaustion, auth failures, timeouts, other system errors, or a refusal to perform the task at all.
+Distinguish this from a real review — a
 run that returns an actual finding list or a `VERDICT: …` line is a *result*, act on it. A *failure*
 is the absence of a verdict.
 
-**On a capable external process failure, retry once. If it still can't deliver a verdict, take
-`runtime-adapter.md`'s fresh native fallback transition** rather than stalling, looping, or skipping the
-gate. A pre-launch capability miss (the paired CLI is absent) has no process to retry and takes that
-fallback immediately. Note in the final report which cross-engine routes were unavailable and which passes
-used the recovery profile or ran on the native-worker fallback. The gate is unchanged: a worker pass is a fresh, context-isolated re-roll that counts toward
+**On a capable external process failure, take the action `runtime-adapter.md`, "External reviewer
+failure — marker class and rough backoff", returns** rather than stalling, looping, or skipping the
+gate. That owner holds the failure classes, the rough delay guess, and the capped schedule; do not
+restate any of them here. Two of its properties bind this file's callers directly:
+
+- **A reviewer that REFUSED the task is `stop-and-ask`.** Report the refusal and the PR to the operator
+  and stop that PR's review there. Never retry it, and never let it fall back to a native worker — that
+  runs the orchestrator's own engine and silently drops the engine diversity the gate relies on.
+- **Provider text can never cost more than this pass's external attempts.** Text the helper cannot read
+  is ordinary, and the worst it can force is one native review pass.
+
+A pre-launch capability miss (the paired CLI is absent) has no process to retry and takes the native
+fallback immediately. Note in the final report which cross-engine routes were unavailable, which passes
+used the recovery profile or ran on the native-worker fallback, and every reviewer refusal that stopped a
+PR for the operator. The gate is unchanged: a worker pass is a fresh, context-isolated re-roll that counts toward
 the review gate exactly like an external pass. The runtime owner defines the native limitations and the
 only machine-blocker transition; do not restate them here.
 
-**Prepare every retry from `runtime-adapter.md`, "Review preparation mapping".** The transition does not
-inspect provider error text: it assigns `codex-recovery` to the existing external Codex attempt `2` and
+**Prepare every retry from `runtime-adapter.md`, "Review preparation mapping".** The transition never
+chooses a route or prompt profile from provider error text — only the backoff owner reads that text, and
+only for the class and the delay: the transition assigns `codex-recovery` to the existing external Codex attempt `2` and
 `standard` to every other route. The retry always starts a fresh process and never resumes the failed
 external session. The profile changes only the opening framing, does not require a model switch, and
 keeps the complete shared prompt contract, attempt budget, producer, and canonical argv. The shipped

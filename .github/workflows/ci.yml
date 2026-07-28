@@ -115,6 +115,8 @@ jobs:
             plugins/gauntlet/skills/campaign/scripts/triage-test.py
             plugins/gauntlet/skills/campaign/scripts/reviewer-liveness.py
             plugins/gauntlet/skills/campaign/scripts/reviewer-liveness-test.py
+            plugins/gauntlet/skills/campaign/scripts/reviewer-backoff.py
+            plugins/gauntlet/skills/campaign/scripts/reviewer-backoff-test.py
             plugins/gauntlet/skills/campaign/scripts/lease.py
             plugins/gauntlet/skills/campaign/scripts/lease-test.py
             plugins/gauntlet/skills/campaign/scripts/heartbeat.py

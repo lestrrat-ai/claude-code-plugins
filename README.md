@@ -51,9 +51,10 @@ Optional when Claude Code is the orchestrator:
 - **Codex CLI (`codex`)** — the default independent reviewer for `gauntlet:campaign` under Claude Code.
   When Codex is installed, campaign reviews with it (`codex exec`) for engine diversity — a different
   engine catches defects a same-model re-roll misses. It launches at native-limitation level; engine
-  diversity needs no OS sandbox. When Codex is absent, or a cross-engine process fails after one retry,
-  campaign falls back to a fresh native worker under the documented native limitations, so the campaign
-  runs with or without Codex. An explicit selection or saved preference overrides the default (you can
+  diversity needs no OS sandbox. When Codex is absent, or a cross-engine process fails and its backoff
+  decision directs fallback, campaign uses a fresh native worker under the documented native
+  limitations, so the campaign runs with or without Codex. A reviewer that refuses the task is the one
+  exception: campaign reports it and asks you, instead of quietly reviewing with its own engine. An explicit selection or saved preference overrides the default (you can
   force a native reviewer). Missing native filesystem/startup controls alone never park a pass.
 
 ## Plugins

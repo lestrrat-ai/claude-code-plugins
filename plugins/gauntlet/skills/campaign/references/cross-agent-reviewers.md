@@ -7,6 +7,9 @@ This file defines the argv for that route, not review policy or the isolation ru
 Before preparing a record or prompt, evaluate `runtime-adapter.md`'s `ReviewIsolationCapability` and take
 its transition. Only `launch-external` or `retry-external` uses the commands below; every other action
 stays with the owner.
+When an external process returns without a usable verdict, run its captured text through
+`runtime-adapter.md`, "External reviewer failure — marker class and rough backoff", before any retry or
+fallback. Provider text selects no argv member and no prompt profile here.
 A capable adapter runs `review-dispatch.py prepare` through the exact invocation in `review-dispatch.md`,
 then launches the process from its returned transport as a background task whose completion triggers a
 reconcile. Prompt bytes — including verbatim GitHub-derived intent — and dynamic paths never enter shell
@@ -98,8 +101,8 @@ This argv launches at the native-limitation level; it does not create a stronger
 - Limit built-in tools to `Read` and `Bash`. The review prompt forbids source changes; Bash is needed
   for git inspection and the two artifact emitters.
 - `--permission-mode dontAsk` makes an unapproved operation fail instead of opening an interactive
-  prompt. A permission or sandbox denial is a reviewer system failure; retry or fall back under
-  `reviewer.md`. Never switch to `--dangerously-skip-permissions`.
+  prompt. A permission or sandbox denial is a reviewer system failure; classify it through the runtime
+  adapter before retry or fallback. Never switch to `--dangerously-skip-permissions`.
 - Set `stdin_file` to `transport.prompt_path` and `stdout_file` to `transport.report.path`; the external
   process capture is the sole report producer. Prompt and path values remain data.
 

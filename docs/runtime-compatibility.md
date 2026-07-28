@@ -14,7 +14,7 @@ adapter; keep workflow rules shared.
 | Agent dispatch | Agent tool and configured agent types | Available Codex multi-agent controls | Describe worker scope, permissions, model class, and output; do not require a host tool name. |
 | Model selection | Claude model aliases may be available | Session model or configured Codex agents | State required capability; map named models only inside host adapter. |
 | Heartbeat/resume | `ScheduleWakeup` where available | wakes its thread where available; bounded foreground wait otherwise | Persist state before waiting and provide an exact resume path. |
-| Other-agent reviewer | Default: review with `codex exec` | Default: review with `claude -p` | Cross-engine is the default, launched at native-limitation level when the paired CLI is present. Fall back to a fresh native worker when it is absent or fails. Explicit or saved user choice overrides. |
+| Other-agent reviewer | Default: review with `codex exec` | Default: review with `claude -p` | Cross-engine is the default, launched at native-limitation level when the paired CLI is present. Fall back to a fresh native worker when it is absent, or when a failure's backoff decision directs it; a reviewer refusal instead stops for the operator. Explicit or saved user choice overrides. |
 
 Campaign's exact cross-agent command lines live in
 [`plugins/gauntlet/skills/campaign/references/cross-agent-reviewers.md`](../plugins/gauntlet/skills/campaign/references/cross-agent-reviewers.md).
@@ -34,7 +34,8 @@ Campaign's exact cross-agent command lines live in
 - Evaluate cross-engine reviewers through the runtime adapter's `ReviewIsolationCapability` transition.
   A cross-engine route launches at native-limitation level whenever the paired CLI is present; the three
   `os_filesystem_isolation` properties are an optional stronger-boundary claim that never blocks launch.
-  When the paired CLI is absent, or the process fails after its retry, fall back to a fresh native worker.
+  When the paired CLI is absent, or a process failure's backoff decision directs it, fall back to a fresh
+  native worker; a reviewer refusal stops for the operator instead.
   The existing external Codex retry uses the typed `codex-recovery` prompt profile from **Review
   preparation mapping**; every other launch uses `standard`. Profiles never add attempts, resume a failed
   session, weaken the shared review contract, or require a model switch.

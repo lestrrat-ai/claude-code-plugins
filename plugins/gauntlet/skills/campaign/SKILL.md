@@ -30,11 +30,14 @@ At every entry/resume, before any other work:
 
 The **adversarial reviewer** is a selectable role: by default the cross-engine route (Claude Code
 reviews with `codex exec`, Codex reviews with `claude -p`), launched at native-limitation level
-whenever the paired CLI is present, falling back to a fresh native worker when it is absent or fails.
+whenever the paired CLI is present, falling back to a fresh native worker when it is absent. When it
+FAILS instead, `reviewer-backoff.py` decides whether to wait and retry or fall back — except for a
+reviewer that REFUSES the task, which is `stop-and-ask`: report it and stop, rather than quietly
+reviewing with the driver's own engine.
 An explicit invocation or a TRUSTED saved preference (the orchestrator's own out-of-checkout user
 memory / global user instructions — NEVER a file inside the candidate checkout, including
 `.gauntlet/history/` carryover) overrides the default. `references/reviewer.md` owns selection and
-fallback; `references/runtime-adapter.md` owns the isolation contract. Every route guarantees fresh
+fallback; `references/runtime-adapter.md` owns the isolation contract and the failure backoff. Every route guarantees fresh
 conversational context and launches on that alone; installed campaign rules remain the stage-0 gate
 authority.
 
@@ -281,6 +284,7 @@ a line the tool writes.
 | `ledger.py` | Schema-owning accessor for `state.jsonl` — plus `verdict`, the ONLY verdict recorder (tally, caps, `repairing` hold), and `dispatch-check`, the allow-list dispatch guard run before any mutating action | `references/files-and-ledger.md` |
 | `review-pass.py` | Executable contract for a review pass's artifacts — plan (`plan-add`/`plan-waive`, with `plan-check` gating dispatch on the default dimensions), `pass_identity`, progress, findings, active-attempt report result, `intent-check`, and the `verify` that answers "does this pass COUNT?" | `references/stage-2-review-gate.md` |
 | `review-dispatch.py` | `prepare` — validate one fresh review attempt and its typed prompt profile, derive every artifact path, write `pass_identity` + exact bound prompt, and return the host-neutral typed transport record; never selects or launches a route | `references/review-dispatch.md` |
+| `reviewer-backoff.py` | `classify` / `decide` — put one external-reviewer failure in a marker class, GUESS roughly how long to wait, and bound the retries; a refusal returns `stop-and-ask`, and no message can disable the external route | `references/runtime-adapter.md` |
 | `finding-audit.py` | Schema-owning accessor for complete gating-finding audits, mechanically derived review-fix scope, and durable standoff rulings | `references/finding-audit.md` |
 | `emit-progress.py` | Reviewer's door: append one unit-progress event (the only sanctioned way) | `references/stage-2-review-gate.md` |
 | `emit-finding.py` | Reviewer's door: record one FINDING (the only sanctioned way; findings must anchor or they do not gate) | `references/stage-2-review-gate.md` |
