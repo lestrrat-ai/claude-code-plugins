@@ -110,6 +110,20 @@ def _build_ledger(directory: Path, pr: str, base_branch: str) -> Path:
     return ledger
 
 
+@contextmanager
+def cli_base(repo: Path, base: str, pr: str = "31", branch: str = "triage-base"):
+    """Yield the `--base`/`--file`/`--pr` argv fragment a CLI `derive` needs to diff against `base`.
+
+    `derive` REQUIRES `--file`/`--pr`, and the diff is measured from the ROW's effective base — not the
+    `--base` spelling — so a fixture cannot just hand a bare commit SHA to `--base` any more. Point
+    `refs/remotes/origin/<branch>` at `base` and build a one-row ledger whose `base_branch` is `<branch>`,
+    so the assertion agrees and the operational ref resolves back to `base`."""
+    git(repo, "update-ref", f"refs/remotes/origin/{branch}", base)
+    with tempfile.TemporaryDirectory() as directory:
+        ledger = _build_ledger(Path(directory), pr, branch)
+        yield ["--base", f"origin/{branch}", "--file", str(ledger), "--pr", pr]
+
+
 def t_human_docs_have_no_floor() -> None:
     with repository() as (repo, base):
         write(repo, "docs/guide.md", "# Guide\n")
@@ -136,8 +150,9 @@ def t_benign_extensionless_docs_remain_human() -> None:
         write(repo, "LICENSE", "License terms\n")
         head = commit(repo, "benign extensionless docs")
         result = derive(repo, base)
-        code, out, err = capture_cli(M.main, [
-            "derive", "--worktree", str(repo), "--base", base, "--head-sha", head, "--tier", M.TRIVIAL])
+        with cli_base(repo, base) as ledger_args:
+            code, out, err = capture_cli(M.main, [
+                "derive", "--worktree", str(repo), *ledger_args, "--head-sha", head, "--tier", M.TRIVIAL])
     check(result["floor"] is None, f"plain extensionless docs must keep the no-floor result: {result!r}")
     check({row["class"] for row in result["files"]} == {M.HUMAN_DOC},
           f"plain extensionless docs must remain HUMAN-DOC: {result!r}")
@@ -161,8 +176,9 @@ def t_prose_named_source_is_code() -> None:
               f"source suffixes on prose stems must floor STANDARD: {result!r}")
         check({row["class"] for row in result["files"]} == {M.CODE},
               f"CHANGELOG.py and license.go must classify CODE: {result!r}")
-        code, out, err = capture_cli(M.main, [
-            "derive", "--worktree", str(repo), "--base", base, "--head-sha", head, "--tier", M.TRIVIAL])
+        with cli_base(repo, base) as ledger_args:
+            code, out, err = capture_cli(M.main, [
+                "derive", "--worktree", str(repo), *ledger_args, "--head-sha", head, "--tier", M.TRIVIAL])
     check(code == M.EXIT_REFUSED and out == "",
           f"--tier TRIVIAL must be refused for source named like prose: {code}/{out!r}")
     check("below the mechanical floor" in err, f"the refusal must name the floor: {err!r}")
@@ -243,8 +259,9 @@ def t_pulumi_manifests_are_sensitive() -> None:
             check(result["floor"] == M.HIGH and one_file(result)["class"] == M.SENSITIVE,
                   f"{path} must floor HIGH end to end: {result!r}")
             for below in (M.TRIVIAL, M.STANDARD):
-                code, out, err = capture_cli(M.main, [
-                    "derive", "--worktree", str(repo), "--base", base, "--head-sha", head, "--tier", below])
+                with cli_base(repo, base) as ledger_args:
+                    code, out, err = capture_cli(M.main, [
+                        "derive", "--worktree", str(repo), *ledger_args, "--head-sha", head, "--tier", below])
                 check(code == M.EXIT_REFUSED and out == "",
                       f"--tier {below} must be vetoed for {path}: {code}/{out!r}")
                 check("below the mechanical floor" in err and "HIGH" in err,
@@ -335,8 +352,9 @@ def t_symlink_at_human_doc_path_is_code() -> None:
               f"the changed file must be the symlink: {row!r}")
         check(row["class"] == M.CODE and result["floor"] == M.STANDARD,
               f"a symlink at a docs path must be CODE and floor STANDARD, not a prose no-floor: {result!r}")
-        code, out, err = capture_cli(M.main, [
-            "derive", "--worktree", str(repo), "--base", base, "--head-sha", head, "--tier", M.TRIVIAL])
+        with cli_base(repo, base) as ledger_args:
+            code, out, err = capture_cli(M.main, [
+                "derive", "--worktree", str(repo), *ledger_args, "--head-sha", head, "--tier", M.TRIVIAL])
     check(code == M.EXIT_REFUSED and out == "",
           f"--tier TRIVIAL must be refused when a symlink clears the doc path: {code}/{out!r}")
     check("below the mechanical floor" in err, f"the refusal must name the floor: {err!r}")
@@ -407,8 +425,9 @@ def t_modification_classifies_base_and_head() -> None:
         check(row["status"] == "M", f"the change must be a modification: {row!r}")
         check(row["class"] == M.CODE and result["floor"] == M.STANDARD,
               f"a modification that strips frontmatter must classify the base side CODE and floor STANDARD: {result!r}")
-        code, out, err = capture_cli(M.main, [
-            "derive", "--worktree", str(repo), "--base", base, "--head-sha", head, "--tier", M.TRIVIAL])
+        with cli_base(repo, base) as ledger_args:
+            code, out, err = capture_cli(M.main, [
+                "derive", "--worktree", str(repo), *ledger_args, "--head-sha", head, "--tier", M.TRIVIAL])
     check(code == M.EXIT_REFUSED and out == "",
           f"--tier TRIVIAL must be refused for a frontmatter-strip modification: {code}/{out!r}")
     check("below the mechanical floor" in err, f"the refusal must name the floor, not a missing worktree: {err!r}")
@@ -459,8 +478,9 @@ def t_tier_below_floor_is_refused() -> None:
         write(repo, "scripts/tool.py", "print('x')\n")
         head = commit(repo, "sensitive")
         for below in (M.TRIVIAL, M.STANDARD):
-            code, out, err = capture_cli(M.main, [
-                "derive", "--worktree", str(repo), "--base", base, "--head-sha", head, "--tier", below])
+            with cli_base(repo, base) as ledger_args:
+                code, out, err = capture_cli(M.main, [
+                    "derive", "--worktree", str(repo), *ledger_args, "--head-sha", head, "--tier", below])
             check(code == M.EXIT_REFUSED and out == "",
                   f"--tier {below} below a HIGH floor must be refused with no JSON: {code}/{out!r}")
             check("below the mechanical floor" in err and "HIGH" in err,
@@ -491,9 +511,10 @@ def t_head_mismatch_is_refused_without_output() -> None:
         write(repo, "docs/guide.md", "# Guide\n")
         head = commit(repo, "docs")
         wrong = ("0" if head[0] != "0" else "1") + head[1:]
-        code, out, err = capture_cli(M.main, [
-            "derive", "--worktree", str(repo), "--base", base, "--head-sha", wrong,
-        ])
+        with cli_base(repo, base) as ledger_args:
+            code, out, err = capture_cli(M.main, [
+                "derive", "--worktree", str(repo), *ledger_args, "--head-sha", wrong,
+            ])
     check(code == M.EXIT_REFUSED and out == "", f"stale expected head must emit no JSON, got {code}/{out!r}")
     check("HEAD mismatch" in err and wrong in err and head in err, f"mismatch refusal must name both SHAs: {err!r}")
 
@@ -562,17 +583,23 @@ def t_empty_diff_floors_standard() -> None:
 
 
 def t_bad_inputs_and_git_failures_emit_no_partial_json() -> None:
+    # The unresolvable-base case now comes from the ROW, not from `--base`: `--base` is only an assertion, so
+    # an unresolvable ref is one the row's effective base names and no remote-tracking ref backs.
     with repository() as (repo, base):
         head = os.fsdecode(git(repo, "rev-parse", "HEAD").stdout).strip()
-        cases = (
-            ["derive", "--worktree", str(repo), "--base", base, "--head-sha", "short"],
-            ["derive", "--worktree", str(repo), "--base=--not-a-ref", "--head-sha", head],
-            ["derive", "--worktree", str(repo / "missing"), "--base", base, "--head-sha", head],
-        )
-        for argv in cases:
-            code, out, err = capture_cli(M.main, list(argv))
-            check(code == M.EXIT_REFUSED and out == "" and "REFUSED" in err,
-                  f"bad input must fail atomically with no JSON: {argv!r} -> {code}/{out!r}/{err!r}")
+        with tempfile.TemporaryDirectory() as directory:
+            unbacked = _build_ledger(Path(directory), "31", "no-such-branch")
+            with cli_base(repo, base) as ledger_args:
+                cases = (
+                    ["derive", "--worktree", str(repo), *ledger_args, "--head-sha", "short"],
+                    ["derive", "--worktree", str(repo), "--base", "origin/no-such-branch",
+                     "--file", str(unbacked), "--pr", "31", "--head-sha", head],
+                    ["derive", "--worktree", str(repo / "missing"), *ledger_args, "--head-sha", head],
+                )
+                for argv in cases:
+                    code, out, err = capture_cli(M.main, list(argv))
+                    check(code == M.EXIT_REFUSED and out == "" and "REFUSED" in err,
+                          f"bad input must fail atomically with no JSON: {argv!r} -> {code}/{out!r}/{err!r}")
 
 
 def t_raw_parser_refuses_partial_records() -> None:
@@ -658,8 +685,9 @@ def t_quoted_frontmatter_keys_are_code() -> None:
         row = one_file(result)
         check(row["class"] == M.CODE and result["floor"] == M.STANDARD,
               f"quoted-key agent frontmatter must be CODE and floor STANDARD: {result!r}")
-        code, out, err = capture_cli(M.main, [
-            "derive", "--worktree", str(repo), "--base", base, "--head-sha", head, "--tier", M.TRIVIAL])
+        with cli_base(repo, base) as ledger_args:
+            code, out, err = capture_cli(M.main, [
+                "derive", "--worktree", str(repo), *ledger_args, "--head-sha", head, "--tier", M.TRIVIAL])
     check(code == M.EXIT_REFUSED and out == "",
           f"--tier TRIVIAL must be refused for quoted-key agent frontmatter: {code}/{out!r}")
     check("below the mechanical floor" in err, f"the refusal must name the floor: {err!r}")
@@ -681,8 +709,9 @@ def t_escaped_double_quoted_frontmatter_fails_closed() -> None:
         write(repo, "docs/operator-guide.md", doc)
         head = commit(repo, "escaped frontmatter key")
         result = derive(repo, base)
-        code, out, err = capture_cli(M.main, [
-            "derive", "--worktree", str(repo), "--base", base, "--head-sha", head, "--tier", M.TRIVIAL])
+        with cli_base(repo, base) as ledger_args:
+            code, out, err = capture_cli(M.main, [
+                "derive", "--worktree", str(repo), *ledger_args, "--head-sha", head, "--tier", M.TRIVIAL])
     check(result["floor"] == M.STANDARD and one_file(result)["class"] == M.CODE,
           f"escaped double-quoted frontmatter must floor STANDARD: {result!r}")
     check(code == M.EXIT_REFUSED and out == "",
@@ -706,8 +735,9 @@ def t_flow_style_frontmatter_is_code() -> None:
             row = one_file(result)
             check(row["class"] == M.CODE and result["floor"] == M.STANDARD,
                   f"flow-style agent frontmatter must be CODE and floor STANDARD: {result!r}")
-            code, out, err = capture_cli(M.main, [
-                "derive", "--worktree", str(repo), "--base", base, "--head-sha", head, "--tier", M.TRIVIAL])
+            with cli_base(repo, base) as ledger_args:
+                code, out, err = capture_cli(M.main, [
+                    "derive", "--worktree", str(repo), *ledger_args, "--head-sha", head, "--tier", M.TRIVIAL])
         check(code == M.EXIT_REFUSED and out == "",
               f"--tier TRIVIAL must be refused for flow-style frontmatter: {code}/{out!r}")
         check("below the mechanical floor" in err, f"the refusal must name the floor: {err!r}")
@@ -729,8 +759,9 @@ def t_unparseable_frontmatter_fails_closed_to_code() -> None:
         result = derive(repo, base)
         check(result["floor"] == M.STANDARD and one_file(result)["class"] == M.CODE,
               f"unparseable frontmatter must floor STANDARD: {result!r}")
-        code, out, err = capture_cli(M.main, [
-            "derive", "--worktree", str(repo), "--base", base, "--head-sha", head, "--tier", M.TRIVIAL])
+        with cli_base(repo, base) as ledger_args:
+            code, out, err = capture_cli(M.main, [
+                "derive", "--worktree", str(repo), *ledger_args, "--head-sha", head, "--tier", M.TRIVIAL])
     check(code == M.EXIT_REFUSED and out == "",
           f"--tier TRIVIAL must be refused for unparseable frontmatter: {code}/{out!r}")
     check("below the mechanical floor" in err, f"the refusal must name the floor: {err!r}")
@@ -762,8 +793,9 @@ def t_frontmatter_runs_for_extensionless_prose() -> None:
             write(repo, name, agent_doc)
             head = commit(repo, "extensionless agent frontmatter")
             result = derive(repo, base)
-            code, out, err = capture_cli(M.main, [
-                "derive", "--worktree", str(repo), "--base", base, "--head-sha", head, "--tier", M.TRIVIAL])
+            with cli_base(repo, base) as ledger_args:
+                code, out, err = capture_cli(M.main, [
+                    "derive", "--worktree", str(repo), *ledger_args, "--head-sha", head, "--tier", M.TRIVIAL])
         check(result["floor"] == M.STANDARD and one_file(result)["class"] == M.CODE,
               f"{name} carrying agent frontmatter must floor STANDARD: {result!r}")
         check(code == M.EXIT_REFUSED and out == "",
@@ -810,8 +842,9 @@ def t_pip_source_and_conda_manifests_are_sensitive() -> None:
         check(result["floor"] == M.HIGH and one_file(result)["class"] == M.SENSITIVE,
               f"requirements.in is a dependency manifest and must floor HIGH: {result!r}")
         for below in (M.TRIVIAL, M.STANDARD):
-            code, out, err = capture_cli(M.main, [
-                "derive", "--worktree", str(repo), "--base", base, "--head-sha", head, "--tier", below])
+            with cli_base(repo, base) as ledger_args:
+                code, out, err = capture_cli(M.main, [
+                    "derive", "--worktree", str(repo), *ledger_args, "--head-sha", head, "--tier", below])
             check(code == M.EXIT_REFUSED and out == "",
                   f"--tier {below} below requirements.in's HIGH floor must be refused: {code}/{out!r}")
             check("below the mechanical floor" in err and "HIGH" in err,
@@ -917,6 +950,8 @@ def t_ledger_variant_spelling_floors_canonically() -> None:
 
 def t_ledger_file_without_pr_refuses() -> None:
     # `--file` needs `--pr` to select the row; without it, refuse rather than silently skip the assertion.
+    # `--pr` is argparse-required now, so the refusal comes from the parser — the guarantee is unchanged and
+    # this pins that the missing row key is still named, never defaulted.
     with repository() as (repo, _base):
         head = os.fsdecode(git(repo, "rev-parse", "HEAD").stdout).strip()
         with tempfile.TemporaryDirectory() as d:
@@ -938,6 +973,62 @@ def t_ledger_missing_row_refuses() -> None:
                 "--file", str(ledger), "--pr", "99"])
         check(code == M.EXIT_REFUSED and out == "", f"an unknown row must refuse (code={code}, out={out!r})")
         check("no ledger row for pr 99" in err, f"the refusal must name the missing row: {err!r}")
+
+
+def t_derive_without_ledger_is_refused() -> None:
+    """`--file`/`--pr` are REQUIRED, so the base assertion can never be SKIPPED.
+
+    While they were optional a wrong `--base` was an unchecked base SOURCE, and that silently LOWERED the
+    floor: this repository (`main` -> `feat` adding a CODE file -> head adding only prose) diffs from `main`
+    as CODE + prose -> floor STANDARD, but from the intermediate `feat` as prose only -> NO floor, so a
+    `--tier TRIVIAL` the true base vetoes was accepted with exit 0 and well-formed JSON. That halves
+    `required(tier)` (1 verdict for TRIVIAL, else 2) with no signal.
+
+    The three checks below pin the whole chain, and the FIRST discriminates: revert `required=True` on
+    `--file`/`--pr` and it fails, because the omitted-ledger invocation exits 0 instead of refusing."""
+    with tempfile.TemporaryDirectory() as directory:
+        repo = Path(directory)
+        git(repo, "init", "-q", "-b", "main")
+        git(repo, "config", "user.name", "Gauntlet Test")
+        git(repo, "config", "user.email", "gauntlet@example.invalid")
+        write(repo, "seed.txt", "seed\n")
+        main_tip = commit(repo, "main: seed")
+        git(repo, "checkout", "-q", "-b", "feat", main_tip)
+        write(repo, "src/mod.py", "value = 1\n")
+        feat_tip = commit(repo, "feat: add code")
+        git(repo, "checkout", "-q", "-b", "pr-head", feat_tip)
+        write(repo, "docs/note.md", "# Note\n\nprose only\n")
+        head = commit(repo, "pr: add prose")
+        git(repo, "update-ref", "refs/remotes/origin/main", main_tip)
+        git(repo, "update-ref", "refs/remotes/origin/feat", feat_tip)
+
+        with tempfile.TemporaryDirectory() as d:
+            ledger = _build_ledger(Path(d), "31", "main")
+            # 1. No ledger at all: refused before any diff, naming both missing flags.
+            code, out, err = capture_cli(M.main, [
+                "derive", "--worktree", str(repo), "--base", "origin/feat", "--head-sha", head,
+                "--tier", M.TRIVIAL])
+            check(code == M.EXIT_REFUSED and out == "",
+                  f"derive without --file/--pr must refuse with no JSON (code={code}, out={out!r})")
+            check("--file" in err and "--pr" in err,
+                  f"the refusal must name the required ledger flags: {err!r}")
+            # 2. The ledger present: the same wrong base is caught as a disagreeing assertion.
+            code, out, err = capture_cli(M.main, [
+                "derive", "--worktree", str(repo), "--base", "origin/feat", "--head-sha", head,
+                "--tier", M.TRIVIAL, "--file", str(ledger), "--pr", "31"])
+            check(code == M.EXIT_REFUSED and out == "" and "disagrees" in err,
+                  f"a --base disagreeing with the row must refuse: {code}/{out!r}/{err!r}")
+            # 3. The row's true base is what the diff is measured from, and it vetoes TRIVIAL.
+            code, out, err = capture_cli(M.main, [
+                "derive", "--worktree", str(repo), "--base", "origin/main", "--head-sha", head,
+                "--file", str(ledger), "--pr", "31"])
+            check(code == M.EXIT_OK and json.loads(out)["floor"] == M.STANDARD,
+                  f"the row's base must floor STANDARD — the CODE file is in the diff: {code}/{out!r}/{err!r}")
+            code, out, err = capture_cli(M.main, [
+                "derive", "--worktree", str(repo), "--base", "origin/main", "--head-sha", head,
+                "--tier", M.TRIVIAL, "--file", str(ledger), "--pr", "31"])
+            check(code == M.EXIT_REFUSED and out == "" and "below the mechanical floor" in err,
+                  f"TRIVIAL must be vetoed from the row's true base: {code}/{out!r}/{err!r}")
 
 
 CASES = [
@@ -993,6 +1084,8 @@ CASES = [
      t_ledger_variant_spelling_floors_canonically),
     ("ledger-file-needs-pr", "--file without --pr is refused", t_ledger_file_without_pr_refuses),
     ("ledger-missing-row", "--file --pr naming an unknown row is refused", t_ledger_missing_row_refuses),
+    ("ledger-required", "derive without --file/--pr is refused — a wrong --base cannot lower the floor",
+     t_derive_without_ledger_is_refused),
 ]
 
 
