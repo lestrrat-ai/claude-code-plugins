@@ -16,7 +16,8 @@ ledger.py --file <state.jsonl> verdict --pr <N> --head-sha <the live head> --ver
 - **`review_rounds`** — landed verdicts. **NEVER reset** — not by a fix, a rebase, or a content change.
   This is the loop's only memory. Reset it and every round looks like round 1 again, which is precisely how
   21 of them passed unnoticed.
-- **`ns_streak`** — consecutive `NOT SATISFIED`. Reset **only** by a `SATISFIED`.
+- **`ns_streak`** — consecutive `NOT SATISFIED`. Reset by a `SATISFIED`, and by a **non-abort decision
+  recorded here** ("A repair that changes the terms clears the streak", below). Nothing else.
 
 **Hand-setting `reviews_ok` for a verdict is FORBIDDEN** — it applies the tally and silently skips the
 counters, restoring the amnesia. **But a gate RESET is not a verdict**: a content change (a fix commit, a
@@ -234,6 +235,28 @@ row remain refused. A conflict or a diff-changing rebase remains outside this ex
 When the repair has landed, return the row to the gate (`ledger.py … set --pr <N> --status in_review`) and
 let the review gauntlet run again from the top. **`review_rounds` is not reset** — it never is. A PR that
 comes back to a cap has spent another repair.
+
+### A repair that changes the terms clears the streak
+
+**`repair-pass.py decide` sets `ns_streak = 0` on every NON-ABORT decision**, in the same write that spends
+the budget. Not the driver, not a flag — there is none — and not `abort`, which is terminal and has no next
+round to serve. A **legacy DEMOTE** never reaches it either: `decide` refuses a row that already carries a
+`repair_decision`, so a demote row returns to `in_review` with its streak untouched, through its own
+procedure above.
+
+**Why.** REPAIR-INTENT, RESCOPE and ROOT-CAUSE all change **what the reviewer measures against**. A streak
+earned under the old terms is evidence about terms that no longer exist — so counting it against the new
+ones is counting the wrong thing. Without this, **a repair that WORKS buys exactly one round**: PR #201 hit
+the cap over five rounds of one finding class, spent a REPAIR-INTENT that provably closed that class — the
+next round raised nothing from it and found four unrelated defects instead — and was then forced to abort,
+because the streak was still at the cap and one more `NOT SATISFIED` tripped it again. The mechanism that
+exists to rescue a stuck PR killed one it had just unstuck.
+
+**Why this cannot become the spiral it is meant to stop, which is the only reason it is safe.**
+`review_rounds` is **not** reset here and never is, so **`ROUND_CAP` still bounds the PR's entire life** no
+matter how many streaks are cleared. Total exposure is unchanged — `ROUND_CAP` rounds and `REPAIR_CAP`
+repairs — and clearing the streak only changes **which cap fires first** for a PR whose terms changed
+mid-loop. A repair that changes nothing still cannot buy more than `REPAIR_CAP` of them.
 
 ### Bound the repair itself — it must not become the new spiral
 

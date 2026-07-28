@@ -254,6 +254,42 @@ def t_unknown_origin_is_treated_as_external(tmp: Path) -> None:
     check("did not open this PR" in err, f"refused for the wrong reason: {err!r}")
 
 
+# --- a repair that changes the terms clears the streak ------------------------
+
+def t_a_non_abort_repair_clears_the_streak(tmp: Path) -> None:
+    """Every NON-ABORT decision zeroes `ns_streak`; ABORT does not; `review_rounds` survives all of them.
+
+    A repair changes WHAT THE REVIEWER MEASURES AGAINST, so the streak earned under the old terms is
+    evidence about terms that no longer exist. Without this a repair that WORKS buys exactly one round:
+    PR #201 hit the cap, spent a REPAIR-INTENT that provably closed the failing class, and was forced to
+    abort anyway because the streak was still sitting at the cap when the next round failed on something
+    else entirely.
+
+    `review_rounds` is checked in the SAME fixture, not a separate one, because it is the reason this is
+    safe rather than a second spiral: ROUND_CAP still bounds the PR's whole life however many streaks are
+    cleared. If a future change ever resets it here, this fixture is what says so.
+    """
+    for decision in R.DECISIONS:
+        path, record = setup(tmp, f"streak-{decision}.jsonl", pr_origin="gauntlet",
+                             ns_streak=str(L.NS_STREAK_CAP), decision=decision)
+        before = field(path, "review_rounds")
+        code, _, err = decide(path, record, decision)
+        check(code == 0, f"[{decision}] a permitted decision was refused: {err!r}")
+
+        want = str(L.NS_STREAK_CAP) if decision == "abort" else "0"
+        got = field(path, "ns_streak")
+        check(got == want,
+              f"[{decision}] ns_streak is {got!r}, want {want!r} — "
+              + ("ABORT is terminal, so there is no next round for a reset to serve"
+                 if decision == "abort" else
+                 "a repair that changes the terms must not leave the PR one NOT SATISFIED from a cap it "
+                 "already escaped"))
+
+        check(field(path, "review_rounds") == before,
+              f"[{decision}] review_rounds moved from {before!r} — it is NEVER reset, and it is the only "
+              f"reason clearing the streak cannot become an unbounded loop")
+
+
 # --- the repair's own bound ---------------------------------------------------
 
 def t_repair_budget_is_spent(tmp: Path) -> None:
@@ -1636,6 +1672,7 @@ CASES = [
     ("external-not-rewritten", "an external PR refuses RESCOPE and ROOT-CAUSE, and takes the other two", t_external_pr_is_never_rewritten),
     ("gauntlet-takes-all", "a campaign-authored PR may take every decision", t_gauntlet_pr_takes_every_repair),
     ("unknown-is-external", "an unset origin is EXTERNAL — the fail-safe direction", t_unknown_origin_is_treated_as_external),
+    ("repair-clears-streak", "a non-abort decision zeroes ns_streak; abort does not; review_rounds never moves", t_a_non_abort_repair_clears_the_streak),
     ("budget-spent", "at REPAIR_CAP the only decision left is abort", t_repair_budget_is_spent),
     ("abort-leaves-it-open", "abort is terminal, leaves the PR OPEN, and reuses the existing procedure", t_abort_is_terminal_and_leaves_the_pr_open),
     ("only-a-capped-pr", "a PR that never hit a cap cannot be reassessed", t_only_a_capped_pr_may_be_reassessed),

@@ -341,8 +341,10 @@ Header field notes (the header fields above; per-row fields follow):
   `reviews_ok=0 attempts=0`. Note the asymmetry it closes: the **CI** path already carries three persisted
   counters with caps (`settled_strikes`, `unusable_refetches`, `ci_stalled_since`) and has never spiralled;
   the **review** path carried none.
-- `ns_streak` — consecutive NOT SATISFIED verdicts. Cleared **only** by a SATISFIED — never by a fix, a
-  rebase or a content change. Same owner, same absent flag, same reason.
+- `ns_streak` — consecutive NOT SATISFIED verdicts. Cleared by exactly **two** tool writes, and never by a
+  fix, a rebase or a content change: a **SATISFIED** verdict, and a **non-abort reassessment decision**
+  (`repair-pass.py decide`, which `repair-pass.md` owns). Same absent flag as `review_rounds`, same reason —
+  the second writer is a tool that must SPEND a repair to clear it, not a door a driver can type at.
 - `base_ok_sha` — the head a base-preflight **`proceed`** was last decided for: the **MECHANICAL** form of the
   rebase-before-review precondition. **`ledger.py verdict` refuses unless `base_ok_sha == head_sha`** — for a
   SATISFIED **or** a NOT SATISFIED, since a counted NOT SATISFIED spends `review_rounds`/`ns_streak` toward the
