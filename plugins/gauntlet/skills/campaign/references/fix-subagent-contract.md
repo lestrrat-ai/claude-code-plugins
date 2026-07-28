@@ -94,7 +94,9 @@ no usable bundle. The script launches no worker and judges no repair.
 **THE ORCHESTRATOR RECORDS EVERY SITE THE FIXER LEFT ALONE — as a follow-up, in the same heartbeat it reads the
 report.** The template's report block makes the subagent report sites it deliberately did not touch (and any
 pre-existing defect it noticed and declined to fix); **that report dies with the subagent**, so a
-disposition nobody wrote down is a defect nobody will ever see again. Record each one through
+disposition nobody wrote down is a defect nobody will ever see again. It is also driver-internal — READ
+it in full and record from it, and do not reproduce it to the user (`loop-control.md`, "Driver-internal
+outputs"). Record each one through
 `scripts/followups.py` — the subagent's own report is the entry's evidence, and why the fixer left it
 alone is why it was deferred. They are **CANDIDATES, not issues**: local, and never published without the
 user's agreement on that specific item (`followups.md`).
