@@ -40,26 +40,19 @@ import sys
 from pathlib import Path
 from typing import Callable, NoReturn
 
-from _gauntlet.modules import load_module_from_path
+from _gauntlet.modules import load_module_from_path, load_sibling
 
 _HERE = Path(__file__).resolve().parent
 SIBLING = _HERE / "label-mirror-test.py"     # the fixture suite — this tool's executable contract
 
 
-def _load(name: str, filename: str):
-    mod = load_module_from_path(name, _HERE / filename)
-    if mod is None:
-        raise RuntimeError(f"cannot load {filename}")
-    return mod
-
-
 # The schema owner. `load` and `COUNT_RE` are imported, never restated — the ledger format has one parser,
 # and the count format ("a decimal from 0 up") has one definition.
-L = _load("label_mirror_ledger", "ledger.py")
+L = load_sibling("label_mirror_ledger", _HERE, "ledger.py")
 
 # `required(tier)` — 1 if TRIVIAL else 2 — is REUSED, never retyped, exactly as `merge-check.py` does. The
 # rule already lives in `nudge.py`; a copy here would be the drift this repo keeps killing.
-_N = _load("label_mirror_nudge", "nudge.py")
+_N = load_sibling("label_mirror_nudge", _HERE, "nudge.py")
 REQUIRED = _N.required
 
 # --- the two labels, and NOTHING ELSE is ever added or removed ------------------------------------

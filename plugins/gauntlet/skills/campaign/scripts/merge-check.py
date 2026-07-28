@@ -43,35 +43,28 @@ import subprocess
 import sys
 from pathlib import Path
 
-from _gauntlet.modules import load_module_from_path
+from _gauntlet.modules import load_module_from_path, load_sibling
 
 _HERE = Path(__file__).resolve().parent
 SIBLING = _HERE / "merge-check-test.py"     # the fixture suite — this tool's executable contract
-
-
-def _load(name: str, filename: str):
-    mod = load_module_from_path(name, _HERE / filename)
-    if mod is None:
-        raise RuntimeError(f"cannot load {filename}")
-    return mod
 
 
 # The schema owner. `HELD_STATUSES` and `load` are imported, never restated — the file format has exactly
 # one parser, and the held set is imported only to make the parked-vs-terminal reason accurate. The merge
 # gate itself does NOT enumerate held statuses: `decide` ALLOW-LISTS `in_review` (below), so a new held
 # status — or any other non-`in_review` status — is frozen by that allow-list with no edit here.
-L = _load("merge_check_ledger", "ledger.py")
+L = load_sibling("merge_check_ledger", _HERE, "ledger.py")
 HELD_STATUSES = L.HELD_STATUSES
-B = _load("merge_check_base_preflight", "base-preflight.py")
+B = load_sibling("merge_check_base_preflight", _HERE, "base-preflight.py")
 # pr-adopt.py OWNS `BASE_CHANGE_PARK_REASON` — the EXACT machine-blocker wording a re-adoption / reconcile /
 # preflight park records. Both merge doors reuse that one owner so a live-base retarget reads identically
 # everywhere; never a second copy of the string here.
-PA = _load("merge_check_pr_adopt", "pr-adopt.py")
+PA = load_sibling("merge_check_pr_adopt", _HERE, "pr-adopt.py")
 
 # `required(tier)` — 1 if TRIVIAL else 2 — is REUSED, never retyped. The rule already lives in `nudge.py`
 # (and `review-pass.py`); a third copy here would be the drift this repo keeps killing. So merge-check
 # borrows the existing helper rather than spelling `1 if TRIVIAL else 2` a third time.
-_N = _load("merge_check_nudge", "nudge.py")
+_N = load_sibling("merge_check_nudge", _HERE, "nudge.py")
 REQUIRED = _N.required
 
 

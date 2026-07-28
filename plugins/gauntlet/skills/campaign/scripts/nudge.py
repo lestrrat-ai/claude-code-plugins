@@ -25,7 +25,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from _gauntlet.modules import load_module_from_path
+from _gauntlet.modules import load_module_from_path, load_sibling
 
 DESCRIPTION = "Print per-heartbeat reminders for the campaign orchestrator (sticky notes, not a supervisor)."
 
@@ -33,15 +33,8 @@ _HERE = Path(__file__).resolve().parent
 SIBLING = _HERE / "nudge-test.py"
 
 
-def _load(name: str, filename: str):
-    mod = load_module_from_path(name, _HERE / filename)
-    if mod is None:
-        raise RuntimeError(f"cannot load {filename}")
-    return mod
-
-
-L = _load("nudge_ledger", "ledger.py")
-F = _load("nudge_followups", "followups.py")
+L = load_sibling("nudge_ledger", _HERE, "ledger.py")
+F = load_sibling("nudge_followups", _HERE, "followups.py")
 
 # A held PR is FROZEN — it fires ONLY its held reminder, never review/CI/merge nudges. The enumeration
 # lives in ledger.py; never retype it (a new held status inherits the freeze with no edit here).
