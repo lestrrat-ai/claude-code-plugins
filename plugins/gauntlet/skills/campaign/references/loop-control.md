@@ -670,10 +670,13 @@ resume. This block OWNS when the loop continues; every other site points here, n
      itself** (a health-pass diagnosis, when one fired above, leads *in front of* the table — it never
      replaces or reorders it). Run
      `ledger.py --file <state.jsonl> table` and include its output verbatim, fenced, in the status
-     message. **Verbatim means WHOLE** — including every `#` line it prints below the grid. The default
+     message. **Verbatim means WHOLE — every line THE COMMAND PRINTED**, including every `#` line below
+     the grid. The default
      view is a **filtered** one and those lines are what disclose the filtering
      (`files-and-ledger.md`, "`table` is a PROJECTION"); drop them and the user is shown a subset
-     presented as the whole ledger. Never re-type, trim, or re-align it. Then one line per remaining
+     presented as the whole ledger. Never re-type, trim, or re-align it — **the only thing that may
+     shorten this output is the tool's own `status_verbosity` setting (below), which shortens it before
+     you ever see it. You never shorten it yourself.** Then one line per remaining
      wait naming what it waits on (review in flight, CI watch, parked on the user's answer). Render it
      after every ledger write during this heartbeat — the ledger was reconciled this heartbeat, so the table is the
      state the next reconcile resumes from. State whether the session watchdog is armed or unavailable. For
@@ -681,7 +684,33 @@ resume. This block OWNS when the loop continues; every other site points here, n
      watchdog nudge", owns that result set and each host's value — never a claim that the primary wake is
      already armed: nothing arms it before the turn's final action, and the status names that final action
      as whichever runtime branch below the active host takes ("Primary continuity" above). Never imply
-     dead-session recovery. Then take
+     dead-session recovery.
+
+     **HOW MUCH OF THAT RENDER PRINTS IS THE OPERATOR'S SETTING — the ledger header field
+     `status_verbosity`** (`files-and-ledger.md` owns the field, its vocabulary and its validation;
+     `full` is the default, `brief` the opt-in). Re-read it from the header every heartbeat like any other
+     header field, never from memory. Under `full`, render exactly as above. Under `brief`, drop the
+     **SET-ONCE RUN CONFIGURATION**: `table` omits its `# <field>: <value>` block for you, and you
+     likewise stop restating those same header fields in prose. Keep the prose you write to **what moved
+     this heartbeat** — a row whose state did not change this heartbeat needs no line of its own, because
+     the table already carries it.
+
+     **`brief` NEVER drops any of the following. A render missing one is wrong, not lean:**
+     - **every park question, WITH how long it has waited.** A forgotten question is the most likely
+       reason a run went quiet; brevity is never a reason to stop putting it in front of the user.
+     - **every remaining-wait line** — one per wait, naming what it waits on, exactly as above.
+     - **every `#` line `table` printed below the grid** — the hidden-row counts. Drop them and a filtered
+       subset is presented as the whole ledger, and an **`aborted`** PR left open for its owner appears
+       ONLY there and in the final report.
+     - **the session watchdog's armed/unavailable state, and the reported `primary inspect` result.**
+     - **the health-pass diagnosis whenever a pass ran** — still LEADING the render, in front of the
+       table, exactly as above.
+
+     The setting is **PRESENTATION**. It decides nothing: no verdict, no CI derivation, no cap, no park,
+     no status label, no merge precondition — and the ledger it renders is the same either way. It also
+     never licenses skipping a step: `brief` shortens the REPORT, never the heartbeat's work.
+
+     Then take
      exactly one runtime branch:
      - **Scheduled-heartbeat host:** with the status above already rendered, schedule-or-replace the
        primary wake as the turn's LAST action ("Primary continuity" above) — scheduling ends the turn on
