@@ -17,7 +17,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from _gauntlet.modules import load_module_from_path
+from _gauntlet.modules import load_module_from_path, load_sibling
 from _gauntlet.testing import capture_cli
 
 OWNER = Path(__file__).resolve().parent / "repair-pass.py"
@@ -1668,6 +1668,51 @@ def t_shared_module_loader_preserves_importlib_semantics(tmp: Path) -> None:
           "a path with no executable module spec was accepted")
 
 
+def t_load_sibling_raises_and_keeps_the_loader_semantics(tmp: Path) -> None:
+    """`load_sibling` resolves against the given directory, raises the campaign tools' exact install error,
+    and forwards registration and execution exceptions to `load_module_from_path` untouched.
+
+    Every campaign tool that loads a sibling by its own directory calls this instead of keeping a private
+    copy of the guard, so these properties ARE its loading contract. The set of such callers is whatever
+    `load_sibling` is imported by — never restated here, so it cannot go stale."""
+    plain_name = "gauntlet_sibling_plain"
+    (tmp / "plain-sibling.py").write_text("VALUE = 7\n")
+    sys.modules.pop(plain_name, None)
+    plain = load_sibling(plain_name, tmp, "plain-sibling.py")
+    check(plain.VALUE == 7, "the filename was not resolved against the given directory")
+    check(plain_name not in sys.modules, "the default registration is no longer off")
+
+    registered_name = "gauntlet_sibling_registered"
+    (tmp / "registered-sibling.py").write_text(
+        "import sys\nSEES_SELF = sys.modules.get(__name__) is not None\n")
+    sys.modules.pop(registered_name, None)
+    try:
+        registered = load_sibling(registered_name, tmp, "registered-sibling.py", register=True)
+        check(registered.SEES_SELF, "register=True did not reach the loader before execution")
+        check(sys.modules.get(registered_name) is registered, "register=True stored a different module")
+    finally:
+        sys.modules.pop(registered_name, None)
+
+    broken_name = "gauntlet_sibling_broken"
+    (tmp / "broken-sibling.py").write_text("raise RuntimeError('sibling execution failed')\n")
+    sys.modules.pop(broken_name, None)
+    try:
+        load_sibling(broken_name, tmp, "broken-sibling.py")
+    except RuntimeError as exc:
+        check(str(exc) == "sibling execution failed", f"the execution exception changed: {exc!r}")
+    else:
+        check(False, "an exception from module execution was swallowed")
+
+    # The public install error, verbatim: the BARE filename, never the joined path. A caller that wants a
+    # different message, a SystemExit or a printed diagnostic keeps its own `load_module_from_path` guard.
+    try:
+        load_sibling("gauntlet_sibling_no_spec", tmp, "no-extension")
+    except RuntimeError as exc:
+        check(str(exc) == "cannot load no-extension", f"the install error changed: {exc!r}")
+    else:
+        check(False, "a path with no executable module spec was accepted")
+
+
 CASES = [
     ("external-not-rewritten", "an external PR refuses RESCOPE and ROOT-CAUSE, and takes the other two", t_external_pr_is_never_rewritten),
     ("gauntlet-takes-all", "a campaign-authored PR may take every decision", t_gauntlet_pr_takes_every_repair),
@@ -1704,4 +1749,5 @@ CASES = [
     ("bundle-atomic", "Git and atomic-write failures leave no partial bundle", t_bundle_git_and_atomic_failures_leave_no_output),
     ("decision-bundle-bound", "decide accepts only a record bound to the matching prepared bundle", t_decide_is_bound_to_prepared_bundle),
     ("shared-module-loader", "path loading preserves registration and exception behavior", t_shared_module_loader_preserves_importlib_semantics),
+    ("sibling-loader-door", "load_sibling resolves by directory, raises the bare-filename install error, and forwards loader semantics", t_load_sibling_raises_and_keeps_the_loader_semantics),
 ]

@@ -50,22 +50,15 @@ import tempfile
 from pathlib import Path
 from typing import Callable
 
-from _gauntlet.modules import load_module_from_path
+from _gauntlet.modules import load_module_from_path, load_sibling
 
 _HERE = Path(__file__).resolve().parent
 SIBLING = _HERE / "reconcile-test.py"       # the fixture suite — this tool's executable contract
 
 
-def _load(name: str, filename: str):
-    mod = load_module_from_path(name, _HERE / filename)
-    if mod is None:
-        raise RuntimeError(f"cannot load {filename}")
-    return mod
-
-
 # The schema owner. `load` (its parser, corruption checks and field normalization) is REUSED, never
 # restated — the ledger has exactly one reader, and reconcile is one of its consumers.
-L = _load("reconcile_ledger", "ledger.py")
+L = load_sibling("reconcile_ledger", _HERE, "ledger.py")
 
 # This module is the executable owner of the snapshot query and validation contract. Prose points to the
 # `fetch` command instead of restating its argv.

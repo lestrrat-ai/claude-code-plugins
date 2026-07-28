@@ -26,3 +26,23 @@ def load_module_from_path(module_name: str, path: Path, *, register: bool = Fals
         sys.modules[module_name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def load_sibling(module_name: str, directory: Path, filename: str, *, register: bool = False) -> ModuleType:
+    """Load ``directory / filename`` as ``module_name``, raising instead of returning ``None``.
+
+    This is the non-optional door onto ``load_module_from_path`` for the campaign tools that load a sibling
+    script by its own directory. It changes exactly one thing: an absent spec or loader — a BROKEN INSTALL,
+    never an input error — becomes ``RuntimeError(f"cannot load {filename}")`` so the caller's binding is a
+    real module at every use. Everything else is the underlying loader's, unchanged and NEVER restated here:
+    ``register`` still decides ``sys.modules`` placement (default off, so repeated loads of one file under
+    different names leave no entries behind), and exceptions raised while executing the module still pass
+    through untouched — a failed module is the module's own error, not a load failure.
+
+    Callers whose install error is not that exact ``RuntimeError`` — a different message, a ``SystemExit``,
+    a printed diagnostic — keep calling ``load_module_from_path`` and own their own ``None`` handling.
+    """
+    module = load_module_from_path(module_name, directory / filename, register=register)
+    if module is None:
+        raise RuntimeError(f"cannot load {filename}")
+    return module

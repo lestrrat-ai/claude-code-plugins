@@ -36,21 +36,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-from _gauntlet.modules import load_module_from_path
+from _gauntlet.modules import load_module_from_path, load_sibling
 
 HERE = Path(__file__).resolve().parent
 SIBLING = HERE / "merge-test.py"
 
 
-def _load(name: str, filename: str):
-    mod = load_module_from_path(name, HERE / filename)
-    if mod is None:
-        raise RuntimeError(f"cannot load {filename}")
-    return mod
-
-
-L = _load("merge_runner_ledger", "ledger.py")
-MC = _load("merge_runner_check", "merge-check.py")
+L = load_sibling("merge_runner_ledger", HERE, "ledger.py")
+MC = load_sibling("merge_runner_check", HERE, "merge-check.py")
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}\Z")
 COUNT_RE = re.compile(r"^(?:0|[1-9][0-9]*)\Z")

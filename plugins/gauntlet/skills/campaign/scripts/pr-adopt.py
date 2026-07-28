@@ -45,7 +45,7 @@ import sys
 from pathlib import Path
 
 from _gauntlet.atomic import replace_text
-from _gauntlet.modules import load_module_from_path
+from _gauntlet.modules import load_module_from_path, load_sibling
 
 DESCRIPTION = next(iter((__doc__ or "").splitlines()), "")
 
@@ -75,17 +75,10 @@ GAUNTLET_AUTHORED_LABEL = "gauntlet-authored"
 BASE_CHANGE_PARK_REASON = "base changed from {recorded} to {live}; not supported mid-run"
 
 
-def _load(name: str, filename: str):
-    mod = load_module_from_path(name, _HERE / filename)
-    if mod is None:
-        raise RuntimeError(f"cannot load {filename}")
-    return mod
-
-
-L = _load("pr_adopt_ledger", "ledger.py")
+L = load_sibling("pr_adopt_ledger", _HERE, "ledger.py")
 # `required(tier)` — the review gate's SATISFIED-verdict floor — is OWNED by review-pass.py
 # (`required_reviews`); the status label mirrors that gate, so reuse the owner rather than retype the rule.
-RP = _load("pr_adopt_review_pass", "review-pass.py")
+RP = load_sibling("pr_adopt_review_pass", _HERE, "review-pass.py")
 
 # THE LIVENESS COUNTERS — RE-EXPORTED from ledger.py, never a second copy of the list. A re-adoption at a
 # moved head no longer hand-resets them: the ledger `set --head-sha` door does it (ledger.py's
