@@ -16,6 +16,11 @@ and a documented call that omitted the attempt count. Do not relax one.
 One fixture pins the opposite: a DISCLOSED residual (`dotless-i`) that the file keeps deliberately, so
 that a later round cannot quietly convert it into a rewrite the file's Non-goals refuse.
 
+Two more pin DELETIONS rather than defects — `as-captured` and `one-class` hold the Non-goals the
+owner states, so re-adding a reading layer over the message, a scan bound, a seventh phrase or a
+second failure class goes red here. Each names its own residual: an example pins the wordings it
+spells and nothing wider, and only the `Decision` field set pins a second class structurally.
+
 Every non-ASCII character in a fixture is written as an ESCAPE, never as a literal: a literal
 combining mark or zero-width character is invisible in a diff, and one normalisation pass over this
 file would silently rewrite it into a fixture that pins nothing. Every such character has a named
@@ -63,6 +68,16 @@ BYTE_ORDER_MARK = "\ufeff"
 #: second is an ordinary letter that `re.ASCII` would stop counting as one.
 DOTLESS_I = "\u0131"
 E_ACUTE = "\u00e9"
+#: U+0130 LATIN CAPITAL LETTER I WITH DOT ABOVE and U+017F LATIN SMALL LETTER LONG S, as escapes.
+#: They are the other two characters of the same disclosed `re.IGNORECASE` tail that `DOTLESS_I`
+#: belongs to, named separately because a folding pass over the MESSAGE removes them one at a time.
+DOTTED_CAPITAL_I = "\u0130"
+LONG_S = "\u017f"
+#: FULLWIDTH letter and digit spellings of two markers, as escapes. Each is a COMPATIBILITY spelling
+#: of one of the six phrases rather than the phrase itself, so it is a limit only once something
+#: normalises the message.
+FULLWIDTH_QUOTA = "\uff51\uff55\uff4f\uff54\uff41"    # FULLWIDTH q, u, o, t, a
+FULLWIDTH_429 = "\uff14\uff12\uff19"                  # FULLWIDTH four, two, nine
 #: Non-ASCII decimal digits, as escapes. Python's `\d` matches every one of these and `int()` converts
 #: them, so each is a spelling that `\d` would read as RFC 9110's ASCII-only delta-seconds.
 ARABIC_INDIC_60 = "\u0666\u0660"          # ARABIC-INDIC SIX, ZERO
@@ -182,6 +197,70 @@ def t_the_case_fold_keeps_its_disclosed_non_ascii_tail() -> None:
           "`quota` matched inside an unrelated accented word — the word anchor is ASCII-only now")
 
 
+def t_the_message_is_read_as_captured() -> None:
+    """NO reading layer runs over the captured text before the markers are matched, and NO bound
+    truncates it. Both are Non-goals the owner states, and neither was reachable from a fixture.
+
+    A COMPATIBILITY fold (`NFKC`, `NFKD`) rewrites a fullwidth spelling into one of the six ASCII
+    phrases, so text that is not a marker starts claiming a limit. A `casefold()` pass is the same
+    extra layer from the other side, and it SUBTRACTS: of the three characters the disclosed
+    `re.IGNORECASE` tail matches it removes only U+0130, so a fixture naming one of the other two
+    never sees it — all three are pinned here for that reason. A scan bound drops a marker past it,
+    which is why `is_limit` says it is deliberately not length-bounded.
+
+    RESIDUAL: this pins the SPELLINGS it names. A normalising pass whose effect falls outside them
+    stays unpinnable by example — `t_the_class_is_the_six_phrases_and_nothing_else` carries the one
+    structural half this suite has."""
+
+    for name, spelled in (("quota", FULLWIDTH_QUOTA), ("429", FULLWIDTH_429)):
+        wide = spelled + " exceeded for this account"
+        check(not wide.isascii(), f"the fullwidth `{name}` fixture lost its spelling, pinning nothing")
+        check(not L.is_limit(wide),
+              f"fullwidth `{name}` claimed a limit — a normalising pass over the message is back")
+    for name, folded in (("U+0130", "rate l" + DOTTED_CAPITAL_I + "mit reached for this account"),
+                         ("U+0131", "rate l" + DOTLESS_I + "mit reached for this account"),
+                         ("U+017F", "u" + LONG_S + "age limit reached for this account")):
+        check(not folded.isascii(), f"the {name} fixture lost its character and now pins nothing")
+        check(L.is_limit(folded),
+              f"{name} stopped folding into a marker — a folding pass over the message is back")
+    check(L.is_limit("x" * 20000 + " usage limit reached"),
+          "a marker 20000 characters in was missed — the scanned message length is bounded now")
+    # The other side of all three: the ASCII spellings, which ARE the phrases, still classify.
+    check(L.is_limit("quota exceeded for this account"),
+          "ASCII `quota` no longer matches, so the fullwidth case above pins nothing")
+    check(L.is_limit("HTTP 429 returned by the provider"),
+          "ASCII `429` no longer matches, so the fullwidth case above pins nothing")
+
+
+def t_the_class_is_the_six_phrases_and_nothing_else() -> None:
+    """ONE class, SIX phrases. A limit worded outside them is simply not a limit here, and no OTHER
+    failure earns handling of its own: a second class needs an ordering rule between the classes, and
+    that ordering is the grammar two predecessors died of.
+
+    RESIDUAL, and the reason the last check is not about wording: the loop pins the five wordings it
+    spells, so a seventh phrase or a second class worded outside them escapes it. The field set of
+    `Decision` is the STRUCTURAL half — a second class that reports which class it matched goes red by
+    SHAPE rather than by vocabulary."""
+
+    for text in ("the account is out of credits",
+                 "capacity exceeded for this deployment",
+                 "503 service unavailable",
+                 "the model is overloaded right now",
+                 "the server is busy, try another region"):
+        decision = L.decide(text, 0)
+        check(decision.limit is False, f"{text!r} was classified — a seventh phrase joined the six")
+        check(decision.action == L.FALLBACK_NATIVE,
+              f"{text!r} did not fall back — a second failure class is back")
+        check(decision.wait_seconds == 0,
+              f"{text!r} produced a wait — a second failure class is back")
+    # The other side: the six still claim the class, and the decision still reports exactly one.
+    check(L.decide(LIMIT, 0).action == L.WAIT_EXTERNAL,
+          "one of the six no longer waits, so the wordings above pin nothing")
+    check(set(vars(L.decide(LIMIT, 0))) == {"action", "limit", "wait_seconds", "attempts_spent",
+                                            "attempts_cap", "reason"},
+          "the decision gained or lost a field — a second class is being reported")
+
+
 def t_retry_after_is_read_exactly() -> None:
     """The one delay spelling this file reads: RFC 9110's unitless `Retry-After: <delta-seconds>`."""
 
@@ -204,15 +283,23 @@ def t_only_the_ascii_colon_adjacent_header_is_read() -> None:
     Arabic-Indic, fullwidth or mixed-script digits answered byte-identically to the ASCII spelling.
     RFC 9110 delta-seconds is `1*DIGIT`, ASCII only. Section 5.1 separately forbids whitespace between
     a field name and its colon, so a space in front of the colon is not this header either. Both take
-    the default, like every other unread spelling."""
+    the default, like every other unread spelling.
+
+    The LINE-LEADING anchor is the third spelling pinned here, and the owner refuses it for its own
+    reason: without that anchor this stops being a header read and becomes a scan, so an inline
+    mention or a JSON body starts producing a wait. Dropping only the leading anchor leaves every
+    other case in this loop passing, which is why both inline shapes are named."""
 
     for text in (f"Retry-After: {ARABIC_INDIC_60}",
                  f"Retry-After: {FULLWIDTH_900}",
                  f"Retry-After: {MIXED_SCRIPT_60}",
                  "Retry-After : 60",
                  "Retry-After  :  60",
-                 "retry-after\t: 60"):
-        check(not text.isascii() or " :" in text or "\t:" in text,
+                 "retry-after\t: 60",
+                 "error: retry-after: 60",
+                 '{"error": "rate limit", "retry-after": 60}'):
+        check(not text.isascii() or " :" in text or "\t:" in text
+              or text.startswith("error:") or text.startswith("{"),
               f"the fixture case {text!r} lost the spelling it pins")
         message = LIMIT + "\n" + text
         check(L.retry_after_seconds(message) is None, f"{text!r} was read as a delay")
@@ -229,7 +316,11 @@ def t_only_the_ascii_colon_adjacent_header_is_read() -> None:
 def t_no_other_delay_spelling_is_read() -> None:
     """REGRESSION, and the rule the two predecessors died on. Anything that is not the header's
     delta-seconds spelling — PROSE ABOVE ALL — reads as no delay and takes the default. A grammar
-    added here reads `retry after 60 seconds` and relaunches 60s into a limit hours long."""
+    added here reads `retry after 60 seconds` and relaunches 60s into a limit hours long.
+
+    A grammar is written one WORDING at a time, so pinning one wording pins one grammar. The two the
+    owner's Non-goal names by hand are here beside it: each states a delay far past the wait cap, so
+    reading either flips this from the bounded wait to the native fallback."""
 
     for text in ("Retry-After: soon",
                  "Retry-After: -5",
@@ -237,6 +328,8 @@ def t_no_other_delay_spelling_is_read() -> None:
                  "Retry-After: 7200 ms",
                  "Retry-After: Wed, 21 Oct 2015 07:28:00 GMT",
                  "retry after 60 seconds",
+                 "try again in 3 hours",
+                 "your quota replenishes in 90 minutes",
                  "your limit resets in 2 hours",
                  "please wait 30-60 seconds before retrying"):
         message = LIMIT + "\n" + text
@@ -368,6 +461,10 @@ CASES = [
      t_the_plural_suffix_skips_a_marker_already_ending_in_s),
     ("dotless-i", "the case fold keeps its disclosed non-ASCII tail rather than an ASCII-only rewrite",
      t_the_case_fold_keeps_its_disclosed_non_ascii_tail),
+    ("as-captured", "the message is matched as captured — no normalising pass, no scan bound",
+     t_the_message_is_read_as_captured),
+    ("one-class", "the class is the six phrases and nothing else; there is no second class",
+     t_the_class_is_the_six_phrases_and_nothing_else),
     ("retry-after", "the `Retry-After` delta-seconds header is read exactly",
      t_retry_after_is_read_exactly),
     ("header-spelling", "only the ASCII delta-seconds spelling with a colon-adjacent field name is "

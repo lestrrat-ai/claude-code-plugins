@@ -319,10 +319,10 @@ jobs:
         run: python3 plugins/gauntlet/skills/campaign/scripts/reviewer-liveness.py self-test
 
       # The limit-aware retry's rules, executed. Two predecessors of this helper were abandoned over the
-      # same two things — matching more phrases, and reading a delay out of English prose — so most of
-      # these fixtures are REGRESSIONS pinning defects real reviewers found, and one pins a residual the
-      # helper keeps deliberately. `limit-retry-test.py`'s own docstring owns that set; it is not
-      # restated here, where it would drift. Each pins its rule on BOTH sides of a boundary, so a
+      # same two things — matching more phrases, and reading a delay out of English prose — and these
+      # fixtures are what stops a third from repeating them. `limit-retry-test.py`'s own docstring owns
+      # that set, including which rule each fixture pins and why; it is not restated here, where a
+      # proportion or a count would drift as the set grows. Each pins its rule on BOTH sides of a
       # constant-returning classifier would go red. The sibling `limit-retry-test.py` is loaded by path;
       # a MISSING sibling fails loudly, so this can never report health over a suite it did not run. As
       # with the suites above, the point of this step is that `py_compile` parses these files and runs
