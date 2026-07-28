@@ -225,9 +225,12 @@ _UNIT_ALTERNATION = (
 )
 #: `(?<![\d.])` keeps the scan off the tail of a longer number and off a fraction's decimals, so
 #: `1.5 seconds` reads as no delay at all (default) rather than as 5 seconds. `\b` after the unit
-#: keeps `3pm` and `2026-07-25T13:00:00Z` from yielding one.
+#: keeps `3pm` and `2026-07-25T13:00:00Z` from yielding one. The value group is deliberately
+#: UNBOUNDED: `MAX_READABLE_DIGITS` bounds the conversion instead, because a width limit in the
+#: pattern makes an over-width run match NOTHING (the lookbehind blocks re-anchoring inside the
+#: digits), which reads a stated over-cap delay as `unreadable` rather than as over-cap.
 DELAY_RE = re.compile(
-    rf"(?<![\d.])(?P<value>\d{{1,9}})\s*(?P<unit>{_UNIT_ALTERNATION})\b",
+    rf"(?<![\d.])(?P<value>\d+)\s*(?P<unit>{_UNIT_ALTERNATION})\b",
     re.IGNORECASE,
 )
 #: A number only means a delay when something retry-ish introduces it. Without this, `attempt 2 of
@@ -245,6 +248,11 @@ TRIGGER_RE = re.compile(
 #: How far after a trigger word a number may sit and still be that trigger's delay. Arbitrary, and
 #: deliberately generous enough for `retry in about 60 seconds`.
 TRIGGER_WINDOW = 40
+#: Widest digit run the guess converts. A wider one is not refused and not re-read as unreadable: it
+#: answers just past `MAX_WAIT_SECONDS`, so the caller's existing cap check falls back natively and
+#: `int()` never sees an unbounded run (past ~4300 digits CPython raises on the conversion itself).
+#: Disclosed consequence: the fallback reason then quotes that sentinel, not the stated delay.
+MAX_READABLE_DIGITS = 9
 
 
 def _unit_millis(unit: str) -> int:
@@ -256,7 +264,9 @@ def _unit_millis(unit: str) -> int:
 
 def guess_delay_seconds(message: str) -> int | None:
     """Roughly how long the message asks the campaign to wait, or ``None`` when nothing readable
-    sits near a retry-ish word. ``None`` is an ordinary answer, not a failure."""
+    sits near a retry-ish word. ``None`` is an ordinary answer, not a failure. A digit run wider
+    than ``MAX_READABLE_DIGITS`` answers just past ``MAX_WAIT_SECONDS`` rather than a converted
+    value — over-cap is all the caller does with such a number anyway."""
 
     ends = sorted(match.end() for match in TRIGGER_RE.finditer(message))
     if not ends:
@@ -265,7 +275,10 @@ def guess_delay_seconds(message: str) -> int | None:
         start = match.start()
         index = bisect_right(ends, start)
         if index and start - ends[index - 1] <= TRIGGER_WINDOW:
-            millis = int(match.group("value")) * _unit_millis(match.group("unit"))
+            digits = match.group("value")
+            if len(digits) > MAX_READABLE_DIGITS:
+                return MAX_WAIT_SECONDS + 1
+            millis = int(digits) * _unit_millis(match.group("unit"))
             return math.ceil(millis / 1000)
     return None
 

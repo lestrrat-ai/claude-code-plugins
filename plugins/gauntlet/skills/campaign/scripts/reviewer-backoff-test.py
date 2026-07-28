@@ -270,6 +270,18 @@ def t_wait_is_clamped_at_both_ends() -> None:
     under = f"retry after {B.MAX_WAIT_SECONDS} seconds"
     check(action(under) == B.WAIT_EXTERNAL and wait(under) == B.MAX_WAIT_SECONDS,
           "a delay exactly at the cap stopped being waitable")
+    # Width is not a second, silent cap. A stated over-cap delay must fall back at EVERY width — the
+    # widest run the guess converts, one digit past it, and a run past CPython's int-conversion
+    # limit, which must answer rather than raise.
+    widest = "retry after " + "9" * B.MAX_READABLE_DIGITS + " seconds"
+    check(action(widest) == B.FALLBACK_NATIVE,
+          "the widest convertible over-cap delay stopped reviewing natively")
+    over_width = "retry after 1" + "0" * B.MAX_READABLE_DIGITS + " seconds"
+    check(action(over_width) == B.FALLBACK_NATIVE,
+          "one digit past the convertible width read as unreadable instead of over-cap")
+    unbounded = "retry after " + "9" * 5000 + " seconds"
+    check(action(unbounded) == B.FALLBACK_NATIVE,
+          "an unbounded digit run stopped reviewing natively")
 
 
 # --- the cap ------------------------------------------------------------------
