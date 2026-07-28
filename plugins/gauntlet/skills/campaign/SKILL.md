@@ -131,7 +131,9 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
 9. `ci-status.py required-set --ledger <rundir>/state.jsonl`: refresh the required set before any CI
    derivation this heartbeat.
 10. Mutating action due on a PR -> `ledger.py … dispatch-check --pr <N>`: run before ANY action that
-    mutates a PR — it exits non-zero for a HELD one.
+    mutates a PR. It is an ALLOW-LIST — only an `in_review` row exits zero; HELD, terminal and
+    unrecognised rows all refuse, and the refusal says which (`references/files-and-ledger.md`,
+    "`dispatch-check` is the guard").
 11. **Due-work dispatch.** Follow `references/stage-2-review-gate.md`, "2a-triage", for each non-held
     PR's complete heartbeat triage procedure, then launch ALL due work up to caps — reviews, CI fixes,
     precondition clearing, base refresh — with mutating actions skipping HELD PRs, and stop in-flight
@@ -273,7 +275,7 @@ a line the tool writes.
 | `pr-adopt.py` | `plan` / `adopt` — mechanically adopt an existing first-party PR into a run: refuse fork/foreign/non-open, register the ledger row + ownership/status labels, discover-or-create the PR-head worktree | `references/pr-adoption.md` |
 | `triage.py` | `derive` — classify one stable, SHA-pinned PR diff and emit the per-file inventory + reasons and a mechanical FLOOR tier (SENSITIVE→HIGH, any non-prose→STANDARD, all-prose→no floor; never TRIVIAL — the orchestrator decides the tier); optional `--tier` vetoes a below-floor tier | `references/stage-2-review-gate.md` |
 | `heartbeat.py` | Emit the lean same-session wake prompts (scheduled heartbeat and session watchdog) the driver arms for its next wake | `references/runtime-adapter.md` |
-| `ledger.py` | Schema-owning accessor for `state.jsonl` — plus `verdict`, the ONLY verdict recorder (tally, caps, `repairing` hold), and `dispatch-check`, the held-PR guard run before any mutating action | `references/files-and-ledger.md` |
+| `ledger.py` | Schema-owning accessor for `state.jsonl` — plus `verdict`, the ONLY verdict recorder (tally, caps, `repairing` hold), and `dispatch-check`, the allow-list dispatch guard run before any mutating action | `references/files-and-ledger.md` |
 | `review-pass.py` | Executable contract for a review pass's artifacts — plan (`plan-add`/`plan-waive`, with `plan-check` gating dispatch on the default dimensions), `pass_identity`, progress, findings, active-attempt report result, `intent-check`, and the `verify` that answers "does this pass COUNT?" | `references/stage-2-review-gate.md` |
 | `review-dispatch.py` | `prepare` — validate one fresh review attempt and its typed prompt profile, derive every artifact path, write `pass_identity` + exact bound prompt, and return the host-neutral typed transport record; never selects or launches a route | `references/review-dispatch.md` |
 | `finding-audit.py` | Schema-owning accessor for complete gating-finding audits, mechanically derived review-fix scope, and durable standoff rulings | `references/finding-audit.md` |
