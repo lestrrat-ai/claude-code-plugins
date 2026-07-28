@@ -247,7 +247,14 @@ than a taste: an existing run renders exactly as it did until the operator opts 
 precondition reads it, and no stored value changes with it — `header get` and `list` still return every
 field under either mode. **`loop-control.md`, "Reschedule or exit", owns what the surrounding render may
 omit and what it must always print.** Inside `table` it decides exactly one thing: whether the
-`# <field>: <value>` run-config block is printed above the grid. `brief` drops that block — set-once
+`# <field>: <value>` run-config block is printed above the grid. **It is not itself one of that block's
+lines.** The printed block is `ledger.py`'s `TABLE_CONFIG_FIELDS` — the header fields minus the
+presentation ones (`HEADER_PRESENTATION_FIELDS`), declared in the schema rather than at the render site —
+so a **PRESENTATION** field is stored, gettable and settable like any other and simply never printed
+there. That exclusion is what makes the `full` default a true no-op: a ledger written before this field
+existed back-fills the default and still prints the block it always printed, byte for byte. Under `brief`
+the block is gone entirely, so printing the setting inside it could never have explained a missing
+preamble either. `brief` drops that block — set-once
 configuration a heartbeat would otherwise reprint every time — **and drops nothing else. It never removes
 a row, an empty-grid marker, or the hidden-count disclosure line**; a verbosity that could suppress those
 would turn a filtered table back into the lie by omission they exist to prevent, and the row it would bury
@@ -700,7 +707,9 @@ below).
 
 **How much of it prints is the operator's call, and it reaches only the PREAMBLE.** The header
 `status_verbosity` field (above) decides whether the `# <field>: <value>` run-config block appears above
-the grid; `brief` omits it. Everything from the column-header line down is byte-identical under either
+the grid; `brief` omits it. The field does **not** appear among that block's own lines — the block is
+`TABLE_CONFIG_FIELDS`, the header fields minus the presentation ones (see the field, above) — so a ledger
+predating the setting renders exactly as it did. Everything from the column-header line down is byte-identical under either
 mode — including every out-of-band `#` line below the grid, which the next four bullets are about. The
 verbosity is not a fifth way this projection is lossy: it drops no value, no row, and no disclosure.
 

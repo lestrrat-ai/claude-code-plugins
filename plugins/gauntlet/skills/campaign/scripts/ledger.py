@@ -56,6 +56,26 @@ STATUS_VERBOSITIES = (STATUS_VERBOSITY_FULL, STATUS_VERBOSITY_BRIEF)
 HEADER_FIELDS = ("run_id", "base_branch", "api_changes", "reviewer", "required_set", "skill_version",
                  "last_activity", "watchdog_due", "pending_adoption", "default_non_goals",
                  "status_verbosity")
+
+# HEADER FIELDS THAT CONFIGURE THE RENDER RATHER THAN THE RUN — stored, gettable and settable like any
+# other header field, but NOT part of the run-config block the table prints. The exclusion is declared
+# HERE, in the schema, because it is a property of the FIELD, not a special case at one render site: a
+# second presentation field is added by naming it here and no printing code changes.
+#
+# It is also what keeps a promise the field could otherwise not keep. `load()` back-fills every missing
+# header key from `HEADER_DEFAULTS`, so an OLD ledger — written before `status_verbosity` existed — reads
+# back the default and, were the field printed, would gain a config line it never had. Printing the knob
+# that controls the block INSIDE that block is what made an existing run's output change with no operator
+# action; leaving it out is what makes the default a true no-op, and `ledger-test.py`'s
+# `t_legacy_config_block_is_unchanged` pins that against a frozen list rather than against this tuple.
+# Nothing is hidden by it: `header get`/`header set` and the stored record are untouched, and under
+# `brief` the whole block is gone anyway, so the line could never have explained a missing preamble.
+HEADER_PRESENTATION_FIELDS = ("status_verbosity",)
+
+# The run-config block `cmd_table` prints: `HEADER_FIELDS` minus the presentation ones, DERIVED so the two
+# can never drift and the field order stays the schema's.
+TABLE_CONFIG_FIELDS = tuple(f for f in HEADER_FIELDS if f not in HEADER_PRESENTATION_FIELDS)
+
 HEADER_DEFAULTS = {
     "run_id": "-",
     # LEGACY FALLBACK for the base branch. The base a PR merges into is now ROW state (`base_branch` in
@@ -1772,8 +1792,13 @@ def cmd_table(path: Path, args) -> int:
     # them would turn a filtered table back into the lie by omission `hidden_notice` exists to prevent —
     # and the row it would bury is the `aborted` one, this run's unfinished business. A brief render is a
     # SHORTER preamble, never a smaller ledger.
+    #
+    # The block itself is `TABLE_CONFIG_FIELDS` — the schema's own list of what belongs in it, which is
+    # every header field except the presentation ones. This site chooses WHETHER to print; it never
+    # chooses WHAT, so a legacy ledger's full render is byte-identical to the one it produced before this
+    # setting existed.
     if status_verbosity(header) == STATUS_VERBOSITY_FULL:
-        for line in config_lines([(f, header[f]) for f in HEADER_FIELDS]):
+        for line in config_lines([(f, header[f]) for f in TABLE_CONFIG_FIELDS]):
             print(line)
         print()
     # ONLY the rows that are actually printed become cells. That is not merely an optimization: it is what

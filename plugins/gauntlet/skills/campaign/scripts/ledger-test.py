@@ -197,7 +197,9 @@ def grid(L: ModuleType, out: str, fields: "tuple[str, ...]",
     """Parse the printed table BACK and assert its INTEGRITY. Returns (config lines, widths, cells).
 
     `config_fields` and `markers` name the out-of-band text the store under test prints; they default to
-    the LEDGER's own (`L.HEADER_FIELDS`, and its empty/all-hidden markers). The sibling store
+    the LEDGER's own (`L.TABLE_CONFIG_FIELDS` — the block `cmd_table` actually prints, which is NOT every
+    header field: a presentation field is stored and gettable but never printed — and its
+    empty/all-hidden markers). The sibling store
     (`followups.py`) renders through the same `config_lines()`/`grid_lines()` and asserts its output with
     THIS same oracle, passing ITS two — so the layout is verified by ONE parser and a second store cannot
     be checked by a weaker copy of it.
@@ -209,7 +211,7 @@ def grid(L: ModuleType, out: str, fields: "tuple[str, ...]",
 
     Three properties, all checked here because all three are what a hostile value attacks:
 
-      * the run config is EXACTLY len(HEADER_FIELDS) lines, each opening `# <field>: `, and NO grid line
+      * the run config is EXACTLY len(cfg_fields) lines, each opening `# <field>: `, and NO grid line
         opens with `#` — except the out-of-band lines that are ALLOWED to (the empty/all-hidden markers and
         the hidden-count notice), which must form a CONTIGUOUS TRAILING BLOCK below the rows — so no value
         can forge a config line, a marker, or the notice, and none of them can hide BETWEEN rows;
@@ -229,7 +231,7 @@ def grid(L: ModuleType, out: str, fields: "tuple[str, ...]",
     same `a`, and this suite stayed green through it. An oracle that normalizes away the thing under test
     is not an oracle. What it hands back is what was PRINTED; nothing else.
     """
-    cfg_fields: "tuple[str, ...]" = L.HEADER_FIELDS if config_fields is None else config_fields
+    cfg_fields: "tuple[str, ...]" = L.TABLE_CONFIG_FIELDS if config_fields is None else config_fields
     mk: "tuple[str, ...]" = (L.TABLE_EMPTY_MARKER, L.TABLE_ALL_HIDDEN_MARKER) if markers is None else markers
     lines = out.split("\n")
     check(lines[-1] == "", "the table output must end in a newline")
@@ -2774,7 +2776,12 @@ def t_status_verbosity_defaults_to_full(L: ModuleType, tmp: Path) -> None:
     """The default is `full`, so an existing run renders exactly as it did until the operator opts in.
 
     Pinned on both sides: the stored default reads back `full`, and the table really does print the WHOLE
-    run-config block — one line per `HEADER_FIELDS` member, read from the accessor, never a retyped list.
+    run-config block — one line per `TABLE_CONFIG_FIELDS` member, read from the accessor.
+
+    That oracle is DERIVED from the schema, so it proves the block is complete but can say NOTHING about
+    which names belong in it: it would follow the tuple anywhere it moved. What the printed names must
+    actually BE is pinned against a frozen list by `t_legacy_config_block_is_unchanged`, and that fixture
+    is the one that catches a field being added to the printed block.
     """
     path = write_lines(tmp / "verb-default.jsonl", header_line(L, run_id="r1"), row_line(L, pr="1"))
     check(header_field(L, path, "status_verbosity") == L.STATUS_VERBOSITY_FULL,
@@ -2789,9 +2796,57 @@ def t_status_verbosity_defaults_to_full(L: ModuleType, tmp: Path) -> None:
         code, out, err = cli(L, ["--file", str(led), "table"])
         check(code == 0, f"[{name}] table exited {code}: {err!r}")
         config, _, cells = grid(L, out, L.TABLE_DEFAULT_FIELDS)
-        check(len(config) == len(L.HEADER_FIELDS),
-              f"[{name}] the default view printed {len(config)} run-config lines, not one per header field")
+        check(len(config) == len(L.TABLE_CONFIG_FIELDS),
+              f"[{name}] the default view printed {len(config)} run-config lines, not one per printed field")
         check(len(cells) == 1, f"[{name}] the row vanished from the default view: {out}")
+
+
+def t_legacy_config_block_is_unchanged(L: ModuleType, tmp: Path) -> None:
+    """A ledger written before `status_verbosity` existed prints the SAME run-config block it always did.
+
+    THE ORACLE IS FROZEN AND RETYPED ON PURPOSE, and that is the entire point of this fixture. Every other
+    assertion about the block derives its expectation from the schema tuple — `len(TABLE_CONFIG_FIELDS)`,
+    `L.HEADER_FIELDS` — so it follows the tuple wherever the tuple goes. An oracle computed from the thing
+    under test cannot catch a change to that thing: a field added to the printed block moves BOTH sides of
+    such a check at once and the suite stays green over a render that visibly changed. It did: the whole
+    fixture suite passed while a legacy ledger's block silently grew a line.
+
+    So the names below are a hand-copied snapshot of what the block held before this field was introduced,
+    and they are NOT to be regenerated from the accessor. If a change makes this fixture fail, that change
+    altered what an existing run prints — decide whether that is intended and edit this list deliberately.
+
+    It names NO symbol this branch added, deliberately: it therefore runs unchanged against the accessor as
+    it was before, which is what lets "the old code passes this too" be a claim rather than a hope. The
+    other half — that the excluded field is still stored, defaulted and readable by name — is pinned by
+    `t_status_verbosity_defaults_to_full` and `t_brief_drops_the_run_config_block_and_nothing_else`.
+    """
+    # Retyped by hand. Do NOT replace with anything derived from `L.HEADER_FIELDS`/`L.TABLE_CONFIG_FIELDS`.
+    frozen = ("run_id", "base_branch", "api_changes", "reviewer", "required_set", "skill_version",
+              "last_activity", "watchdog_due", "pending_adoption", "default_non_goals")
+
+    legacy = write_lines(tmp / "legacy-block.jsonl", json.dumps({"type": "header", "run_id": "r1"}),
+                         row_line(L, pr="1", slug="live"))
+    code, out, err = cli(L, ["--file", str(legacy), "table"])
+    check(code == 0, f"table on a pre-status_verbosity ledger exited {code}: {err!r}")
+
+    # Parsed straight off the printed bytes, then compared as NAMES — a count alone would accept a
+    # substitution, and `startswith` alone would accept an extra line beyond the ones checked. Only the
+    # PREAMBLE is read (everything above the first blank line), so the out-of-band lines the table may
+    # print below the rows — which also open `# ` — cannot pad or mask this list.
+    lines = out.split("\n")
+    preamble = lines[:lines.index("")]
+    check(all(line.startswith("# ") for line in preamble),
+          f"a legacy render's preamble holds a line that is not a run-config line: {preamble!r}")
+    printed = [line.split(":", 1)[0][2:] for line in preamble]
+    check(printed == list(frozen),
+          f"the run-config block a legacy ledger prints changed:\nexpected {list(frozen)}\ngot      {printed}\n{out}")
+
+    # …and the same output parses as a whole table against that frozen block, so nothing below it moved
+    # either. `grid` is given the frozen tuple explicitly: its default would derive the block from the
+    # schema, which is exactly the oracle this fixture exists to avoid.
+    config, _, cells = grid(L, out, L.TABLE_DEFAULT_FIELDS, config_fields=frozen)
+    check(len(config) == len(frozen), f"the legacy render's block is not {len(frozen)} lines: {config!r}")
+    check(len(cells) == 1, f"the legacy render lost its row:\n{out}")
 
 
 def t_status_verbosity_refuses_an_unknown_value(L: ModuleType, tmp: Path) -> None:
@@ -2843,7 +2898,10 @@ def t_brief_drops_the_run_config_block_and_nothing_else(L: ModuleType, tmp: Path
             row_line(L, pr="2", slug="parked", status="awaiting-user"),
             row_line(L, pr="3", slug="done", status="merged"))
     path = write_lines(tmp / "verb-brief.jsonl", header_line(L, run_id="r1", base_branch="main"), *rows)
-    n = len(L.HEADER_FIELDS)
+    # The size of the block `cmd_table` PRINTS — not of the header, which holds presentation fields the
+    # block never shows. This is a cut point into the full render's own bytes, so it must track what was
+    # printed.
+    n = len(L.TABLE_CONFIG_FIELDS)
 
     for label, argv in (("default projection", []), ("--fields", ["--fields", "pr,base,status"])):
         code, _, err = cli(L, ["--file", str(path), "header", "set", "status_verbosity",
@@ -2859,6 +2917,8 @@ def t_brief_drops_the_run_config_block_and_nothing_else(L: ModuleType, tmp: Path
         check(code == 0, f"[{label}] the brief table exited {code}: {err!r}")
 
         # The run-config block is GONE — no line of the brief render opens one, and it does not open blank.
+        # Scanned over EVERY header field, deliberately wider than the printed block: a brief render that
+        # leaked a field the full render does not even show would still be caught here.
         opened = [line for line in brief_out.split("\n")
                   if any(line.startswith(f"# {f}: ") for f in L.HEADER_FIELDS)]
         check(opened == [], f"[{label}] brief still printed run-config lines: {opened!r}\n{brief_out}")
@@ -2952,7 +3012,7 @@ def t_unreadable_status_verbosity_renders_full(L: ModuleType, tmp: Path) -> None
         code, out, err = cli(L, ["--file", str(path), "table"])
         check(code == 0, f"table on an unreadable status_verbosity exited {code}: {err!r}")
         config, _, cells = grid(L, out, L.TABLE_DEFAULT_FIELDS)
-        check(len(config) == len(L.HEADER_FIELDS),
+        check(len(config) == len(L.TABLE_CONFIG_FIELDS),
               f"an unreadable {bad!r} suppressed the run-config block — it hid MORE, not less:\n{out}")
         check(len(cells) == 1, f"an unreadable {bad!r} dropped the row:\n{out}")
     # A `null` on disk is a MISSING value, not a mode: it back-fills to the default through `_coerce_field`.
@@ -3248,6 +3308,7 @@ CASES = [
     ("watchdog-interval", "watchdog interval prints the constant in minutes, reads no ledger", t_watchdog_interval_prints_the_constant),
     ("pending-adoption-ordinary", "pending_adoption is an ordinary settable field; setting it IS activity", t_pending_adoption_is_an_ordinary_field),
     ("verbosity-defaults-full", "status_verbosity defaults to `full` — an existing run renders as it did", t_status_verbosity_defaults_to_full),
+    ("verbosity-legacy-block-frozen", "a pre-status_verbosity ledger prints the SAME block — pinned against a frozen, retyped list", t_legacy_config_block_is_unchanged),
     ("verbosity-refuses-unknown", "a value outside STATUS_VERBOSITIES is refused at the write door, store unchanged", t_status_verbosity_refuses_an_unknown_value),
     ("verbosity-brief-drops-config", "`brief` is the full render MINUS the run-config block, byte for byte", t_brief_drops_the_run_config_block_and_nothing_else),
     ("verbosity-brief-discloses", "`brief` never drops a row, a marker, or the hidden-count disclosure", t_brief_never_hides_a_row_or_its_disclosure),
