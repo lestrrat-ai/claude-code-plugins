@@ -11,7 +11,9 @@ that emits every line unconditionally — which is no printer at all.
 
 from __future__ import annotations
 
+import io
 import tempfile
+from contextlib import redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -324,6 +326,44 @@ def t_watchdog_due_silent_without_open_work():
                   f"a run with no open work must NOT fire the watchdog-due reminder (rows={rows}, wd={wd!r})")
 
 
+def _run_main(argv) -> str:
+    """main()'s printed output, so a fixture can pin the FLAG PLUMBING and not only `reminders()`."""
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        code = N.main(argv)
+    check(code == 0, f"main({argv!r}) must exit 0 — a nudge never blocks")
+    return buf.getvalue()
+
+
+def t_rundir_defaults_to_the_ledger_directory():
+    """`--file` alone must NOT report every intent file missing. The ledger IS `<rundir>/state.jsonl`, so
+    the run directory is its parent and nudge derives it. Before this, a `--file`-only call passed
+    rundir=None, `rundir_has` read that as "absent", and every review-due PR got a confident, wrong
+    "no intent-<N>.md" line with no error and no warning."""
+    with tempfile.TemporaryDirectory() as d:
+        rd = Path(d)
+        led = rd / "state.jsonl"
+        led.write_text('{"type": "header", "run_id": "g1", "required_set": "none"}\n'
+                       '{"type": "row", "id": "pr9", "pr": "9", "status": "in_review", "tier": "HIGH",'
+                       ' "reviews_ok": "0", "ci": "green"}\n', encoding="utf-8")
+        (rd / "intent-9.md").write_text("x", encoding="utf-8")
+        check("no intent-9.md" not in _run_main(["--file", str(led)]),
+              "an intent file NEXT TO the ledger must silence the nudge with NO --rundir passed — the run "
+              "directory is the ledger's parent, never unknown")
+        # Teeth: the derived rundir is really being READ, not just suppressing the rule. Remove the file and
+        # the same --file-only invocation must fire again.
+        (rd / "intent-9.md").unlink()
+        check("no intent-9.md" in _run_main(["--file", str(led)]),
+              "with the intent file gone the same --file-only invocation must fire the nudge — the derived "
+              "run directory is read, not ignored")
+        # An explicit --rundir still WINS over the derived default.
+        other = rd / "elsewhere"
+        other.mkdir()
+        (other / "intent-9.md").write_text("x", encoding="utf-8")
+        check("no intent-9.md" not in _run_main(["--file", str(led), "--rundir", str(other)]),
+              "an explicit --rundir must override the derived default")
+
+
 def t_a_nudge_never_blocks():
     # main() over a real ledger file exits 0 no matter what it prints.
     with tempfile.TemporaryDirectory() as d:
@@ -358,5 +398,7 @@ CASES = [
     ("quiet-names-the-park", "a parked-only quiet run says it waits on the user and surfaces the question", t_quiet_run_names_the_park),
     ("watchdog-due-fires", "watchdog-due reminder fires on unset/overdue/invalid with open work, silent when ok", t_watchdog_due_fires_on_unset_overdue_invalid_with_open_work),
     ("watchdog-due-needs-open-work", "watchdog-due reminder is silent with no open/terminal-only rows", t_watchdog_due_silent_without_open_work),
+    ("rundir-defaults-to-ledger-dir", "--file alone derives the run directory from the ledger's parent",
+     t_rundir_defaults_to_the_ledger_directory),
     ("never-blocks", "a nudge always exits 0", t_a_nudge_never_blocks),
 ]

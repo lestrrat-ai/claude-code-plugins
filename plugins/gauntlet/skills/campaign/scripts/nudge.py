@@ -94,6 +94,20 @@ def rundir_has(rundir: "Path | None", name: str) -> bool:
     return rundir is not None and (rundir / name).exists()
 
 
+def resolve_rundir(file_arg: str, rundir_arg: "str | None") -> Path:
+    """The run directory to check `<rundir>` files against — the explicit `--rundir`, else DERIVED from the
+    ledger path. The ledger IS `<rundir>/state.jsonl`, so its parent IS the run directory; there is no
+    invocation where `--file` is usable and the run directory is unknowable, and `--file` is already
+    mandatory. Deriving it is what keeps a `--file`-only call from reporting every intent file MISSING —
+    `rundir_has` reads a `None` rundir as "the file is not there", which is indistinguishable in the output
+    from a genuinely missing intent file. An explicit `--rundir` still wins, for the caller who really does
+    keep the two apart.
+    """
+    if rundir_arg:
+        return Path(rundir_arg)
+    return Path(file_arg).resolve().parent
+
+
 def reminders(header: dict, rows: list, n_followups: int, rundir: "Path | None",
               now: "datetime | None" = None) -> list:
     """Compute the reminder lines. Pure: same inputs → same output. Returns a list of strings.
@@ -232,7 +246,8 @@ def main(argv: "list[str] | None" = None) -> int:
     parser = argparse.ArgumentParser(description=DESCRIPTION)
     parser.add_argument("--file", help="the run ledger (<rundir>/state.jsonl)")
     parser.add_argument("--followups", help="the follow-up store (.gauntlet/followups.jsonl)")
-    parser.add_argument("--rundir", help="the run directory, for intent/CI/progress file checks")
+    parser.add_argument("--rundir", help="the run directory, for intent/CI/progress file checks "
+                                         "(default: the directory holding --file)")
     parser.add_argument("--self-test", action="store_true", help="run every fixture and assert the rules "
                                                                  "this file enforces still hold")
     args = parser.parse_args(argv)
@@ -244,7 +259,7 @@ def main(argv: "list[str] | None" = None) -> int:
         parser.error("the following arguments are required: --file")
     header, rows = L.load(Path(args.file))
     n_followups = open_followups(Path(args.followups) if args.followups else None)
-    rundir = Path(args.rundir) if args.rundir else None
+    rundir = resolve_rundir(args.file, args.rundir)
     print(render(header, rows, n_followups, rundir))
     return 0  # a nudge NEVER blocks — it only reminds
 
