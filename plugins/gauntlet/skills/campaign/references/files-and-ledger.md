@@ -627,6 +627,9 @@ like every other head write, so a genuine head move fires the head-move reset at
 field, "What a genuine head move resets"). That voids SHA-pinned evidence about the OLD head; it does not
 revise anything this run decided.
 
+**The base refresh raises the same question about its neighbours, and the answer is not here:**
+`bailout-and-final-report.md`'s **What each base REQUIRED** bullet owns it.
+
 **Where this actually fires: `merge.py`'s terminal write, on an `aborted` row GitHub now reports MERGED.**
 The abort leaves the PR open for its owner (`bailout-and-final-report.md`), so the user may merge it
 themselves; the finalizer records that (`stage-3-merge.md`). Recording `status = merged` **alone** is the
