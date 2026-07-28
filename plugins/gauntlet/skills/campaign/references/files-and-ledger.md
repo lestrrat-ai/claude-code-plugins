@@ -108,7 +108,7 @@ following line is one adopted PR's row record (`{"type": "row", …}`). Every re
 — fields are keyed by NAME, never by column position:
 
 ```
-{"type": "header", "run_id": "g260704-0915-a3f29c1b", "base_branch": "main", "api_changes": "ask", "reviewer": "codex", "required_set": "declared:[{\"context\": \"build\", \"app\": \"-\"}, {\"context\": \"test (3.12, ubuntu)\", \"app\": \"15368\"}]", "skill_version": "0.1.4", "last_activity": "2026-07-04T09:40:00Z", "watchdog_due": "2026-07-04T10:25:00Z", "pending_adoption": "-", "default_non_goals": "[\"hardening a self-test against a developer who edits it\"]"}
+{"type": "header", "run_id": "g260704-0915-a3f29c1b", "base_branch": "main", "api_changes": "ask", "reviewer": "codex", "required_set": "declared:[{\"context\": \"build\", \"app\": \"-\"}, {\"context\": \"test (3.12, ubuntu)\", \"app\": \"15368\"}]", "skill_version": "0.1.4", "last_activity": "2026-07-04T09:40:00Z", "watchdog_due": "2026-07-04T10:25:00Z", "pending_adoption": "-", "default_non_goals": "[\"hardening a self-test against a developer who edits it\"]", "status_verbosity": "full"}
 {"type": "row", "id": "pr41", "slug": "fix-null-deref", "branch": "fix-null-deref", "worktree": "/srv/example-repo/.worktrees/fix-null-deref", "worktree_owned": "yes", "branch_owned": "yes", "pr": "41", "head_sha": "a3f29c1b7d4e6f8091a2b3c4d5e6f708192a3b4c", "reviews_ok": "2", "ci": "green", "tier": "STANDARD", "attempts": "1", "started": "2026-07-04T09:15:00Z", "api_approval": "-", "status": "in_review", "ci_fingerprint": "sha256:9f2c\u2026", "settled_strikes": "0", "unusable_refetches": "0", "ci_stalled_since": "-", "ci_reason": "-", "blocker_ruling": "-", "review_rounds": "3", "ns_streak": "0", "intent": "stated@2026-07-04T09:15:00Z", "pr_origin": "gauntlet", "repair_count": "0", "repair_decision": "-"}
 {"type": "row", "id": "pr52", "slug": "add-retry-flag", "branch": "add-retry-flag", "worktree": "/home/example/checkouts/add-retry-flag", "worktree_owned": "no", "branch_owned": "no", "pr": "52", "head_sha": "b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7089a1b", "reviews_ok": "0", "ci": "pending", "tier": "HIGH", "attempts": "0", "started": "-", "api_approval": "-", "status": "in_review", "ci_fingerprint": "sha256:4a71\u2026", "settled_strikes": "1", "unusable_refetches": "0", "ci_stalled_since": "-", "ci_reason": "required check absent: integration-tests", "blocker_ruling": "-", "review_rounds": "5", "ns_streak": "2", "intent": "authored@2026-07-04T09:20:00Z", "pr_origin": "external", "repair_count": "0", "repair_decision": "-"}
 ```
@@ -139,7 +139,8 @@ this header field is only what a row carrying no explicit set inherits through `
 maintain; the quiet-run sensor `nudge.py` reads, defined below), `watchdog_due` (**the durable
 health-pass deadline** — a UTC ISO-8601 stamp `ledger.py watchdog` stamps and reads, defined below),
 `pending_adoption` (**the run-intent checkpoint** — the requested PR list recorded at setup, defined
-below), `default_non_goals` (**the run-wide default Non-goals**, defined below).
+below), `default_non_goals` (**the run-wide default Non-goals**, defined below), `status_verbosity`
+(**how much of the per-heartbeat status render to print**, defined below).
 
 `skill_version` is read at startup from the **running plugin's** `plugin.json` (`SKILL.md`) and stated in
 the final report. **It is not cosmetic.** The harness loads this skill from the **installed plugin cache**,
@@ -233,6 +234,39 @@ other malformed value rather than silently reading as `[]`. Its run-wide meaning
 intent-check --ledger` refuses a PR whose managed block has drifted from this field before dispatch, and
 `verify --ledger` compares the dispatch-time `pass_identity.default_non_goals` binding to this field at
 tally (`check_scope`).
+
+`status_verbosity` records **HOW MUCH OF THE PER-HEARTBEAT STATUS RENDER TO PRINT** — `full` | `brief`,
+the operator's own display setting. Unlike `watchdog_due` it is an **ORDINARY, hand-settable config field**
+(`header set status_verbosity brief`): it has a real door, and **writing it IS meaningful activity** (no
+exemption — it is not a sensor). `ledger.py`'s `parse_status_verbosity` is the **ONE validator** and
+`status_verbosity(header)` the **ONE read door**; a value outside the vocabulary is **REFUSED without
+mutating the ledger** (fail closed). It **defaults to `full`**, and that default is load-bearing rather
+than a taste: an existing run renders exactly as it did until the operator opts in.
+
+**It is PRESENTATION and nothing else.** No verdict, CI derivation, cap, park, label or merge
+precondition reads it, and no stored value changes with it — `header get` and `list` still return every
+field under either mode. **`loop-control.md`, "Reschedule or exit", owns what the surrounding render may
+omit and what it must always print.** Inside `table` it decides exactly one thing: whether the
+`# <field>: <value>` run-config block is printed above the grid. **It is not itself one of that block's
+lines.** The printed block is `ledger.py`'s `TABLE_CONFIG_FIELDS` — the header fields minus the
+presentation ones (`HEADER_PRESENTATION_FIELDS`), declared in the schema rather than at the render site —
+so a **PRESENTATION** field is stored, gettable and settable like any other and simply never printed
+there. That exclusion is what makes the `full` default a true no-op: a ledger written before this field
+existed back-fills the default and still prints the block it always printed, byte for byte. Under `brief`
+the block is gone entirely, so printing the setting inside it could never have explained a missing
+preamble either. `brief` drops that block — set-once
+configuration a heartbeat would otherwise reprint every time — **and drops nothing else. It never removes
+a row, an empty-grid marker, or the hidden-count disclosure line**; a verbosity that could suppress those
+would turn a filtered table back into the lie by omission they exist to prevent, and the row it would bury
+is the `aborted` one. A brief render is a shorter preamble, never a smaller ledger.
+
+A stored value the validator refuses — reachable only by hand-editing the store, since the door refuses it
+— **degrades to `full` on READ** rather than raising. That direction is deliberate and is the opposite of
+`default_non_goals`': the only thing this setting can do is **suppress output**, so a setting nobody can
+read must hide nothing, and a status render that died on a typo in a display field would take the whole
+heartbeat's report with it. This is the stance `watchdog check` takes toward a malformed deadline — a read
+that gates nothing must never fail — while an unreadable `default_non_goals` would silently narrow a
+**review**, which is why that one raises instead.
 
 Header field notes (the header fields above; per-row fields follow):
 
@@ -618,7 +652,7 @@ ledger.py --file <state.jsonl> verdict --pr N --head-sha <sha> --verdict satisfi
 ledger.py --file <state.jsonl> base-ok --pr N --head-sha <sha>    # record a base-preflight `proceed` for the head (base_ok_sha) — written only by base-preflight.py, never hand-set
 ledger.py --file <state.jsonl> get --pr N [--field <f>]           # print the row as JSON, or one field
 ledger.py --file <state.jsonl> list [--where <field>=<val>]       # print matching rows' pr numbers (all if no filter)
-ledger.py --file <state.jsonl> table [--all] [--fields <f>,<f>,…] # print run header + the live rows as an aligned table (read-only)
+ledger.py --file <state.jsonl> table [--all] [--fields <f>,<f>,…] # print run header + the live rows as an aligned table (read-only; the header status_verbosity decides whether the run-config block prints)
 ledger.py --file <state.jsonl> dispatch-check --pr N [--action ordinary|repair]
 ledger.py --file <state.jsonl> park --pr N --reason <blocker>     # MACHINE-BLOCKER park: status=awaiting-user, ci_reason=<blocker>, blocker_ruling=- — one write
 ledger.py --file <state.jsonl> unpark --pr N                      # retry unpark: status=in_review, ruling spent, liveness counters reset — one write
@@ -670,6 +704,14 @@ answered through `finding-audit.py rule-standoff`, not `blocker_ruling`, so its 
 to waiting (`loop-control.md`, "Reschedule or exit"). It renders state and makes NO gate decisions; its
 one computed value is the display-only `base` column (the `base` bullet under "It shows only SOME fields",
 below).
+
+**How much of it prints is the operator's call, and it reaches only the PREAMBLE.** The header
+`status_verbosity` field (above) decides whether the `# <field>: <value>` run-config block appears above
+the grid; `brief` omits it. The field does **not** appear among that block's own lines — the block is
+`TABLE_CONFIG_FIELDS`, the header fields minus the presentation ones (see the field, above) — so a ledger
+predating the setting renders exactly as it did. Everything from the column-header line down is byte-identical under either
+mode — including every out-of-band `#` line below the grid, which the next four bullets are about. The
+verbosity is not a fifth way this projection is lossy: it drops no value, no row, and no disclosure.
 
 **Read the ledger by FIELD NAME through `ledger.py get`** (or `list`) — **never by parsing the table**.
 A SHA (or any value) recovered from `table`'s grid is a truncated, escaped rendering, and feeding one back

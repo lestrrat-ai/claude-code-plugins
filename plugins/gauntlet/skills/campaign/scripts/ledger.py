@@ -44,8 +44,38 @@ TEST_PY = HERE / "ledger-test.py"     # the fixture suite — this accessor's ex
 
 # --- schema (owned here, once) ------------------------------------------------
 
+# HOW MUCH OF THE PER-HEARTBEAT STATUS RENDER TO PRINT — the ONE enumeration of what the
+# `status_verbosity` header field may hold. It is PRESENTATION and nothing else: no verdict, no CI
+# derivation, no cap, no park and no merge precondition reads it, and no value in the store changes with
+# it. `loop-control.md`, "Reschedule or exit", owns what the surrounding status render may omit under each
+# mode; in THIS file the setting decides exactly one thing (see `cmd_table`).
+STATUS_VERBOSITY_FULL = "full"
+STATUS_VERBOSITY_BRIEF = "brief"
+STATUS_VERBOSITIES = (STATUS_VERBOSITY_FULL, STATUS_VERBOSITY_BRIEF)
+
 HEADER_FIELDS = ("run_id", "base_branch", "api_changes", "reviewer", "required_set", "skill_version",
-                 "last_activity", "watchdog_due", "pending_adoption", "default_non_goals")
+                 "last_activity", "watchdog_due", "pending_adoption", "default_non_goals",
+                 "status_verbosity")
+
+# HEADER FIELDS THAT CONFIGURE THE RENDER RATHER THAN THE RUN — stored, gettable and settable like any
+# other header field, but NOT part of the run-config block the table prints. The exclusion is declared
+# HERE, in the schema, because it is a property of the FIELD, not a special case at one render site: a
+# second presentation field is added by naming it here and no printing code changes.
+#
+# It is also what keeps a promise the field could otherwise not keep. `load()` back-fills every missing
+# header key from `HEADER_DEFAULTS`, so an OLD ledger — written before `status_verbosity` existed — reads
+# back the default and, were the field printed, would gain a config line it never had. Printing the knob
+# that controls the block INSIDE that block is what made an existing run's output change with no operator
+# action; leaving it out is what makes the default a true no-op, and `ledger-test.py`'s
+# `t_legacy_config_block_is_unchanged` pins that against a frozen list rather than against this tuple.
+# Nothing is hidden by it: `header get`/`header set` and the stored record are untouched, and under
+# `brief` the whole block is gone anyway, so the line could never have explained a missing preamble.
+HEADER_PRESENTATION_FIELDS = ("status_verbosity",)
+
+# The run-config block `cmd_table` prints: `HEADER_FIELDS` minus the presentation ones, DERIVED so the two
+# can never drift and the field order stays the schema's.
+TABLE_CONFIG_FIELDS = tuple(f for f in HEADER_FIELDS if f not in HEADER_PRESENTATION_FIELDS)
+
 HEADER_DEFAULTS = {
     "run_id": "-",
     # LEGACY FALLBACK for the base branch. The base a PR merges into is now ROW state (`base_branch` in
@@ -138,6 +168,23 @@ HEADER_DEFAULTS = {
     # stands (`guard_default_non_goals_change`). files-and-ledger.md, "default_non_goals", owns the field and
     # that lifecycle rule.
     "default_non_goals": "[]",
+    # HOW MUCH OF THE PER-HEARTBEAT STATUS RENDER TO PRINT — `full` | `brief` (`STATUS_VERBOSITIES`), the
+    # operator's own display setting. An ORDINARY, hand-settable config field (`header set
+    # status_verbosity brief`), exactly like `pending_adoption` and unlike `watchdog_due`: it has a real
+    # door, and writing it IS meaningful activity (no exemption — it is not a sensor). `parse_status_verbosity`
+    # is the ONE validator and `status_verbosity(header)` the ONE read door; a value outside the vocabulary
+    # is REFUSED at `header set` without mutating the ledger (fail closed).
+    #
+    # In THIS file it decides exactly one thing: whether `table` prints the `# <field>: <value>` run-config
+    # block above the grid. `brief` drops that block — set-once run configuration the heartbeat would
+    # otherwise reprint on every wake. It drops NOTHING else: not a row, not an empty-grid marker, and
+    # never the hidden-count disclosure line, which is what tells a reader the view is a SUBSET.
+    #
+    # The default is `full`, and that is load-bearing rather than a taste: an existing run renders exactly
+    # as it did until the operator opts in. A stored value the validator refuses degrades to `full` on READ
+    # (`status_verbosity`) — the only thing this setting can do is HIDE output, so a setting nobody can read
+    # must hide nothing.
+    "status_verbosity": STATUS_VERBOSITY_FULL,
 }
 
 ROW_FIELDS = (
@@ -927,6 +974,35 @@ def default_non_goals(header: dict) -> "list[str]":
     return parse_default_non_goals(header.get("default_non_goals", HEADER_DEFAULTS["default_non_goals"]))
 
 
+def parse_status_verbosity(value: object) -> str:
+    """VALIDATE a `status_verbosity` value — the ONE validator, shared by the write door and the read door.
+
+    Raises `ValueError` naming the vocabulary. The vocabulary is `STATUS_VERBOSITIES`, read rather than
+    retyped, so a third mode is added in one place and both doors see it with no edit here.
+    """
+    if not isinstance(value, str) or value not in STATUS_VERBOSITIES:
+        raise ValueError(f"must be one of {', '.join(STATUS_VERBOSITIES)}; got {value!r}")
+    return value
+
+
+def status_verbosity(header: dict) -> str:
+    """The run's status-render verbosity — the ONE door every consumer reads it through (never the raw
+    header value).
+
+    It DEGRADES to `full` on a stored value the validator refuses, and that direction is the whole point.
+    The write door validates and refuses, so an unreadable value can only reach the store by hand — and
+    the only thing this setting can ever do is SUPPRESS output. Degrading here prints MORE, never less: a
+    setting nobody can read must hide nothing, and a status render that dies on a typo takes the whole
+    heartbeat's report with it. That is the stance `watchdog check` takes toward a malformed deadline (a
+    read that gates nothing must never fail), not `default_non_goals`' raise — an unreadable value THERE
+    would silently narrow a review, while an unreadable value here narrows only the display.
+    """
+    try:
+        return parse_status_verbosity(header.get("status_verbosity", HEADER_DEFAULTS["status_verbosity"]))
+    except ValueError:
+        return STATUS_VERBOSITY_FULL
+
+
 def prs_with_review_credit(rows: "list[dict]") -> "list[str]":
     """The PRs of every NON-TERMINAL row that still holds BANKED review credit (`reviews_ok > 0`).
 
@@ -1008,6 +1084,14 @@ def cmd_header(path: Path, args) -> int:
         # A BROADENING change (a default removed) while banked review credit stands is a false-permissive
         # merge in waiting — refuse it, fail closed, BEFORE `save`. `guard_default_non_goals_change` owns why.
         guard_default_non_goals_change(header, rows, new_defaults)
+    if args.field == "status_verbosity":
+        # VALIDATE through the schema's own parser — the ONE place this field's vocabulary lives. The
+        # refusal raises BEFORE `save`, so a value outside it never reaches the ledger (fail closed), and
+        # the operator learns the vocabulary from the tool rather than from a doc that can go stale.
+        try:
+            value = parse_status_verbosity(args.value)
+        except ValueError as exc:
+            fail(f"status_verbosity {exc} — refused; the ledger is unchanged")
     activity = header.get(args.field) != value
     header[args.field] = value
     save(path, header, rows, activity=activity)
@@ -1697,9 +1781,26 @@ def cmd_table(path: Path, args) -> int:
     else:
         shown = [r for r in rows if r["status"] not in TABLE_HIDDEN_STATUSES]
         dropped = [r for r in rows if r["status"] in TABLE_HIDDEN_STATUSES]
-    for line in config_lines([(f, header[f]) for f in HEADER_FIELDS]):
-        print(line)
-    print()
+    # THE ONE THING `status_verbosity` DECIDES HERE: whether the run-config block is printed. It is
+    # set-once configuration, and the heartbeat that renders this table renders it again on every wake,
+    # so `brief` drops the block (and the blank line that separated it from the grid — a lone blank leader
+    # is not a lighter render, it is a ragged one).
+    #
+    # It drops NOTHING BELOW THIS POINT, and that boundary is the point of the setting rather than an
+    # oversight: the grid, the two empty-grid markers and the hidden-count notice all print identically in
+    # both modes. Those lines are what disclose that the view is a SUBSET, so a verbosity able to suppress
+    # them would turn a filtered table back into the lie by omission `hidden_notice` exists to prevent —
+    # and the row it would bury is the `aborted` one, this run's unfinished business. A brief render is a
+    # SHORTER preamble, never a smaller ledger.
+    #
+    # The block itself is `TABLE_CONFIG_FIELDS` — the schema's own list of what belongs in it, which is
+    # every header field except the presentation ones. This site chooses WHETHER to print; it never
+    # chooses WHAT, so a legacy ledger's full render is byte-identical to the one it produced before this
+    # setting existed.
+    if status_verbosity(header) == STATUS_VERBOSITY_FULL:
+        for line in config_lines([(f, header[f]) for f in TABLE_CONFIG_FIELDS]):
+            print(line)
+        print()
     # ONLY the rows that are actually printed become cells. That is not merely an optimization: it is what
     # keeps a hidden row from reaching the VISIBLE output at all. Build cells from every row and the widths
     # would still be measured over the hidden ones, so a merged PR with a 200-char slug would silently
@@ -1865,7 +1966,14 @@ def build_parser() -> argparse.ArgumentParser:
     ls = sub.add_parser("list", help="print matching rows' pr numbers")
     ls.add_argument("--where", help="filter as <field>=<value>")
 
-    t = sub.add_parser("table", help="print the run header and the live rows as an aligned table")
+    t = sub.add_parser(
+        "table",
+        help="print the run header and the live rows as an aligned table",
+        epilog=f"the header `status_verbosity` field ({'/'.join(STATUS_VERBOSITIES)}, default "
+               f"{STATUS_VERBOSITY_FULL}) decides whether the `# <field>: <value>` run-config block is "
+               f"printed above the grid; {STATUS_VERBOSITY_BRIEF} omits that block and nothing else — "
+               f"never a row, a marker, or the hidden-count line",
+    )
     t.add_argument("--fields", help=f"comma-separated row fields to show (default: {','.join(TABLE_DEFAULT_FIELDS)})")
     # The default hides rows; --all is how a reader gets the whole ledger back. The help text is derived
     # from TABLE_HIDDEN_STATUSES for the same reason the notice is: so it cannot drift from it. Here the

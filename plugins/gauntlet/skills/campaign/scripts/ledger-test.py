@@ -162,6 +162,17 @@ def row_line(L: ModuleType, **over: str) -> str:
     return json.dumps({"type": "row", **L.ROW_DEFAULTS, **over})
 
 
+def below_config(out: str) -> "list[str]":
+    """The printed lines from the column-header line onward — the grid and the out-of-band block below it.
+
+    A `full` render opens with the run-config block and separates it from the grid with a blank line; a
+    `brief` render (header `status_verbosity`) opens straight at the grid. That blank separator is the ONLY
+    empty line either render ever prints — every grid line, marker and notice is non-empty — so its
+    presence, not a line count, is what tells the two apart, and one helper serves both.
+    """
+    return out.split("\n\n", 1)[1].split("\n") if "\n\n" in out else out.split("\n")
+
+
 def body_lines(out: str) -> "list[str]":
     """The table's printed ROW lines, EXACTLY as they came out — the bytes a reader actually sees.
 
@@ -169,14 +180,14 @@ def body_lines(out: str) -> "list[str]":
     proves no cell can enter, so dropping them here cannot drop a row (and a forged one — which prints as
     `\\#…` — is still counted, which is the point).
     """
-    body = out.split("\n\n", 1)[1].split("\n")
+    body = below_config(out)
     check(body[-1] == "", "the table output must end in a newline")
     return [line for line in body[2:-1] if not line.startswith("#")]
 
 
 def notices(out: str) -> "list[str]":
     """The table's OUT-OF-BAND lines below the grid — the markers and the hidden-count notice."""
-    body = out.split("\n\n", 1)[1].split("\n")[:-1]
+    body = below_config(out)[:-1]
     return [line for line in body[2:] if line.startswith("#")]
 
 
@@ -186,14 +197,21 @@ def grid(L: ModuleType, out: str, fields: "tuple[str, ...]",
     """Parse the printed table BACK and assert its INTEGRITY. Returns (config lines, widths, cells).
 
     `config_fields` and `markers` name the out-of-band text the store under test prints; they default to
-    the LEDGER's own (`L.HEADER_FIELDS`, and its empty/all-hidden markers). The sibling store
+    the LEDGER's own (`L.TABLE_CONFIG_FIELDS` — the block `cmd_table` actually prints, which is NOT every
+    header field: a presentation field is stored and gettable but never printed — and its
+    empty/all-hidden markers). The sibling store
     (`followups.py`) renders through the same `config_lines()`/`grid_lines()` and asserts its output with
     THIS same oracle, passing ITS two — so the layout is verified by ONE parser and a second store cannot
     be checked by a weaker copy of it.
 
+    An EMPTY `config_fields` is the `brief` render (the ledger's `status_verbosity` header field): no
+    run-config block, and — asserted here, not assumed — no leading blank line either, so the output opens
+    on the column-header line. Everything BELOW that point is parsed by the same code in both modes, which
+    is what lets a fixture prove `brief` dropped the block and nothing else.
+
     Three properties, all checked here because all three are what a hostile value attacks:
 
-      * the run config is EXACTLY len(HEADER_FIELDS) lines, each opening `# <field>: `, and NO grid line
+      * the run config is EXACTLY len(cfg_fields) lines, each opening `# <field>: `, and NO grid line
         opens with `#` — except the out-of-band lines that are ALLOWED to (the empty/all-hidden markers and
         the hidden-count notice), which must form a CONTIGUOUS TRAILING BLOCK below the rows — so no value
         can forge a config line, a marker, or the notice, and none of them can hide BETWEEN rows;
@@ -213,7 +231,7 @@ def grid(L: ModuleType, out: str, fields: "tuple[str, ...]",
     same `a`, and this suite stayed green through it. An oracle that normalizes away the thing under test
     is not an oracle. What it hands back is what was PRINTED; nothing else.
     """
-    cfg_fields: "tuple[str, ...]" = L.HEADER_FIELDS if config_fields is None else config_fields
+    cfg_fields: "tuple[str, ...]" = L.TABLE_CONFIG_FIELDS if config_fields is None else config_fields
     mk: "tuple[str, ...]" = (L.TABLE_EMPTY_MARKER, L.TABLE_ALL_HIDDEN_MARKER) if markers is None else markers
     lines = out.split("\n")
     check(lines[-1] == "", "the table output must end in a newline")
@@ -223,8 +241,12 @@ def grid(L: ModuleType, out: str, fields: "tuple[str, ...]",
     config, lines = lines[:n], lines[n:]
     for f, line in zip(cfg_fields, config):
         check(line.startswith(f"# {f}: "), f"run-config line for {f!r} is {line!r}")
-    check(lines[0] == "", f"a blank line must separate the run config from the grid; got {lines[0]!r}")
-    body = lines[1:]
+    if cfg_fields:
+        check(lines[0] == "", f"a blank line must separate the run config from the grid; got {lines[0]!r}")
+        body = lines[1:]
+    else:
+        check(lines[0] != "", f"a render with no run-config block must open on the grid; got {lines[0]!r}")
+        body = lines
     check(len(body) >= 3, f"the grid needs a column-header line, a rule line and a body: {body!r}")
     colhead, rule, rest = body[0], body[1], body[2:]
     # Split the row region from the out-of-band lines below it. A '#' line is out-of-band BY CONSTRUCTION
@@ -1777,7 +1799,9 @@ def t_skill_version_is_recorded(L: ModuleType, tmp: Path) -> None:
     code, out, _ = cli(L, ["--file", str(path), "header", "get", "skill_version"])
     check(out == "0.1.4\n", f"skill_version did not survive the round trip: {out!r}")
 
-    # …and it is in the run-config block the table prints, so a report rendered from `table` carries it.
+    # …and it is in the run-config block the table prints under the DEFAULT verbosity, so a report
+    # rendered from `table` carries it. (An operator who selects `brief` drops that block by choice;
+    # `header get skill_version` above, and the final report, are where the value is always available.)
     code, out, _ = cli(L, ["--file", str(path), "table"])
     config, _, _ = grid(L, out, L.TABLE_DEFAULT_FIELDS)
     check("# skill_version: 0.1.4" in config,
@@ -2742,6 +2766,262 @@ def t_pending_adoption_is_an_ordinary_field(L: ModuleType, tmp: Path) -> None:
     check(header_field(L, path, "last_activity") == FROZEN_B, "clearing pending_adoption is also activity")
 
 
+# --- status_verbosity: the operator's display setting, and the lines it may NEVER drop -------------------
+#
+# The field is PRESENTATION. These fixtures pin the two halves that matter: the write door refuses anything
+# outside the vocabulary (so a typo cannot silently configure a render nobody specified), and `brief` drops
+# the run-config block and NOTHING else — least of all the disclosure lines that say the view is a subset.
+
+def t_status_verbosity_defaults_to_full(L: ModuleType, tmp: Path) -> None:
+    """The default is `full`, so an existing run renders exactly as it did until the operator opts in.
+
+    Pinned on both sides: the stored default reads back `full`, and the table really does print the WHOLE
+    run-config block — one line per `TABLE_CONFIG_FIELDS` member, read from the accessor.
+
+    That oracle is DERIVED from the schema, so it proves the block is complete but can say NOTHING about
+    which names belong in it: it would follow the tuple anywhere it moved. What the printed names must
+    actually BE is pinned against a frozen list by `t_legacy_config_block_is_unchanged`, and that fixture
+    is the one that catches a field being added to the printed block.
+    """
+    path = write_lines(tmp / "verb-default.jsonl", header_line(L, run_id="r1"), row_line(L, pr="1"))
+    check(header_field(L, path, "status_verbosity") == L.STATUS_VERBOSITY_FULL,
+          f"status_verbosity must default to {L.STATUS_VERBOSITY_FULL!r}: "
+          f"{header_field(L, path, 'status_verbosity')!r}")
+    # An OLD ledger — written before this field existed — back-fills to the same default and renders full.
+    old = write_lines(tmp / "verb-old.jsonl", json.dumps({"type": "header", "run_id": "r1"}),
+                      row_line(L, pr="1"))
+    check(header_field(L, old, "status_verbosity") == L.STATUS_VERBOSITY_FULL,
+          "a ledger predating status_verbosity must read back the default, not fail")
+    for name, led in (("fresh", path), ("old", old)):
+        code, out, err = cli(L, ["--file", str(led), "table"])
+        check(code == 0, f"[{name}] table exited {code}: {err!r}")
+        config, _, cells = grid(L, out, L.TABLE_DEFAULT_FIELDS)
+        check(len(config) == len(L.TABLE_CONFIG_FIELDS),
+              f"[{name}] the default view printed {len(config)} run-config lines, not one per printed field")
+        check(len(cells) == 1, f"[{name}] the row vanished from the default view: {out}")
+
+
+def t_legacy_config_block_is_unchanged(L: ModuleType, tmp: Path) -> None:
+    """A ledger written before `status_verbosity` existed prints the SAME run-config block it always did.
+
+    THE ORACLE IS FROZEN AND RETYPED ON PURPOSE, and that is the entire point of this fixture. Every other
+    assertion about the block derives its expectation from the schema tuple — `len(TABLE_CONFIG_FIELDS)`,
+    `L.HEADER_FIELDS` — so it follows the tuple wherever the tuple goes. An oracle computed from the thing
+    under test cannot catch a change to that thing: a field added to the printed block moves BOTH sides of
+    such a check at once and the suite stays green over a render that visibly changed. It did: the whole
+    fixture suite passed while a legacy ledger's block silently grew a line.
+
+    So the names below are a hand-copied snapshot of what the block held before this field was introduced,
+    and they are NOT to be regenerated from the accessor. If a change makes this fixture fail, that change
+    altered what an existing run prints — decide whether that is intended and edit this list deliberately.
+
+    It names NO symbol this branch added, deliberately: it therefore runs unchanged against the accessor as
+    it was before, which is what lets "the old code passes this too" be a claim rather than a hope. The
+    other half — that the excluded field is still stored, defaulted and readable by name — is pinned by
+    `t_status_verbosity_defaults_to_full` and `t_brief_drops_the_run_config_block_and_nothing_else`.
+    """
+    # Retyped by hand. Do NOT replace with anything derived from `L.HEADER_FIELDS`/`L.TABLE_CONFIG_FIELDS`.
+    frozen = ("run_id", "base_branch", "api_changes", "reviewer", "required_set", "skill_version",
+              "last_activity", "watchdog_due", "pending_adoption", "default_non_goals")
+
+    legacy = write_lines(tmp / "legacy-block.jsonl", json.dumps({"type": "header", "run_id": "r1"}),
+                         row_line(L, pr="1", slug="live"))
+    code, out, err = cli(L, ["--file", str(legacy), "table"])
+    check(code == 0, f"table on a pre-status_verbosity ledger exited {code}: {err!r}")
+
+    # Parsed straight off the printed bytes, then compared as NAMES — a count alone would accept a
+    # substitution, and `startswith` alone would accept an extra line beyond the ones checked. Only the
+    # PREAMBLE is read (everything above the first blank line), so the out-of-band lines the table may
+    # print below the rows — which also open `# ` — cannot pad or mask this list.
+    lines = out.split("\n")
+    preamble = lines[:lines.index("")]
+    check(all(line.startswith("# ") for line in preamble),
+          f"a legacy render's preamble holds a line that is not a run-config line: {preamble!r}")
+    printed = [line.split(":", 1)[0][2:] for line in preamble]
+    check(printed == list(frozen),
+          f"the run-config block a legacy ledger prints changed:\nexpected {list(frozen)}\ngot      {printed}\n{out}")
+
+    # …and the same output parses as a whole table against that frozen block, so nothing below it moved
+    # either. `grid` is given the frozen tuple explicitly: its default would derive the block from the
+    # schema, which is exactly the oracle this fixture exists to avoid.
+    config, _, cells = grid(L, out, L.TABLE_DEFAULT_FIELDS, config_fields=frozen)
+    check(len(config) == len(frozen), f"the legacy render's block is not {len(frozen)} lines: {config!r}")
+    check(len(cells) == 1, f"the legacy render lost its row:\n{out}")
+
+
+def t_status_verbosity_refuses_an_unknown_value(L: ModuleType, tmp: Path) -> None:
+    """`header set status_verbosity <not-a-mode>` is REFUSED at the write door, and the store is UNCHANGED.
+
+    A display setting that accepted anything would leave the operator with a render they never asked for and
+    no way to tell why — so the door validates against `STATUS_VERBOSITIES` and refuses BEFORE `save`. The
+    accepted values round-trip, and setting one IS meaningful activity (this is an ordinary config field,
+    like `pending_adoption` — not a sensor).
+    """
+    path = write_lines(tmp / "verb-refuse.jsonl", header_line(L, run_id="r1"), row_line(L, pr="1"))
+    with frozen_clock(L, FROZEN_A):  # a real change first, so a later stamp is distinguishable
+        code, _, err = cli(L, ["--file", str(path), "header", "set", "status_verbosity",
+                               L.STATUS_VERBOSITY_BRIEF])
+        check(code == 0, f"header set status_verbosity brief exited {code}: {err!r}")
+    check(header_field(L, path, "status_verbosity") == L.STATUS_VERBOSITY_BRIEF,
+          f"brief did not round-trip: {header_field(L, path, 'status_verbosity')!r}")
+    check(header_field(L, path, "last_activity") == FROZEN_A,
+          "setting status_verbosity IS meaningful activity — it must stamp last_activity (no exemption)")
+
+    for bad in ("loud", "FULL", "", " brief", "brief ", "verbose", "-", "0"):
+        with frozen_clock(L, FROZEN_B):
+            code, out, err = cli(L, ["--file", str(path), "header", "set", "status_verbosity", bad])
+        check(code == 1, f"header set status_verbosity {bad!r} must be REFUSED (exit 1); got {code}: {out!r}")
+        check("status_verbosity" in err, f"the refusal must name the field: {err!r}")
+        for mode in L.STATUS_VERBOSITIES:
+            check(mode in err, f"the refusal must name the vocabulary ({mode!r} missing): {err!r}")
+        check(header_field(L, path, "status_verbosity") == L.STATUS_VERBOSITY_BRIEF,
+              f"a REFUSED header set overwrote status_verbosity with {bad!r} — it reached disk")
+        check(header_field(L, path, "last_activity") == FROZEN_A,
+              "a REFUSED header set stamped last_activity — it must write NOTHING")
+
+    with frozen_clock(L, FROZEN_B):
+        code, _, err = cli(L, ["--file", str(path), "header", "set", "status_verbosity",
+                               L.STATUS_VERBOSITY_FULL])
+        check(code == 0, f"header set status_verbosity full exited {code}: {err!r}")
+    check(header_field(L, path, "status_verbosity") == L.STATUS_VERBOSITY_FULL,
+          "the operator must be able to switch back to the full render")
+
+
+def t_brief_drops_the_run_config_block_and_nothing_else(L: ModuleType, tmp: Path) -> None:
+    """`brief` removes the run-config block — and the two renders are otherwise BYTE-IDENTICAL.
+
+    That equality is the whole assertion, and it is stronger than any list of things brief "still prints":
+    a change that dropped a row, a column, a marker or the hidden-count line under brief cannot satisfy it.
+    The full render's own output supplies the expectation, so nothing here is retyped.
+    """
+    rows = (row_line(L, pr="1", slug="live", status="in_review"),
+            row_line(L, pr="2", slug="parked", status="awaiting-user"),
+            row_line(L, pr="3", slug="done", status="merged"))
+    path = write_lines(tmp / "verb-brief.jsonl", header_line(L, run_id="r1", base_branch="main"), *rows)
+    # The size of the block `cmd_table` PRINTS — not of the header, which holds presentation fields the
+    # block never shows. This is a cut point into the full render's own bytes, so it must track what was
+    # printed.
+    n = len(L.TABLE_CONFIG_FIELDS)
+
+    for label, argv in (("default projection", []), ("--fields", ["--fields", "pr,base,status"])):
+        code, _, err = cli(L, ["--file", str(path), "header", "set", "status_verbosity",
+                               L.STATUS_VERBOSITY_FULL])
+        check(code == 0, f"[{label}] header set status_verbosity full exited {code}: {err!r}")
+        code, full_out, err = cli(L, ["--file", str(path), "table", *argv])
+        check(code == 0, f"[{label}] the full table exited {code}: {err!r}")
+
+        code, _, err = cli(L, ["--file", str(path), "header", "set", "status_verbosity",
+                               L.STATUS_VERBOSITY_BRIEF])
+        check(code == 0, f"[{label}] header set status_verbosity brief exited {code}: {err!r}")
+        code, brief_out, err = cli(L, ["--file", str(path), "table", *argv])
+        check(code == 0, f"[{label}] the brief table exited {code}: {err!r}")
+
+        # The run-config block is GONE — no line of the brief render opens one, and it does not open blank.
+        # Scanned over EVERY header field, deliberately wider than the printed block: a brief render that
+        # leaked a field the full render does not even show would still be caught here.
+        opened = [line for line in brief_out.split("\n")
+                  if any(line.startswith(f"# {f}: ") for f in L.HEADER_FIELDS)]
+        check(opened == [], f"[{label}] brief still printed run-config lines: {opened!r}\n{brief_out}")
+        check(brief_out.split("\n")[0] != "", f"[{label}] brief opened on a blank line: {brief_out!r}")
+
+        # …and EVERYTHING BELOW it is unchanged, BYTE FOR BYTE. This equality is the assertion: it is what
+        # no list of "brief still prints X" could give, because a change that dropped a row, a column, a
+        # marker or the hidden-count line under brief cannot satisfy it. The expectation is the full
+        # render's own bytes — nothing is retyped, so it cannot go stale.
+        full_lines = full_out.split("\n")
+        check(all(line.startswith("# ") for line in full_lines[:n]),
+              f"[{label}] the full render's first {n} lines are not the run-config block: {full_lines[:n]!r}")
+        check(full_lines[n] == "", f"[{label}] no blank line follows the full run-config block")
+        check("\n".join(full_lines[n + 1:]) == brief_out,
+              f"[{label}] brief is not the full render minus its run-config block:\n"
+              f"{full_out}\n--- vs ---\n{brief_out}")
+
+    # The grid still parses as a grid under brief, and holds the same cells the full view showed.
+    code, brief_out, _ = cli(L, ["--file", str(path), "table"])
+    _, _, brief_cells = grid(L, brief_out, L.TABLE_DEFAULT_FIELDS, config_fields=())
+    col = L.TABLE_DEFAULT_FIELDS.index("pr")
+    check([c[col] for c in brief_cells] == ["1", "2"],
+          f"brief did not show the live and parked rows: {[c[col] for c in brief_cells]!r}\n{brief_out}")
+
+    # Every header value is STILL IN THE STORE and still readable by name — brief hides the display of the
+    # run config, never the config itself.
+    for f in L.HEADER_FIELDS:
+        code, out, err = cli(L, ["--file", str(path), "header", "get", f])
+        check(code == 0, f"header get {f} exited {code} under brief: {err!r}")
+        check(out.endswith("\n"), f"header get {f} printed nothing under brief")
+
+
+def t_brief_never_hides_a_row_or_its_disclosure(L: ModuleType, tmp: Path) -> None:
+    """Under `brief` the grid, the parked rows, the empty-grid markers and the hidden-count line ALL stand.
+
+    This is the line the setting must never cross. A brief render that dropped the disclosure would present
+    a filtered subset as the whole ledger, and the row it would bury is the `aborted` one — the run's
+    unfinished business, left open for its owner. So each is asserted against the FULL render's own output.
+    """
+    mixed = write_lines(
+        tmp / "verb-mixed.jsonl", header_line(L, run_id="r1", status_verbosity=L.STATUS_VERBOSITY_BRIEF),
+        row_line(L, pr="1", status="merged"),
+        row_line(L, pr="2", status="in_review"),
+        row_line(L, pr="3", status="aborted"),
+        row_line(L, pr="4", status="awaiting-user"),
+    )
+    code, out, err = cli(L, ["--file", str(mixed), "table"])
+    check(code == 0, f"the brief table exited {code}: {err!r}")
+    _, _, cells = grid(L, out, L.TABLE_DEFAULT_FIELDS, config_fields=())
+    col = L.TABLE_DEFAULT_FIELDS.index("pr")
+    check([c[col] for c in cells] == ["2", "4"],
+          f"brief changed WHICH rows show — the parked row must stand: {[c[col] for c in cells]!r}\n{out}")
+    check(notices(out) == [L.hidden_notice(2, ("merged", "aborted"))],
+          f"brief dropped or altered the hidden-count disclosure: {notices(out)!r}\n{out}")
+
+    code, out, err = cli(L, ["--file", str(mixed), "table", "--all"])
+    check(code == 0, f"brief table --all exited {code}: {err!r}")
+    _, _, cells = grid(L, out, L.TABLE_DEFAULT_FIELDS, config_fields=())
+    check([c[col] for c in cells] == ["1", "2", "3", "4"], f"--all must still show every row:\n{out}")
+    check(notices(out) == [], f"--all hid nothing, yet the brief render claims it did: {notices(out)!r}")
+
+    # Both empty-grid markers survive brief, and they stay DIFFERENT lines — an end-of-run ledger must
+    # never read as a campaign that adopted nothing.
+    empty = write_lines(tmp / "verb-empty.jsonl",
+                        header_line(L, run_id="r1", status_verbosity=L.STATUS_VERBOSITY_BRIEF))
+    code, out, _ = cli(L, ["--file", str(empty), "table"])
+    check((code, notices(out)) == (0, [L.TABLE_EMPTY_MARKER]),
+          f"a brief render of an empty ledger must still say {L.TABLE_EMPTY_MARKER!r}: {notices(out)!r}")
+    allgone = write_lines(tmp / "verb-allgone.jsonl",
+                          header_line(L, run_id="r1", status_verbosity=L.STATUS_VERBOSITY_BRIEF),
+                          row_line(L, pr="1", status="merged"), row_line(L, pr="2", status="aborted"))
+    code, out, _ = cli(L, ["--file", str(allgone), "table"])
+    check((code, notices(out)) == (0, [L.TABLE_ALL_HIDDEN_MARKER, L.hidden_notice(2, ("merged", "aborted"))]),
+          f"a brief render whose rows are all terminal must still say WHICH empty it is: {notices(out)!r}")
+
+
+def t_unreadable_status_verbosity_renders_full(L: ModuleType, tmp: Path) -> None:
+    """A hand-edited `status_verbosity` the validator refuses renders the FULL view — and never crashes.
+
+    The write door refuses every such value, so this can only come from a hand-edited store. Degrading to
+    `full` is the fail-safe DIRECTION for a setting whose only power is to suppress output: a setting nobody
+    can read must hide nothing, and the status render must not die on a typo in a display field.
+    """
+    for bad in ("loud", "", "-", "null"):
+        path = write_lines(tmp / f"verb-bad-{bad or 'blank'}.jsonl",
+                           json.dumps({"type": "header", "run_id": "r1", "status_verbosity": bad}),
+                           row_line(L, pr="1"))
+        header, _ = L.load(path)
+        check(L.status_verbosity(header) == L.STATUS_VERBOSITY_FULL,
+              f"an unreadable {bad!r} must read as {L.STATUS_VERBOSITY_FULL!r}, not {bad!r}")
+        code, out, err = cli(L, ["--file", str(path), "table"])
+        check(code == 0, f"table on an unreadable status_verbosity exited {code}: {err!r}")
+        config, _, cells = grid(L, out, L.TABLE_DEFAULT_FIELDS)
+        check(len(config) == len(L.TABLE_CONFIG_FIELDS),
+              f"an unreadable {bad!r} suppressed the run-config block — it hid MORE, not less:\n{out}")
+        check(len(cells) == 1, f"an unreadable {bad!r} dropped the row:\n{out}")
+    # A `null` on disk is a MISSING value, not a mode: it back-fills to the default through `_coerce_field`.
+    nul = write_lines(tmp / "verb-null.jsonl",
+                      json.dumps({"type": "header", "run_id": "r1", "status_verbosity": None}))
+    check(header_field(L, nul, "status_verbosity") == L.STATUS_VERBOSITY_FULL,
+          "a null status_verbosity must back-fill to the default, never to the string 'None'")
+
+
 # --- row-owned base / required set, with the header as the LEGACY FALLBACK -------------------------------
 #
 # `base_branch` and `required_set` are per-ROW state now; the header fields are only what a row with no
@@ -3027,6 +3307,12 @@ CASES = [
     ("watchdog-due-no-door", "`header set watchdog_due` is refused and writes nothing", t_watchdog_due_has_no_door),
     ("watchdog-interval", "watchdog interval prints the constant in minutes, reads no ledger", t_watchdog_interval_prints_the_constant),
     ("pending-adoption-ordinary", "pending_adoption is an ordinary settable field; setting it IS activity", t_pending_adoption_is_an_ordinary_field),
+    ("verbosity-defaults-full", "status_verbosity defaults to `full` — an existing run renders as it did", t_status_verbosity_defaults_to_full),
+    ("verbosity-legacy-block-frozen", "a pre-status_verbosity ledger prints the SAME block — pinned against a frozen, retyped list", t_legacy_config_block_is_unchanged),
+    ("verbosity-refuses-unknown", "a value outside STATUS_VERBOSITIES is refused at the write door, store unchanged", t_status_verbosity_refuses_an_unknown_value),
+    ("verbosity-brief-drops-config", "`brief` is the full render MINUS the run-config block, byte for byte", t_brief_drops_the_run_config_block_and_nothing_else),
+    ("verbosity-brief-discloses", "`brief` never drops a row, a marker, or the hidden-count disclosure", t_brief_never_hides_a_row_or_its_disclosure),
+    ("verbosity-unreadable-full", "an unreadable status_verbosity renders FULL — a setting nobody can read hides nothing", t_unreadable_status_verbosity_renders_full),
     ("old-ledger-header-fallback", "an old row with no base fields loads and resolves through the header", t_old_ledger_resolves_through_the_header),
     ("new-row-owns-its-base", "a new row's explicit base wins over the header, per row", t_new_row_owns_its_base),
     ("row-base-creation-only", "the row base is written once at add-row and immutable — no `set --base-branch`", t_row_base_is_creation_only),

@@ -24,8 +24,10 @@ Invocation: Claude Code `/gauntlet:ledger`; Codex `$gauntlet:ledger`.
    ```
 
 5. Append `"--all"` only when user asks for hidden, merged, aborted, closed, or all entries.
-6. Print script stdout as-is — every line, including the `#` lines above and below the grid. The default
-   view is a filtered one and those lines are what disclose the filtering. On failure, relay stderr as-is
-   and stop.
+6. Print script stdout as-is — every line the script printed, adding none and removing none. That
+   includes every `#` line. The `#` lines below the grid disclose that the view is filtered and are always
+   printed; the `# <field>: <value>` run-config block above it is printed only when the run's
+   `status_verbosity` setting selects it, so its absence is the tool's output, never something to restore.
+   On failure, relay stderr as-is and stop.
 
 Read-only. NEVER create, edit, parse, summarize, or reformat ledger data or table output.

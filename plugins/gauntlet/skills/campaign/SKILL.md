@@ -145,7 +145,9 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
     and the loop continues per `references/loop-control.md`, "Primary continuity", whenever non-terminal
     work remains. NEVER sleep with due work un-launched or no path to the next reconcile. Then follow
     `references/loop-control.md`, "Reschedule or exit", exactly: a scheduled-heartbeat host renders the
-    status — the `ledger.py table` output that block defines — and then schedules-or-replaces the primary
+    status — the `ledger.py table` output that block defines, at the verbosity the header
+    `status_verbosity` field selects (default `full`; `brief` drops the set-once run configuration and
+    nothing else) — and then schedules-or-replaces the primary
     wake as the turn's LAST action ("Primary continuity"; scheduling ends the turn on that host:
     `references/runtime-adapter.md`, "Scheduled-heartbeat host"); a scheduler-less host renders the same
     status, performs one bounded wait, and returns to the reconcile step while non-terminal work remains.

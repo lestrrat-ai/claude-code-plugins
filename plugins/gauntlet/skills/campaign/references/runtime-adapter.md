@@ -388,7 +388,9 @@ For a long campaign, the fresh context the design assumes comes from the **hand-
 and resume in a fresh one with `<campaign-invocation> --run <run-id>` — the durable state exists
 precisely so a fresh instance rebuilds everything (`loop-control.md`, "Resume after a killed session").
 When the driver's context is visibly heavy, say so in the status render and recommend that hand-off
-rather than walking silently toward a context limit.
+rather than walking silently toward a context limit. **This warning is not set-once run configuration, so
+it prints at either `status_verbosity`** (`loop-control.md`, "Reschedule or exit"): a brief render that
+swallowed it would be walking toward that limit silently, which is the one thing it exists to stop.
 
 ### Reconcile worker — heartbeat Step 1 in a fresh context
 
