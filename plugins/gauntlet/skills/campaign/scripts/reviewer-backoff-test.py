@@ -136,6 +136,19 @@ def t_refusal_stops_and_asks() -> None:
     check(action("This request violates the content policy.\n"
                  "VERDICT: DEFERRED — cannot review this request.") == B.STOP_AND_ASK,
           "a refusal carrying a terminal DEFERRED line stopped reaching the operator")
+    # The plural spelling of a policy marker is the same refusal. These three are the only markers
+    # whose plural is not a superstring of the singular, so each is pinned.
+    for text in ("Your request is forbidden by our content policies.",
+                 "blocked by our safety policies",
+                 "your prompt violates our usage policies"):
+        check(action(text) == B.STOP_AND_ASK,
+              f"a policy refusal in the plural ({text!r}) did not reach the operator")
+    # …and the other side of that boundary: an over-broad policy marker must not swallow the auth
+    # class, so a bare credential failure with no policy wording still falls back natively.
+    check(kind("403 Forbidden") == B.AUTH,
+          "a bare credential failure was read as a reviewer refusal")
+    check(action("403 Forbidden") == B.FALLBACK_NATIVE,
+          "a bare credential failure stopped the campaign for the operator")
     # And refusal outranks a transient marker in the same text.
     mixed = "the request timed out, and I cannot help with that anyway"
     check(kind(mixed) == B.REFUSAL, "a transient marker outranked a refusal in the same message")
@@ -213,6 +226,11 @@ def t_delay_needs_a_retry_word_nearby() -> None:
     far = "retry" + " padding" * 12 + " 60 seconds"
     check(B.guess_delay_seconds(far) is None,
           "a number far past the trigger window was still read as that trigger's delay")
+    # The same window bounds the before-trigger pass, so a pair far in FRONT of a trigger is not that
+    # trigger's delay either.
+    far_before = "60 seconds" + " padding" * 12 + " retry"
+    check(B.guess_delay_seconds(far_before) is None,
+          "a number far in front of the trigger window was still read as that trigger's delay")
     # The trigger must START a word, not merely sit inside one: telemetry that only CONTAINS the
     # letters of a retry word supplies no timer, and `unavailable` is not `available`.
     for text in ("retrieved 999 files in 3 seconds",
@@ -248,9 +266,17 @@ def t_first_readable_pair_wins() -> None:
           "a sub-second delay stopped being readable")
     check(B.guess_delay_seconds("retry after 2 hours") == 7200,
           "an hours delay stopped being readable")
+    # A pair stated BEFORE the retry word is still that trigger's delay: it is read, and here it is
+    # over the cap, so the pass reviews natively instead of waiting out the usage-limit default.
+    before = "Rate limit reached. 2 hours until retry."
+    check(B.guess_delay_seconds(before) == 7200,
+          "a delay stated in front of the retry word was not read at all")
+    check(action(before) == B.FALLBACK_NATIVE,
+          "a 2-hour limit stated before the retry word waited instead of reviewing natively")
     # …and telemetry riding along inside a real limit message must not beat the provider's own
     # delay to the first-pair rule, which would relaunch seconds into a 45-minute limit and burn
-    # the pass's last external attempt.
+    # the pass's last external attempt. This is the other side of the boundary above, and it is why
+    # the two passes are ORDERED: a both-sided scan reads this telemetry as the delay.
     hijack = ("usage limit reached: retrieved 12 files in 2 seconds before the cap; "
               "try again in 45 minutes")
     check(B.guess_delay_seconds(hijack) == 2700,

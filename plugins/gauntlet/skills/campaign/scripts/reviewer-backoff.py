@@ -39,7 +39,7 @@ import json
 import math
 import re
 import sys
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -115,9 +115,17 @@ REFUSAL_MARKERS = (
     "refusal to",
     "refused to",
     "content filter",
+    # These three are the ONLY refusal markers whose plural is not a superstring of the singular, so
+    # the `-y` -> `-ies` forms are spelled out. Every other marker already covers its own plural as a
+    # substring (`content filter` matches inside `content filters`), which is why nothing else here
+    # needs a second entry. Spell the plural in FULL rather than truncating to a stem: `decide()`
+    # interpolates the matched marker into the operator-facing reason, so a stem would surface there.
     "content policy",
+    "content policies",
     "safety policy",
+    "safety policies",
     "usage policy",
+    "usage policies",
 )
 #: The tool itself cannot run. A wait cannot fix a missing binary or a mistyped flag.
 NOT_FOUND_MARKERS = (
@@ -210,10 +218,15 @@ _PATTERNS = {
 
 # --- the rough delay guess ---------------------------------------------------
 #
-# Find a number with a time unit somewhere after a retry-ish word, and convert it. That is the whole
-# algorithm. It reads the FIRST such pair and ignores every later one, so `1 minute 30 seconds`
-# guesses 60s and `30-60 seconds` guesses 60s. Both are close enough to be useful and neither is
-# exact — that is the point. Anything it cannot read yields no guess at all, which is not an error.
+# Find a number with a time unit NEAR a retry-ish word, and convert it. That is the whole algorithm.
+# It reads the FIRST such pair and ignores every later one, so `1 minute 30 seconds` guesses 60s and
+# `30-60 seconds` guesses 60s. Both are close enough to be useful and neither is exact — that is the
+# point. Anything it cannot read yields no guess at all, which is not an error.
+#
+# "Near" is TWO ORDERED PASSES, never one both-sided scan. Pass 1 reads the first pair that FOLLOWS a
+# trigger; only when pass 1 finds nothing does pass 2 read the first pair that PRECEDES one. Both use
+# the same `TRIGGER_WINDOW`. Ordering — not window width — is what keeps telemetry sitting in front of
+# a real trigger from hijacking the guess; see the `TRIGGER_WINDOW` comment for the hazard.
 
 _UNIT_MILLIS = {"ms": 1, "s": 1000, "m": 60_000, "h": 3_600_000, "d": 86_400_000}
 _UNIT_ALTERNATION = (
@@ -245,8 +258,15 @@ TRIGGER_RE = re.compile(
     r"|cool\s?down)",
     re.IGNORECASE,
 )
-#: How far after a trigger word a number may sit and still be that trigger's delay. Arbitrary, and
-#: deliberately generous enough for `retry in about 60 seconds`.
+#: How far from a trigger word a number may sit and still be that trigger's delay — the same distance
+#: on both sides. Arbitrary, and deliberately generous enough for `retry in about 60 seconds`.
+#: The two passes above are ordered rather than merged into one both-sided scan BECAUSE a provider
+#: sentence can carry telemetry in front of its real trigger: in `usage limit reached: retrieved 12
+#: files in 2 seconds before the cap; try again in 45 minutes`, the telemetry `2 seconds` sits inside
+#: this window in FRONT of `try again`, so a both-sided scan guesses 2 and relaunches the external
+#: reviewer seconds into a 45-minute limit, burning the pass's last external attempt. The after-trigger
+#: pass wins that tie and answers 2700; the before-trigger pass only ever runs when NO pair follows any
+#: trigger at all (`Rate limit reached. 2 hours until retry.`). No width can separate those two cases.
 TRIGGER_WINDOW = 40
 #: Widest digit run the guess converts. A wider one is not refused and not re-read as unreadable: it
 #: answers just past `MAX_WAIT_SECONDS`, so the caller's existing cap check falls back natively and
@@ -262,24 +282,44 @@ def _unit_millis(unit: str) -> int:
     return _UNIT_MILLIS[text[0]]
 
 
+def _readable_seconds(match: "re.Match[str]") -> int:
+    """Convert one accepted number-and-unit pair. Both passes share this so the width rule and the
+    millisecond conversion cannot drift apart."""
+
+    digits = match.group("value")
+    if len(digits) > MAX_READABLE_DIGITS:
+        return MAX_WAIT_SECONDS + 1
+    millis = int(digits) * _unit_millis(match.group("unit"))
+    return math.ceil(millis / 1000)
+
+
 def guess_delay_seconds(message: str) -> int | None:
     """Roughly how long the message asks the campaign to wait, or ``None`` when nothing readable
     sits near a retry-ish word. ``None`` is an ordinary answer, not a failure. A digit run wider
     than ``MAX_READABLE_DIGITS`` answers just past ``MAX_WAIT_SECONDS`` rather than a converted
-    value — over-cap is all the caller does with such a number anyway."""
+    value — over-cap is all the caller does with such a number anyway.
 
-    ends = sorted(match.end() for match in TRIGGER_RE.finditer(message))
-    if not ends:
+    Two ordered passes: a pair FOLLOWING a trigger first, and only if there is none, a pair
+    PRECEDING one. Never one both-sided scan — see ``TRIGGER_WINDOW``."""
+
+    triggers = list(TRIGGER_RE.finditer(message))
+    if not triggers:
         return None
-    for match in DELAY_RE.finditer(message):
+    pairs = list(DELAY_RE.finditer(message))
+    # Pass 1 — the first pair that follows a trigger end by at most the window.
+    ends = sorted(match.end() for match in triggers)
+    for match in pairs:
         start = match.start()
         index = bisect_right(ends, start)
         if index and start - ends[index - 1] <= TRIGGER_WINDOW:
-            digits = match.group("value")
-            if len(digits) > MAX_READABLE_DIGITS:
-                return MAX_WAIT_SECONDS + 1
-            millis = int(digits) * _unit_millis(match.group("unit"))
-            return math.ceil(millis / 1000)
+            return _readable_seconds(match)
+    # Pass 2 — only now: the first pair that precedes a trigger start by at most the window.
+    starts = sorted(match.start() for match in triggers)
+    for match in pairs:
+        end = match.end()
+        index = bisect_left(starts, end)
+        if index < len(starts) and starts[index] - end <= TRIGGER_WINDOW:
+            return _readable_seconds(match)
     return None
 
 

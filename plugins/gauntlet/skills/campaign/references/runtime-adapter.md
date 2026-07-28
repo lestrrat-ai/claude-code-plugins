@@ -229,7 +229,8 @@ blip is seconds.
 
 **`wait_seconds` is a GUESSTIMATE and unreadable delay text is a NORMAL outcome, never an error.** The
 helper reads the first number-and-unit pair sitting near a retry-ish word and converts it
-approximately; anything it cannot read yields the kind's default. Two bounds finish the schedule: a
+approximately; a pair AFTER the retry word wins whenever there is one, so telemetry stated in front of
+a real trigger cannot pose as the provider's delay. Anything it cannot read yields the kind's default. Two bounds finish the schedule: a
 guess longer than the wait cap returns `fallback-native` instead — reviewing natively now beats
 stalling the campaign for a reset hours away — and a guess under the floor is raised to it, so a
 sub-second hint never becomes a spin. `reviewer-backoff.py` owns the cap, the floor, and the defaults
