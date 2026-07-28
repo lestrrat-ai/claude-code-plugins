@@ -22,9 +22,12 @@ python3 <skill-dir>/scripts/triage.py derive \
 ```
 
 Here `<base>` is **this PR row's effective base** — its explicit `base_branch`, else the legacy header
-fallback (`ledger.py`'s `effective_base`), never the one header base. Passing `--file <state.jsonl> --pr
-<pr>` makes `--base` an **assertion**: `triage.py` refuses (exit 2, no JSON) if `origin/<base>` does not
-name that row's effective base, so the diff can never be measured against a branch the row does not track.
+fallback (`ledger.py`'s `effective_base`), never the one header base. `--file <state.jsonl> --pr <pr>` are
+**required**, which makes `--base` an **assertion**: `triage.py` refuses (exit 2, no JSON) if `origin/<base>`
+does not name that row's effective base, and refuses an invocation that omits either flag, so the diff can
+never be measured against a branch the row does not track. **NEVER hand-type this command without them** —
+without the ledger `--base` is an unchecked base *source*, and a wrong one drops the files the two branches
+share, so a code-touching PR reads as all-prose, the floor falls away, and `TRIVIAL` is admitted.
 
 The command resolves the merge-base, reads Git's NUL-delimited raw diff and modes at the expected
 40-character head, and re-reads `HEAD` after classification. A stale expected head, moving head, malformed
