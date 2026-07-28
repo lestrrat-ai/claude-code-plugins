@@ -488,6 +488,12 @@ Header field notes (the header fields above; per-row fields follow):
   gate flow, `declined` with a terminal `aborted`. A one-off approval lands here only; it never flips
   the run-wide `api_changes` header.
 - `status` — `in_review` → `merged`, or `aborted`; plus the **HELD** (non-terminal) statuses below.
+  **The vocabulary is CLOSED**: `STATUSES` in `scripts/ledger.py` is the one enumeration, and
+  `set`/`add-row --status` **refuses** any value outside it. That refusal is what makes the dispatch
+  allow-list safe to be strict — a status the guard cannot clear is a status nothing can write, so one
+  mistyped `--status` can no longer strand a PR that every consumer then ignores. A row that has not yet
+  been through adoption carries `ledger.py`'s pre-admission default instead, which is **not** a member and
+  which nothing may write: adoption is what puts a new row at `in_review` (`pr-adoption.md`).
 
 ### `status` held and parked taxonomy
 
@@ -500,10 +506,12 @@ Header field notes (the header fields above; per-row fields follow):
   owns it.
   Being held does not raise `reviews_ok`, so the guard reads **`status`** — never `reviews_ok`/`ci`/
   `mergeable` alone, which would re-review a held PR and merge it without its question ever being answered.
-  **It is a command, not a memory exercise**: `ledger.py … dispatch-check --pr <N>` exits non-zero on
-  every held status, and the members are `HELD_STATUSES` in `scripts/ledger.py` — **the one place they are
+  **It is a command, not a memory exercise**: `ledger.py … dispatch-check --pr <N>` refuses every held
+  status, and the members are `HELD_STATUSES` in `scripts/ledger.py` — **the one place they are
   enumerated. Never retype that list; ask the tool.** A status added to it is enforced everywhere with no
-  edit to any of the sites that consult it.
+  edit to any of the sites that consult it. The guard refuses **more** than these — it is an allow-list on
+  `in_review` (**`dispatch-check` is the guard**, below, owns what it clears and what it refuses) — so
+  never read a non-zero exit as proof the row is held; the refusal names which case it is.
 
   **Held-PR watch action.** Observing is not mutating. Run `liveness`, then ensure or
   relaunch a watch only when returned `watch_warranted` is `true` (`stage-2-ci.md`, "WATCH ONLY WHAT CAN
@@ -626,7 +634,16 @@ through `set`, exactly as it always has — `verdict` records what a *reviewer d
 a *commit did*.
 
 **`dispatch-check` is the guard, and it is a COMMAND, not a rule to remember.** Run it before **any**
-action that MUTATES a PR; it exits non-zero when the row is HELD (`status`, above). `--action repair` is
+action that MUTATES a PR.
+
+**It is an ALLOW-LIST, not a reject-list, and that is the whole point:** it exits **zero only for
+`in_review`**, and non-zero for every other status — the same polarity, for the same reason, as
+`merge-check.py decide`'s status allow-list. That **SUBSUMES** the held freeze (a held row is simply not
+`in_review`) and it also refuses a **TERMINAL** row (done and out of the gate), a row **adoption never
+admitted**, and any value that is **not a status at all**. A reject-list of held statuses green-lit all
+three. The refusal **says which of them this is**, so a driver can tell "wait for the user" from "this
+row is finished" from "this row is broken". The vocabulary is `STATUSES` in `scripts/ledger.py`
+(`status`, above) — **never retype it; ask the tool.** `--action repair` is
 the one kind of work a `repairing` row accepts, and it is refused until the reassessment's decision is on
 the row — otherwise a driver could call its next targeted fix "the repair" and go on whacking moles under
 a new name. The non-legacy recorded repair's required clean base-only rebase is part of that action;
@@ -714,7 +731,8 @@ human*, and the formatting is lossy in four ways:
   a ledger that holds nothing and a ledger whose every row is hidden print **different** markers, so an
   end-of-run table where every PR has finished can never be misread as a campaign that adopted no PRs.
 
-It rejects an unknown field name (listing the valid ones), refuses a duplicate `pr` on `add-row`,
+It rejects an unknown field name (listing the valid ones), refuses a `--status` outside the closed
+`STATUSES` vocabulary at both write doors (`status`, above), refuses a duplicate `pr` on `add-row`,
 errors on a missing row for `set`/`get`, and creates the file with the header if it is missing. It also
 validates the store on every read and refuses a corrupt ledger — a malformed JSON line, a record that
 is not a JSON object or has a missing/unknown `type`, a duplicate `pr` row, or a header that is missing,

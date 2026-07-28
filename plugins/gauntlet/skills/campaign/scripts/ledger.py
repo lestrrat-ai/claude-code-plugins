@@ -415,10 +415,12 @@ REPAIR_CAP = 2
 REPAIR_STATUS = "repairing"
 
 # HELD — the statuses in which campaign MUST NOT dispatch ordinary gate work on a PR (a review pass, a
-# review fix, a CI fix, a merge, a rebase, a relabel — anything that MUTATES it). THE ONE ENUMERATION;
-# `dispatch-check` is what makes it a command that can FAIL rather than a rule an attentive agent must
-# remember. The members are held for DIFFERENT reasons and cleared by DIFFERENT events — never collapse
-# them:
+# review fix, a CI fix, a merge, a rebase, a relabel — anything that MUTATES it). THE ONE ENUMERATION of
+# the HELD reasons, and the set every consumer that must tell "parked" from "done" reads. It is NOT
+# `dispatch-check`'s test: that guard is an ALLOW-LIST on `LIVE_STATUS`, so it refuses these AND every
+# other non-live status, and consults this set only to explain WHICH refusal this is. `dispatch-check` is
+# what makes the freeze a command that can FAIL rather than a rule an attentive agent must remember. The
+# members are held for DIFFERENT reasons and cleared by DIFFERENT events — never collapse them:
 #
 #   awaiting-api / awaiting-user   parked on a HUMAN. Only the user's answer unparks.
 #   repairing                      at a review-loop cap. The reassessment pass and the repair it decides
@@ -436,6 +438,23 @@ HELD_STATUSES = ("awaiting-api", "awaiting-user", REPAIR_STATUS)
 # trusting a list here, which goes stale the next time one is added). `TABLE_HIDDEN_STATUSES` IS this
 # tuple, so its ORDER is also the order the table's hidden-count notice names them in.
 TERMINAL_STATUSES = ("merged", "aborted")
+
+# LIVE — the ONE status in which a row takes ordinary gate work. Named once so the WRITE DOOR and the
+# DISPATCH GUARD spell it the same way.
+LIVE_STATUS = "in_review"
+
+# THE STATUS VOCABULARY — every value a row's `status` may be MOVED to, and the ONE enumeration of it.
+# COMPOSED from the sets above, never retyped: a status added to `HELD_STATUSES` or `TERMINAL_STATUSES`
+# joins this enum with NO edit here, so the write door (`set`/`add-row --status`, through `check_status`)
+# and the dispatch guard (`dispatch-check`, whose ALLOW-LIST is `LIVE_STATUS`) cannot drift apart. That
+# pairing is the point: a status the guard cannot clear must also be a status nothing can write, or the
+# ledger grows ZOMBIE rows — dispatchable by nothing, reported by nothing, mergeable by nothing.
+#
+# `ROW_DEFAULTS["status"]` is deliberately NOT a member. It is what a row holds BEFORE adoption names a
+# status, not a state anything may move a row back to; adoption writes `in_review` on the row it creates
+# (`pr-adoption.md`). `dispatch-check` refuses it like any other non-live status — a row that was never
+# admitted to the gate takes no gate work.
+STATUSES = (LIVE_STATUS,) + HELD_STATUSES + TERMINAL_STATUSES
 
 
 def has_decided_repair(row: dict[str, str]) -> bool:
@@ -1083,6 +1102,28 @@ def check_tally(updates: dict, row: dict) -> None:
              f"manufacture one, because a hand-raised tally is indistinguishable from an earned one")
 
 
+def check_status(updates: dict) -> None:
+    """`set`/`add-row --status` may write only a REAL status — a `STATUSES` member, and nothing else.
+
+    **The write door and `dispatch-check`'s allow-list read the SAME enum**, so a status the guard cannot
+    clear is also a status nothing can write. Split them and the ledger grows a ZOMBIE row: a value one
+    character off a real status is accepted by a reject-list guard, matched by no consumer's
+    `status == in_review` test, and refused by the merge gate forever — so the PR sits in the run with
+    nothing driving it, nothing reminding anyone about it, and nothing able to finish it. A hyphen where
+    the enum has an underscore is the shape this catches, and it costs a whole run.
+
+    `ROW_DEFAULTS["status"]` is not a member: it is the pre-admission value, never a transition target.
+    """
+    if "status" not in updates:
+        return
+    want = updates["status"]
+    if want not in STATUSES:
+        fail(f"--status {want!r} is not a ledger status. The vocabulary is exactly {', '.join(STATUSES)} "
+             f"(`STATUSES`) — one of those, spelled that way. A value outside it produces a row no part of "
+             f"the gate can drive: `dispatch-check` refuses it, the in-flight rules that key on "
+             f"`{LIVE_STATUS}` never fire for it, and the merge gate refuses it forever")
+
+
 def cmd_add_row(path: Path, args) -> int:
     header, rows = load(path)
     pr = str(args.pr)
@@ -1091,6 +1132,9 @@ def cmd_add_row(path: Path, args) -> int:
     row = dict(ROW_DEFAULTS)
     # creating=True: `add-row` is the ONE door that may write a CREATE_ONLY field (row `base_branch`).
     updates = _named_field_values(args, creating=True)  # pr/id/VERDICT_OWNED excluded — derived or verdict-owned
+    # A row may be CREATED at any real status (an adoption starts one live; a fixture may seed a held or
+    # terminal one), but never at a value outside the vocabulary — the same door `set` gets.
+    check_status(updates)
     # A NEW row has run no reviews, so its tally is 0 and the floor rule applies from the defaults: a
     # `--reviews-ok 2` at CREATION is the same forged verdict as one at `set`, and it used to be the one
     # door where it went through.
@@ -1152,6 +1196,8 @@ def cmd_set(path: Path, args) -> int:
     updates = _named_field_values(args, creating=False)
     if not updates:
         fail("set requires at least one --<field> <value>")
+    # The vocabulary check comes FIRST: a `--status` outside the enum is not a transition to reason about.
+    check_status(updates)
     # The review-standoff park still uses `set --status awaiting-user`, but a recorded repair decision owns
     # a repairing row's next action. `park` already refuses this transition; keep the same guard at the
     # generic write door so a hand-assembled `set` cannot strand a repair that dispatch-check permits.
@@ -1369,6 +1415,17 @@ def cmd_dispatch_check(path: Path, args) -> int:
     guard would have a hole exactly where it matters: a driver could call its next fix "the repair",
     dispatch it, and go right on whacking moles under a new name. The decision must exist first, and the
     tool prints WHICH one, so the work that follows is the work that was decided.
+
+    **THE ORDINARY BRANCH IS AN ALLOW-LIST, NOT A REJECT-LIST, and that is the whole point** — the same
+    polarity, for the same reason, as `merge-check.py decide`'s status allow-list. Only `LIVE_STATUS`
+    passes. It SUBSUMES the old held freeze (a held row is simply not live) and closes the two holes a
+    reject-list of held statuses had, both of which are FAIL-OPEN:
+      * a TERMINAL row (`merged`/`aborted`) was green-lit. A row that is DONE and out of the gate was
+        cleared for a review pass, a rebase, a relabel, a second merge;
+      * ANY OTHER value was green-lit, including one no ledger status is spelled like. `check_status`
+        now refuses to WRITE such a value, so the two halves close the same hole from both ends.
+    The refusal DISCRIMINATES — held vs terminal vs not a status at all — because "refused" alone teaches
+    the driver nothing and invites it to route around the guard.
     """
     _, rows = load(path)
     pr = str(args.pr)
@@ -1394,13 +1451,30 @@ def cmd_dispatch_check(path: Path, args) -> int:
               f"other work")
         return 0
 
-    if status not in HELD_STATUSES:
+    if status == LIVE_STATUS:
         print(f"ok: pr {pr} is {status} — campaign may act on it")
         return 0
-    print(f"held: pr {pr} is {status} — {held_reason(status)}", file=sys.stderr)
-    print(f"held: take NO action that MUTATES this PR (no review pass, review fix, CI fix, merge, rebase, "
-          f"push or relabel). Observing it is fine: the CI watch and reconcile are unaffected. Keep "
-          f"driving the run's OTHER PRs — a held PR never blocks the loop.", file=sys.stderr)
+
+    if status in HELD_STATUSES:
+        print(f"held: pr {pr} is {status}, not {LIVE_STATUS} — {held_reason(status)}", file=sys.stderr)
+    elif status in TERMINAL_STATUSES:
+        print(f"terminal: pr {pr} is {status}, not {LIVE_STATUS} — this row is DONE and out of the gate, "
+              f"and a terminal status is FINAL. Nothing clears it and nothing re-opens it: re-adoption of "
+              f"a terminal row is refused too (`pr-adoption.md`). If this PR needs work again it needs a "
+              f"NEW run, not an action on this row.", file=sys.stderr)
+    elif status == ROW_DEFAULTS["status"]:
+        print(f"refused: pr {pr} is {status}, not {LIVE_STATUS} — that is the value a row holds BEFORE "
+              f"adoption gives it one, so this row was created but never admitted to the gate. Finish the "
+              f"adoption (`pr-adoption.md`), which writes `status = {LIVE_STATUS}` on a new row.",
+              file=sys.stderr)
+    else:
+        print(f"refused: pr {pr} is {status!r}, which is not a ledger status at all — the vocabulary is "
+              f"exactly {', '.join(STATUSES)} (`STATUSES`). `set --status` refuses a value outside it, so "
+              f"this row was hand-edited or predates that guard. Correct the row before dispatching any "
+              f"work on it: nothing in the gate can drive a status it does not recognise.", file=sys.stderr)
+    print(f"refused: take NO action that MUTATES this PR (no review pass, review fix, CI fix, merge, "
+          f"rebase, push or relabel). Observing it is fine: the CI watch and reconcile are unaffected. "
+          f"Keep driving the run's OTHER PRs — one refused PR never blocks the loop.", file=sys.stderr)
     return EXIT_STOP
 
 
@@ -1499,7 +1573,7 @@ def cmd_unpark(path: Path, args) -> int:
              f"through the abort procedure (bailout-and-final-report.md), which owns it; `unpark` serves the "
              f"`retry` answer only")
 
-    updates = {"status": "in_review", "blocker_ruling": "-"}
+    updates = {"status": LIVE_STATUS, "blocker_ruling": "-"}
     for f in LIVENESS_COUNTERS:
         updates[f] = ROW_DEFAULTS[f]   # from the defaults — NEVER a retyped literal
     row.update(updates)
@@ -1725,7 +1799,14 @@ def build_parser() -> argparse.ArgumentParser:
             opts = [f"--{name.replace('_', '-')}"]
             if "_" in name:
                 opts.append(f"--{name}")
-            p.add_argument(*opts, dest=name, help=f"row field '{name}'")
+            field_help = f"row field '{name}'"
+            # `status` is the one field with a CLOSED vocabulary, so its help names it — DERIVED from the
+            # enum, so it cannot drift from what `check_status` enforces. Not `choices=`: an argparse
+            # rejection exits 2 (a usage error) and prints nothing about the zombie row a bad status makes,
+            # while `check_status` fails with 1 — "your input was rejected" — and says why it matters.
+            if name == "status":
+                field_help += f" — one of: {', '.join(STATUSES)}"
+            p.add_argument(*opts, dest=name, help=field_help)
 
     a = sub.add_parser("add-row", help="append a new row for --pr")
     a.add_argument("--pr", required=True, help="PR number (row key)")
@@ -1756,7 +1837,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "stamp describes a base check for content that is not the live tip and is refused")
 
     d = sub.add_parser("dispatch-check", help="may campaign ACT on this PR? run before every action that "
-                                              f"MUTATES a PR; exits {EXIT_STOP} when the row is HELD")
+                                              f"MUTATES a PR; an ALLOW-LIST — exits {EXIT_STOP} unless the "
+                                              f"row is {LIVE_STATUS} (held, terminal and unrecognised all "
+                                              f"refuse)")
     d.add_argument("--pr", required=True, help="PR number (row key)")
     d.add_argument("--action", choices=("ordinary", "repair"), default="ordinary",
                    help="'ordinary' (default) = any action that mutates the PR — review, fix, merge, "

@@ -275,6 +275,11 @@ the worker returns, and what never moves into it. The steps below are unchanged 
    ledger.py --file <state.jsonl> dispatch-check --pr <N>     # non-zero => do NOT act on this PR
    ```
 
+   **Non-zero does NOT mean "held".** The command is an allow-list on `in_review`, so it also refuses a
+   terminal row, a row adoption never admitted, and a value that is not a status at all; its refusal names
+   which case it is (`files-and-ledger.md`, "**`dispatch-check` is the guard**"). Either way the answer is
+   the same one this guard gives: do not act on the PR.
+
    `HELD_STATUSES` in `scripts/ledger.py` is the **one place** the members are enumerated, and
    `files-and-ledger.md`, `status`, is their definition. **Never retype that list here or anywhere else** —
    a status added to it must be enforced at every site with no edit to any of them. Today it holds two

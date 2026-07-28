@@ -1885,11 +1885,16 @@ def t_no_verdict_for_a_held_row(L: ModuleType, tmp: Path) -> None:
 
 
 def t_dispatch_check_is_the_guard(L: ModuleType, tmp: Path) -> None:
-    """`dispatch-check` refuses a mutating dispatch on EVERY held status, and allows one on a live row.
+    """`dispatch-check` is an ALLOW-LIST: ONLY a `LIVE_STATUS` row may be acted on. Everything else STOPS.
 
     The park was already a prose rule obeyed by attention; `repairing` is a new one. Both are now a command
     that FAILS. The message must say what CLEARS the hold — a guard that only says "refused" teaches the
     driver nothing and invites it to route around the guard.
+
+    THE POLARITY IS THE CONTRACT, and it is pinned in both directions below, because the guard used to be
+    a REJECT-LIST (`status not in HELD_STATUSES`) and that is FAIL-OPEN: it green-lit a TERMINAL row and it
+    green-lit any value that was not spelled like a held status. `merge-check.py decide` already reasons
+    this way for the merge decision; this is the same polarity at the dispatch door.
     """
     for status in L.HELD_STATUSES:
         path = capped_row(L, tmp, f"dc-{status}.jsonl", status=status)
@@ -1901,10 +1906,40 @@ def t_dispatch_check_is_the_guard(L: ModuleType, tmp: Path) -> None:
 
     check(L.REPAIR_STATUS in L.HELD_STATUSES, "the repairing status must be HELD, or NO guard covers it")
 
-    for status in ("in_review", "pending"):
-        path = capped_row(L, tmp, f"live-{status}.jsonl", status=status)
-        code, _, err = cli(L, ["--file", str(path), "dispatch-check", "--pr", "1"])
-        check(code == 0, f"[{status}] a LIVE row was HELD (exit {code}) — the run would stall: {err!r}")
+    # A TERMINAL row is REFUSED. Under the old reject-list it exited 0 and the tool said campaign "may act
+    # on it" — a row that is DONE cleared for a review pass, a rebase, a relabel, a second merge.
+    for status in L.TERMINAL_STATUSES:
+        path = capped_row(L, tmp, f"dc-term-{status}.jsonl", status=status)
+        code, out, err = cli(L, ["--file", str(path), "dispatch-check", "--pr", "1"])
+        check(code == L.EXIT_STOP,
+              f"[{status}] a TERMINAL row was dispatchable (exit {code}) — the guard is fail-open: {out!r}")
+        check(status in err and "terminal" in err.lower(),
+              f"[{status}] the refusal must name the row TERMINAL, not merely refuse it: {err!r}")
+
+    # A status the enum does not contain is REFUSED — and so is the pre-admission default, which is the
+    # one non-enum value the tool itself writes. Each gets its OWN diagnosis: a driver must be able to tell
+    # "this row was never admitted" from "this row holds something no status is spelled like".
+    path = capped_row(L, tmp, "dc-unknown.jsonl", status="not-a-status")
+    code, out, err = cli(L, ["--file", str(path), "dispatch-check", "--pr", "1"])
+    check(code == L.EXIT_STOP,
+          f"an UNRECOGNISED status was dispatchable (exit {code}) — the guard is fail-open: {out!r}")
+    check("not a ledger status" in err, f"the refusal does not name the defect: {err!r}")
+
+    pre = L.ROW_DEFAULTS["status"]
+    check(pre not in L.STATUSES, "the pre-admission default must not be a member, or this fixture is moot")
+    path = capped_row(L, tmp, "dc-preadmission.jsonl", status=pre)
+    code, out, err = cli(L, ["--file", str(path), "dispatch-check", "--pr", "1"])
+    check(code == L.EXIT_STOP,
+          f"a row adoption never admitted was dispatchable (exit {code}): {out!r}")
+    check("adoption" in err, f"the refusal must point at the UNFINISHED ADOPTION, not merely refuse: {err!r}")
+
+    # …and the allow-list's other half: the ONE live status still passes. This is the concern the old
+    # reject-list fixture protected — a LIVE row frozen by the guard stalls the run — pinned here on
+    # `LIVE_STATUS`, which is the status a live row actually holds.
+    path = capped_row(L, tmp, "dc-live.jsonl", status=L.LIVE_STATUS)
+    code, out, err = cli(L, ["--file", str(path), "dispatch-check", "--pr", "1"])
+    check(code == 0, f"a LIVE row was REFUSED (exit {code}) — the run would stall: {err!r}")
+    check(L.LIVE_STATUS in out, f"the ok line must name the status it cleared: {out!r}")
 
     # `--action repair`: refused with no decision recorded, and refused on a row that is not repairing.
     path = capped_row(L, tmp, "rep.jsonl", status=L.REPAIR_STATUS)
@@ -1925,6 +1960,47 @@ def t_dispatch_check_is_the_guard(L: ModuleType, tmp: Path) -> None:
                              "--action", "repair"])
     check(code == 0, f"a legacy DEMOTE repair was stranded (exit {code}): {err!r}")
     check(legacy in out, f"dispatch-check did not preserve the legacy decision: {out!r}")
+
+
+def t_the_status_enum_is_closed(L: ModuleType, tmp: Path) -> None:
+    """`set`/`add-row --status` writes a `STATUSES` member or NOTHING — and the enum is COMPOSED, not typed.
+
+    The other half of the allow-list. A guard that only an `in_review` row clears is a guard that STRANDS
+    every row holding anything else, so the value must be unwritable in the first place: otherwise one
+    mistyped `--status` produces a ZOMBIE row that `dispatch-check` refuses, `nudge.py`'s in-flight rules
+    (all keyed on `LIVE_STATUS`) never mention, and `merge-check.py` refuses forever — a PR sitting in the
+    run with nothing driving it and nothing reporting it.
+
+    The composition is pinned too: a status added to `HELD_STATUSES` or `TERMINAL_STATUSES` must join the
+    write door's enum with NO edit to it, or the writer and the guard drift apart again.
+    """
+    check(L.STATUSES == (L.LIVE_STATUS,) + L.HELD_STATUSES + L.TERMINAL_STATUSES,
+          f"STATUSES is not COMPOSED from the live/held/terminal sets: {L.STATUSES!r} — a retyped copy "
+          f"drifts the day a status is added, and the guard and the write door stop agreeing")
+    check(L.ROW_DEFAULTS["status"] not in L.STATUSES,
+          "the pre-admission default is a TRANSITION TARGET now — nothing may move a row back to it")
+
+    # EVERY member is writable at BOTH doors: the enum must not be so tight it strands a real transition.
+    for status in L.STATUSES:
+        path = capped_row(L, tmp, f"enum-ok-{status}.jsonl")
+        code, _, err = cli(L, ["--file", str(path), "set", "--pr", "1", "--status", status])
+        check(code == 0, f"[{status}] a REAL status was refused by `set` (exit {code}): {err!r}")
+        code, _, err = cli(L, ["--file", str(path), "add-row", "--pr", "77", "--status", status])
+        check(code == 0, f"[{status}] a REAL status was refused by `add-row` (exit {code}): {err!r}")
+
+    # …and nothing else is, at either door. `in-review` is the hyphen-for-underscore slip; the rest are the
+    # near-misses a hand-written command produces.
+    path = capped_row(L, tmp, "enum-bad.jsonl")
+    before = path.read_bytes()
+    for bogus in ("in-review", "In_Review", "in_review ", "pending", "held", "open", "-", ""):
+        for door in (["set", "--pr", "1"], ["add-row", "--pr", "77"]):
+            code, _, err = cli(L, ["--file", str(path), *door, "--status", bogus])
+            check(code == 1, f"[{door[0]} {bogus!r}] a NON-status was written (exit {code}) — the row is a "
+                             f"zombie: no guard clears it, no rule reports it, no merge finishes it")
+            check("not a ledger status" in err and L.LIVE_STATUS in err,
+                  f"[{door[0]} {bogus!r}] the refusal must name the vocabulary: {err!r}")
+            check(path.read_bytes() == before,
+                  f"[{door[0]} {bogus!r}] a REFUSED status still wrote the store")
 
 
 def t_the_repair_bound_has_no_door(L: ModuleType, tmp: Path) -> None:
@@ -2927,7 +3003,8 @@ CASES = [
     ("ns-streak-cap", "NS_STREAK_CAP is an independent sensor; one SATISFIED clears the streak", t_ns_streak_cap_fires),
     ("satisfied-never-fires", "a cap is NEVER evaluated on a SATISFIED — a passing PR is never torn up", t_a_satisfied_never_fires_a_cap),
     ("held-row-no-verdict", "no verdict may land on a held row", t_no_verdict_for_a_held_row),
-    ("dispatch-check", "every HELD status refuses a mutating dispatch; a repair needs its decision first", t_dispatch_check_is_the_guard),
+    ("dispatch-check", "an ALLOW-LIST: only a live row dispatches — held, terminal and unrecognised all STOP; a repair needs its decision first", t_dispatch_check_is_the_guard),
+    ("status-enum-closed", "`set`/`add-row --status` writes a STATUSES member or nothing — no zombie rows", t_the_status_enum_is_closed),
     ("repair-bound-no-door", "repair_count has NO flag — a budget you can zero is not a bound", t_the_repair_bound_has_no_door),
     ("repair-decision-cleared", "re-entering a cap CLEARS the stale reassessment decision — the repair budget binds", t_stale_repair_decision_cleared_at_cap),
     ("pr-origin-default", "an unknown origin is `external` — the fail-safe direction", t_pr_origin_defaults_to_external),

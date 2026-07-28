@@ -100,9 +100,10 @@ diff properties, so filesystem inspection of only the new checkout is not a subs
 #### A HELD PR IS NOT REVIEWABLE — check `status` FIRST, and check it with the TOOL
 
 **A HELD PR IS NOT REVIEWABLE — check `status` FIRST, and check it with the TOOL.** Run `ledger.py …
-dispatch-check --pr <N>`: it exits non-zero on every **HELD** status (`files-and-ledger.md`, `status` —
-the owner; `HELD_STATUSES` in `scripts/ledger.py` is the one place they are enumerated, so **never retype
-that list**). A held PR is **FROZEN**: take no action that **MUTATES** it — no review pass, no
+dispatch-check --pr <N>`: it exits zero **only** for `in_review`, so every **HELD** status refuses — and
+so does a terminal or unrecognised row (`files-and-ledger.md`, `status` and "**`dispatch-check` is the
+guard**" — the owners; `HELD_STATUSES` in `scripts/ledger.py` is the one place the held members are
+enumerated, so **never retype that list**). A held PR is **FROZEN**: take no action that **MUTATES** it — no review pass, no
 precondition fix (including the judgment-path rebase below — conflict-resolving or diff-changed), no CI fix, no review fix, no merge, and nothing
 else that changes it (`loop-control.md` step 3, "held-status guard" — the governing property; these
 are only examples). Held leaves
