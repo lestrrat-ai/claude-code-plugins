@@ -99,27 +99,51 @@ REFUSAL_MARKERS = (
     "cannot provide assistance",
     "can't provide assistance",
     "won't provide assistance",
-    "decline",
-    # The agent sense of BOTH spellings — the verb and the noun — is anchored by the following
-    # infinitive, so the noun takes the same anchor as the verb for the same reason. The bare stems
-    # also matched transport wording — a connection "refused by the upstream", a "connection refusal
-    # by the upstream", a peer that "refused the connection" — and, because a non-digit marker
-    # compiles with no word boundary, `refused` matched as a pure substring inside `ECONNREFUSED`.
-    # Each of those manufactured a stop-and-ask and ended autonomous handling of the PR. Transport
-    # wording these markers no longer match lands in `transient` or `unknown` and is retried or
-    # falls back.
+    # EVERY agent verb below is anchored by the FOLLOWING INFINITIVE — `refuse` in both its verb and
+    # its noun spelling, and `decline` in all four of its — for one reason: a refusal marker must
+    # carry its own refusal sense, and none of these bare stems does. `refused`/`refusal` also
+    # matched transport wording — a connection "refused by the upstream", a "connection refusal by
+    # the upstream", a peer that "refused the connection" — and, because a non-digit marker compiles
+    # with no word boundary, `refused` matched as a pure substring inside `ECONNREFUSED`. The bare
+    # stem `decline` matched the same way in billing, auth, and gateway wording, where it is a
+    # REQUEST that was declined — a credential or payment outcome, not an agent refusing a task.
+    # Each of those manufactured a stop-and-ask and ended autonomous handling of the PR. Wording
+    # these markers no longer match lands in `auth`, `transient` or `unknown`, and falls back or is
+    # retried.
     # Disclosed residual, deliberately not excluded: browser wording of the form `<host> refused to
     # connect` — and equally `refusal to connect` — still classifies refusal. That is a browser
     # page, not external-reviewer process output, and separating it from an agent refusal would
     # need an exclusion list.
     "refusal to",
     "refused to",
-    "content filter",
-    # These three are the ONLY refusal markers whose plural is not a superstring of the singular, so
-    # the `-y` -> `-ies` forms are spelled out. Every other marker already covers its own plural as a
-    # substring (`content filter` matches inside `content filters`), which is why nothing else here
-    # needs a second entry. Spell the plural in FULL rather than truncating to a stem: `decide()`
-    # interpolates the matched marker into the operator-facing reason, so a stem would surface there.
+    "decline to",
+    "declines to",
+    "declined to",
+    "declining to",
+    # The policy spellings below are the only markers here with a plural at all, and their `-y` ->
+    # `-ies` plural is NOT a superstring of the singular, so both forms are spelled out. A plural
+    # that merely appends `s` would need no second entry, because a marker matches as a substring;
+    # the `-ies` shape is exactly the case that substring rule does not cover. Spell the plural in
+    # FULL rather than truncating to a stem: `decide()` interpolates the matched marker into the
+    # operator-facing reason, so a stem would surface there.
+    #
+    # Disclosed residual, deliberately NOT narrowed: these six are BARE NOUN PHRASES, so they also
+    # match infrastructure prose that merely NAMES one of those systems instead of reporting a
+    # refusal by it. INVENTED illustration, live nowhere else in this repository: `the content
+    # policy service is down for maintenance` classifies `refusal` and stops the PR for the
+    # operator. It stays that way on purpose: every mechanical narrowing available loses genuine
+    # refusals the `refusal-stops` fixture pins. An infinitive anchor like the verbs above cannot
+    # help, because that fixture's own `This request violates the content policy.` carries no
+    # infinitive and no second marker; an exclusion list or a weaker tier ordered after `transient`
+    # fails it the same way.
+    # Separating the two senses needs the surrounding context, which is grammar, not a marker.
+    #
+    # A component NOUN was worse still, and `content filter` is therefore gone from this tuple: it
+    # named infrastructure that can itself be up or down, so ordinary status prose about that
+    # component parked the PR. Do not re-add it. The trade is that a refusal phrased ONLY as that
+    # component's name now classifies `unknown` — a wait, then the bounded native fallback, which is
+    # the safe landing this file's Purpose already promises, and strictly better than parking a PR
+    # on an infrastructure-status message. The refusal sense is still carried by the policy pairs.
     "content policy",
     "content policies",
     "safety policy",
@@ -273,6 +297,18 @@ TRIGGER_WINDOW = 40
 #: `int()` never sees an unbounded run (past ~4300 digits CPython raises on the conversion itself).
 #: Disclosed consequence: the fallback reason then quotes that sentinel, not the stated delay.
 MAX_READABLE_DIGITS = 9
+#: Widest slice of a message the delay guess reads. Both of its passes MATERIALIZE every match in the
+#: text before choosing one, so their cost scales with the message rather than with the answer, and a
+#: runaway CLI's stderr capture is an unbounded input. Bounding once at the top of the guess covers
+#: BOTH passes; bounding either scan on its own only moves the amplification to the other.
+#: Disclosed consequence, the same one `MAX_READABLE_DIGITS` discloses: a delay stated past this
+#: bound is simply not read, so the failure takes its kind's default and then the ordinary bounded
+#: fallback — the `unreadable` landing Purpose bullet 2 already promises, not a new failure mode.
+#: ONLY the guess is bounded, and `classify()`'s marker scan deliberately is NOT: `re.search` keeps
+#: no per-match state, so it costs no more on a huge message, while bounding it would drop a refusal
+#: marker sitting past the bound and silently turn a `stop-and-ask` into the same-engine native
+#: fallback this file exists to prevent. Do not "complete" this fix by bounding `classify()` too.
+MAX_SCANNED_CHARS = 65536
 
 
 def _unit_millis(unit: str) -> int:
@@ -300,8 +336,13 @@ def guess_delay_seconds(message: str) -> int | None:
     value — over-cap is all the caller does with such a number anyway.
 
     Two ordered passes: a pair FOLLOWING a trigger first, and only if there is none, a pair
-    PRECEDING one. Never one both-sided scan — see ``TRIGGER_WINDOW``."""
+    PRECEDING one. Never one both-sided scan — see ``TRIGGER_WINDOW``.
 
+    Only the first ``MAX_SCANNED_CHARS`` are read, because both passes materialize every match at
+    once; a delay stated past that bound reads as no delay at all. The marker scan is NOT bounded —
+    see ``MAX_SCANNED_CHARS``."""
+
+    message = message[:MAX_SCANNED_CHARS]
     triggers = list(TRIGGER_RE.finditer(message))
     if not triggers:
         return None

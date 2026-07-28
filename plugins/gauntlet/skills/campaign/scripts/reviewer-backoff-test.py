@@ -153,6 +153,22 @@ def t_refusal_stops_and_asks() -> None:
     mixed = "the request timed out, and I cannot help with that anyway"
     check(kind(mixed) == B.REFUSAL, "a transient marker outranked a refusal in the same message")
     check(action(mixed) == B.STOP_AND_ASK, "a mixed refusal did not stop and ask")
+    # …but only a marker that carries a refusal SENSE may outrank. A bare component noun does not:
+    # status prose about a filtering service reports infrastructure, so the transient marker in the
+    # same text wins and the pass waits and retries instead of parking the PR for the operator.
+    status = "content filter service temporarily unavailable"
+    check(kind(status) == B.TRANSIENT,
+          "infrastructure status prose naming a filtering component was read as a refusal")
+    check(action(status) == B.WAIT_EXTERNAL,
+          "infrastructure status prose stopped the campaign for the operator")
+    # The disclosed trade of dropping that component noun, pinned so re-adding it goes red: a
+    # refusal phrased ONLY as the component's name is no longer recognised. It takes the safe
+    # `unknown` landing — a wait, then the bounded native fallback — never a manufactured stop.
+    only_component = "blocked by the content filter"
+    check(kind(only_component) == B.UNKNOWN,
+          "the component noun is back as a refusal marker; status prose parks PRs again")
+    check(action(only_component) != B.STOP_AND_ASK,
+          "an unrecognised refusal shape escalated instead of taking the safe unknown landing")
 
 
 def t_refused_to_needs_the_infinitive() -> None:
@@ -169,6 +185,23 @@ def t_refused_to_needs_the_infinitive() -> None:
           "the agent sense of `refused to` stopped being a refusal")
     check(kind("refusal to review this diff on policy grounds") == B.REFUSAL,
           "the agent sense of `refusal to` stopped being a refusal")
+    # `decline` takes the same anchor for the same reason: the bare stem reads a REQUEST that was
+    # declined — a credential, billing, or gateway outcome — as an agent refusing the task. A
+    # credential failure must reach its own class and fall back natively, not park the PR.
+    credential = "authentication failed: your request was declined"
+    check(kind(credential) == B.AUTH,
+          "a credential failure carrying `declined` was read as a reviewer refusal")
+    check(action(credential) == B.FALLBACK_NATIVE,
+          "a credential failure carrying `declined` stopped the campaign for the operator")
+    check(kind("the payment method was declined") != B.REFUSAL,
+          "billing wording was read as a reviewer refusal")
+    # …and the other side: all four infinitive spellings still reach the operator.
+    for text in ("I decline to review this diff.",
+                 "the reviewer declines to answer on policy grounds",
+                 "the model declined to continue",
+                 "declining to proceed with this request"):
+        check(kind(text) == B.REFUSAL, f"the agent sense of {text!r} stopped being a refusal")
+        check(action(text) == B.STOP_AND_ASK, f"a reviewer refusal ({text!r}) did not stop and ask")
 
 
 # --- the classes act differently ---------------------------------------------
@@ -310,6 +343,37 @@ def t_wait_is_clamped_at_both_ends() -> None:
           "an unbounded digit run stopped reviewing natively")
 
 
+def t_the_guess_is_bounded_and_the_marker_scan_is_not() -> None:
+    # The guess's two passes MATERIALIZE every match before choosing one, so an unbounded scan costs
+    # a multiple of the message. A runaway CLI's stderr capture is unbounded input, and a decision
+    # that was never produced is not a bounded fallback — it is the absence of a decision.
+    oversized = "retry after 1s " * (B.MAX_SCANNED_CHARS // 4)
+    check(len(oversized) > B.MAX_SCANNED_CHARS, "the oversized fixture no longer exceeds the bound")
+    decision = B.decide(oversized, 1)
+    check(decision.action in {B.WAIT_EXTERNAL, B.FALLBACK_NATIVE, B.STOP_AND_ASK},
+          f"an oversized capture produced the unknown action {decision.action!r}")
+    check(0 <= decision.wait_seconds <= B.MAX_WAIT_SECONDS,
+          "an oversized capture produced a wait outside the schedule")
+    # The bound is real, and this is its disclosed consequence: a delay stated PAST it is not read at
+    # all, so the failure takes its class default. Unbounded, this pair is read and the check fails.
+    past = "usage limit reached " + "pad " * B.MAX_SCANNED_CHARS + " retry after 30 seconds"
+    check(B.guess_delay_seconds(past) is None,
+          "a delay past the scan bound was still read, so the guess is not bounded")
+    check(wait(past) == B.DEFAULT_WAIT_SECONDS[B.USAGE_LIMIT],
+          "a delay past the scan bound did not fall through to its class default")
+    # …and the other side of that boundary: the bound belongs to the GUESS alone. A refusal marker
+    # sitting past it must still reach the operator, so bounding `classify()` too goes red here.
+    far_refusal = "x" * (B.MAX_SCANNED_CHARS * 2) + " I cannot help with that request."
+    check(kind(far_refusal) == B.REFUSAL,
+          "a refusal marker past the guess's bound stopped being found")
+    check(action(far_refusal) == B.STOP_AND_ASK,
+          "a refusal past the guess's bound silently fell back to a same-engine reviewer")
+    # A readable delay in FRONT of the bound is still read, so the bound is not a blanket refusal.
+    head = "usage limit reached; retry after 30 seconds " + "pad " * B.MAX_SCANNED_CHARS
+    check(B.guess_delay_seconds(head) == 30,
+          "a delay stated before the scan bound stopped being read")
+
+
 # --- the cap ------------------------------------------------------------------
 
 def t_attempts_are_capped() -> None:
@@ -383,6 +447,8 @@ CASES = [
     ("first-pair", "the guess reads the first readable number-and-unit pair", t_first_readable_pair_wins),
     ("wait-clamped", "the wait has a floor, and past the cap the pass reviews natively",
      t_wait_is_clamped_at_both_ends),
+    ("scan-bounded", "the delay guess reads a bounded slice, while the marker scan reads it all",
+     t_the_guess_is_bounded_and_the_marker_scan_is_not),
     ("attempt-cap", "the external route retries a fixed, capped number of times", t_attempts_are_capped),
     ("malformed-count", "a malformed attempt count reads as exhausted", t_malformed_attempt_count_is_exhausted),
     ("non-text", "non-text input is unknown, not a verdict", t_non_text_input_is_unknown_not_a_verdict),

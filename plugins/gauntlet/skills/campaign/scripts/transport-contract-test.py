@@ -779,7 +779,7 @@ def check_document_contract() -> None:
         "| `wait-external` | no preparation | no preparation | no preparation |",
         "| `stop-and-ask` | no preparation | no preparation | no preparation |",
         "| `launch-native` / `fallback-native` | `native` | `native-worker-write` | `standard` |",
-        "attempt `2` fails → prepare fresh native fallback attempt `3`",
+        "`fallback-native` decision prepares fresh native fallback attempt `3`",
         "dead or unusable attempt `3` → `park-machine-blocker`",
         'prompt_profile: "standard" | "codex-recovery"',
     ):

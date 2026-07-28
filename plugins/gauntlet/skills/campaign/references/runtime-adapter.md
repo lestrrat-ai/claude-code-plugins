@@ -277,7 +277,9 @@ Selected capability's external route is exactly `external-codex` or `external-cl
 `wait-external` is not a launch and consumes no number. An unavailable
 external route is never prepared and consumes no number, so its immediate native fallback takes the
 current next number. Once an attempt exists, recovery is fixed: attempt `1` fails → classify it, then prepare the selected route's
-one retry as attempt `2` when the backoff decision permits it; attempt `2` fails → prepare fresh native fallback attempt `3`.
+one retry as attempt `2` when the backoff decision permits it; attempt `2` fails → classify it the same way, and only a
+`fallback-native` decision prepares fresh native fallback attempt `3`, while a `stop-and-ask` ends that PR's review there and
+prepares nothing ("External reviewer failure — marker class and rough backoff" above owns which decision a failure gets).
 **A dead or unusable attempt `3` → `park-machine-blocker`.** Never reuse an attempt's artifacts, and never
 allocate attempt `4`.
 
