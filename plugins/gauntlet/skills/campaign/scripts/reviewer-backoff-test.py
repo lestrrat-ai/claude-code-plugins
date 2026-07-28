@@ -143,15 +143,19 @@ def t_refusal_stops_and_asks() -> None:
 
 
 def t_refused_to_needs_the_infinitive() -> None:
-    # `refused to` and not the bare stem: transport wording must not manufacture a stop-and-ask.
+    # `refused to` / `refusal to` and not the bare stems: transport wording, in either the verb or
+    # the noun spelling, must not manufacture a stop-and-ask.
     for text in ("the connection was refused by the upstream proxy",
                  "ECONNREFUSED 127.0.0.1:443",
-                 "the merge was refused by the branch ruleset"):
+                 "the merge was refused by the branch ruleset",
+                 "connection refusal by the upstream"):
         check(kind(text) != B.REFUSAL, f"transport wording {text!r} was read as a reviewer refusal")
         check(action(text) != B.STOP_AND_ASK,
               f"transport wording {text!r} stopped the campaign for the operator")
     check(kind("the reviewer refused to continue") == B.REFUSAL,
           "the agent sense of `refused to` stopped being a refusal")
+    check(kind("refusal to review this diff on policy grounds") == B.REFUSAL,
+          "the agent sense of `refusal to` stopped being a refusal")
 
 
 # --- the classes act differently ---------------------------------------------
@@ -209,6 +213,13 @@ def t_delay_needs_a_retry_word_nearby() -> None:
     far = "retry" + " padding" * 12 + " 60 seconds"
     check(B.guess_delay_seconds(far) is None,
           "a number far past the trigger window was still read as that trigger's delay")
+    # The trigger must START a word, not merely sit inside one: telemetry that only CONTAINS the
+    # letters of a retry word supplies no timer, and `unavailable` is not `available`.
+    for text in ("retrieved 999 files in 3 seconds",
+                 "retrieval finished in 3 hours",
+                 "service unavailable after 12 seconds"):
+        check(B.guess_delay_seconds(text) is None,
+              f"telemetry {text!r} supplied a delay from a word that merely contains a retry word")
 
 
 def t_unreadable_delay_shapes_are_not_errors() -> None:
@@ -237,6 +248,15 @@ def t_first_readable_pair_wins() -> None:
           "a sub-second delay stopped being readable")
     check(B.guess_delay_seconds("retry after 2 hours") == 7200,
           "an hours delay stopped being readable")
+    # …and telemetry riding along inside a real limit message must not beat the provider's own
+    # delay to the first-pair rule, which would relaunch seconds into a 45-minute limit and burn
+    # the pass's last external attempt.
+    hijack = ("usage limit reached: retrieved 12 files in 2 seconds before the cap; "
+              "try again in 45 minutes")
+    check(B.guess_delay_seconds(hijack) == 2700,
+          "telemetry beat the provider's real delay to the first readable pair")
+    check(action(hijack) == B.FALLBACK_NATIVE and wait(hijack) != B.MIN_WAIT_SECONDS,
+          "a 45-minute limit relaunched the external reviewer instead of reviewing natively")
 
 
 def t_wait_is_clamped_at_both_ends() -> None:
@@ -310,7 +330,8 @@ CASES = [
      t_ten_provider_messages_land_where_documented),
     ("refusal-stops", "a reviewer refusal reaches the operator, never a same-engine fallback",
      t_refusal_stops_and_asks),
-    ("refused-to-anchor", "`refused to` needs its infinitive, so transport wording is not a refusal",
+    ("refused-to-anchor",
+     "`refused to` / `refusal to` need their infinitive, so transport wording is not a refusal",
      t_refused_to_needs_the_infinitive),
     ("cannot-run", "an unrunnable tool or a bad credential falls back without waiting",
      t_cannot_run_classes_skip_the_wait),

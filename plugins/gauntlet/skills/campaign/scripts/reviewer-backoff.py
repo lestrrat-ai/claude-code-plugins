@@ -100,16 +100,19 @@ REFUSAL_MARKERS = (
     "can't provide assistance",
     "won't provide assistance",
     "decline",
-    "refusal",
-    # The agent sense of this stem is anchored by the following infinitive. The bare stem `refused`
-    # also matched transport wording — a connection "refused by the upstream", a peer that "refused
-    # the connection" — and, because a non-digit marker compiles with no word boundary, it matched
-    # as a pure substring inside `ECONNREFUSED`. Each of those manufactured a stop-and-ask and ended
-    # autonomous handling of the PR. Transport wording this marker no longer matches lands in
-    # `transient` or `unknown` and is retried or falls back.
+    # The agent sense of BOTH spellings — the verb and the noun — is anchored by the following
+    # infinitive, so the noun takes the same anchor as the verb for the same reason. The bare stems
+    # also matched transport wording — a connection "refused by the upstream", a "connection refusal
+    # by the upstream", a peer that "refused the connection" — and, because a non-digit marker
+    # compiles with no word boundary, `refused` matched as a pure substring inside `ECONNREFUSED`.
+    # Each of those manufactured a stop-and-ask and ended autonomous handling of the PR. Transport
+    # wording these markers no longer match lands in `transient` or `unknown` and is retried or
+    # falls back.
     # Disclosed residual, deliberately not excluded: browser wording of the form `<host> refused to
-    # connect` still classifies refusal. That is a browser page, not external-reviewer process
-    # output, and separating it from an agent refusal would need an exclusion list.
+    # connect` — and equally `refusal to connect` — still classifies refusal. That is a browser
+    # page, not external-reviewer process output, and separating it from an agent refusal would
+    # need an exclusion list.
+    "refusal to",
     "refused to",
     "content filter",
     "content policy",
@@ -229,8 +232,14 @@ DELAY_RE = re.compile(
 )
 #: A number only means a delay when something retry-ish introduces it. Without this, `attempt 2 of
 #: 3` and `reviewed 40 files` would both read as timers.
+#: The alternation is WORD-LEADING — `\b` in front, nothing at the end — so a trigger must START a
+#: word rather than merely sit inside one. That is what stops ordinary telemetry from supplying a
+#: timer: `retrieved 40 files in 3 seconds` no longer poses as a retry word, and `service
+#: unavailable` no longer poses as `available`. Leaving the tail open keeps the inflections the
+#: earlier substrings already covered — `waiting`, `resets`, `resumed`, `backoff`, `cooldown`.
 TRIGGER_RE = re.compile(
-    r"retr|try\s+again|wait|back\s?off|reset|available|resume|cool\s?down",
+    r"\b(?:retry|retries|retrying|retried|try\s+again|wait|back\s?off|reset|available|resume"
+    r"|cool\s?down)",
     re.IGNORECASE,
 )
 #: How far after a trigger word a number may sit and still be that trigger's delay. Arbitrary, and
