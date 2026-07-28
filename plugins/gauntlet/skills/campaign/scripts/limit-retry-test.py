@@ -281,9 +281,9 @@ def t_only_the_ascii_colon_adjacent_header_is_read() -> None:
 
     `\\d` matches every Unicode decimal digit and `int()` converts it, so `Retry-After:` followed by
     Arabic-Indic, fullwidth or mixed-script digits answered byte-identically to the ASCII spelling.
-    RFC 9110 delta-seconds is `1*DIGIT`, ASCII only. Section 5.1 separately forbids whitespace between
-    a field name and its colon, so a space in front of the colon is not this header either. Both take
-    the default, like every other unread spelling.
+    RFC 9110 delta-seconds is `1*DIGIT`, ASCII only. RFC 9112 section 5.1 separately allows no
+    whitespace between a field name and its colon, so a space in front of the colon is not this header
+    either. Both take the default, like every other unread spelling.
 
     The LINE-LEADING anchor is the third spelling pinned here, and the owner refuses it for its own
     reason: without that anchor this stops being a header read and becomes a scan, so an inline

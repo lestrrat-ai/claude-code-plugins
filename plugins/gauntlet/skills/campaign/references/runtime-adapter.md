@@ -162,8 +162,18 @@ review_transition(
 ) -> ReviewAction
 ```
 
-`failure_capture` is the path to the failed process's captured output. It is `Null` whenever there is no
-such output to read — on `selected`, and on a pre-launch capability miss, which never started a process.
+`failure_capture` is a file **the caller writes with `write_bytes`**, once per external attempt, after that
+attempt fails and before it takes a transition below. Write it to `path_join(transport.review_root,
+concat("failure-", transport.attempt.pr, "-", transport.attempt.pass, "-",
+transport.attempt.launch_attempt, ".txt"))` — beside that attempt's other artifacts, never over one of
+them, and never reused by another attempt. Its content is every output channel that attempt produced:
+`ProcessResult.stderr` always, plus `ProcessResult.stdout` when the launch passed `stdout_file: null`,
+plus the `read_bytes` content of `report.path` when a channel was routed there (`-o` for Codex,
+`stdout_file` for Claude). **It is NOT `report.path`.** A provider limit writes its message to stderr, so
+at that moment `report.path` is empty (Codex) or holds stdout only (Claude); handing that file to the
+provider-limit row finds no limit marker, and the row then skips the one retry instead of waiting for it.
+`failure_capture` is `Null` whenever there is no such output to read — on `selected`, and on a pre-launch
+capability miss, which never started a process.
 
 This operation owns every route change. **The rows are mutually exclusive: read each row's whole Input
 cell before taking it.** The row that runs `limit-retry.py` is the **provider-limit row** (`reviewer.md`
@@ -255,8 +265,11 @@ Exactly one producer owns the final report:
   a second time. A missing report is an unusable attempt.
 - External Codex and external Claude initial launches and relaunches use
   `external-process-capture`. The reviewer returns the report on the process's designated final-output
-  channel; `run_argv` captures that channel at `report.path` (`codex -o` for Codex, `stdout_file` for
-  Claude). The reviewer MUST NOT write the path itself.
+  channel; `run_argv` captures **that channel only — the report channel** — at `report.path` (`codex -o`
+  for Codex, `stdout_file` for Claude). The reviewer MUST NOT write the path itself. `report.path` is
+  therefore never the `failure_capture` of a failed attempt: a failure's stderr reaches no report channel,
+  and "Review isolation capability and transition" above owns the separate per-attempt file the caller
+  writes for it.
 
 Progress belongs to `emit-progress.py`, findings to `emit-finding.py`, plan amendments to
 `emit-amendment.py`, and prompt plus `pass_identity` preparation to `review-dispatch.py`. No transport

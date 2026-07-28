@@ -172,9 +172,25 @@ _PATTERNS = tuple(_marker_pattern(marker) for marker in LIMIT_MARKERS)
 #: The digit class is `[0-9]`, NEVER `\d`. RFC 9110 delta-seconds is `1*DIGIT` — ASCII only — while
 #: Python's `\d` matches every Unicode decimal digit and `int()` converts them, so `\d` read an
 #: Arabic-Indic, fullwidth or mixed-script spelling as this header and waited on a value the header
-#: never stated in the one spelling this file reads. RFC 9110 section 5.1 likewise forbids whitespace
-#: between a field name and its colon, so there is no `[ \t]*` in front of the colon; the documented
-#: leading indentation and the optional whitespace AFTER the colon both stay.
+#: never stated in the one spelling this file reads. There is likewise no `[ \t]*` in FRONT of the colon:
+#: RFC 9112 section 5.1 allows no whitespace between a field name and its colon and makes a server
+#: MUST-reject such a line, a rule about the field-name token that holds wherever the header is
+#: recognised. The leading indentation and the optional whitespace AFTER the colon both stay.
+#:
+#: That leading `[ \t]*` is deliberate — an indented `Retry-After: 60` IS read — and the claim is
+#: checkable rather than a matter of taste: no RFC forbids it HERE. RFC 9110 section 5.1 defines
+#: `field-name = token` and section 5.5 rules only that a field VALUE carries no leading or trailing
+#: whitespace; neither says anything about whitespace BEFORE a field name. The one rule against an
+#: indented line is RFC 9112 section 5.2 obs-fold (`obs-fold = OWS CRLF RWS`), and that is HTTP message
+#: FRAMING: it defines an indented line as a CONTINUATION of the field line before it. This file reads an
+#: external CLI's failure text, where there is no HTTP message and no preceding field line for an
+#: indentation to continue, so obs-fold has no referent. The anchor still does its whole job: `^[ \t]*`
+#: is a LINE anchor, so an inline mention and a JSON body stay unread (`limit-retry-test.py`,
+#: `t_only_the_ascii_colon_adjacent_header_is_read`), while a CLI that indents its error block is read
+#: instead of defaulted (`t_retry_after_is_read_exactly`, `"  retry-after:45" == 45`). Both halves are
+#: original to this file, not a later widening — `git log -S` over this pattern shows the allowance and
+#: that fixture arriving together. Dropping the leading `[ \t]*` changes exactly one thing: an indented
+#: header stops being read and takes `DEFAULT_WAIT_SECONDS`.
 #:
 #: Deliberately UNBOUNDED digits: `MAX_READABLE_DIGITS` bounds the conversion instead, because a width
 #: limit in the pattern makes an over-width run match NOTHING, which reads a stated over-cap delay as

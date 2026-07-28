@@ -813,6 +813,16 @@ def check_document_contract() -> None:
     require("scripts/limit-retry.py decide --message-file <failure_capture> --attempts-spent" in runtime
             and "failure_capture: Path | Null" in runtime,
             "runtime-adapter.md lost the provider-limit decision or its transition input")
+    # The transition input has to be PRODUCED by someone. Nothing in the tree makes a stderr file on its
+    # own — `run_argv` has no stderr_file — so the definition must keep naming the caller's `write_bytes`
+    # and the stderr that a provider limit actually lands on. Without both, the capture rots back to
+    # `report.path`, which holds no stderr, and the provider-limit row then deletes the one retry
+    # `reviewer.md` performs instead of waiting before it.
+    capture_definition = ("" if "`failure_capture` is" not in runtime else
+                          runtime.split("`failure_capture` is", 1)[1].split("\n\n", 1)[0])
+    require("`write_bytes`" in capture_definition and "ProcessResult.stderr" in capture_definition,
+            "runtime-adapter.md's `failure_capture` definition no longer names the `write_bytes` writer "
+            "that produces it or the stderr it must contain")
     stage_flat = " ".join(stage.split())
     require('"--file", ledger_file' in stage_flat and
             '"--prompt-profile", prompt_profile' in stage_flat,
