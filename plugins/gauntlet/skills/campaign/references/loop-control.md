@@ -25,12 +25,16 @@ the worker returns, and what never moves into it. The steps below are unchanged 
    This lease gate is what guarantees **no two agents drive one ledger**.
 
    Once you own the run and have loaded its ledger, run
-   `scripts/nudge.py --file <rundir>/state.jsonl --followups .gauntlet/followups.jsonl --rundir <rundir>`
+   `scripts/nudge.py --file <rundir>/state.jsonl --followups <project_root>/.gauntlet/followups.jsonl --rundir <rundir>`
    and **READ its output** before reconciling. It is the **advisory reminder list** — computed from durable
    state so an amnesiac fresh-context heartbeat is HANDED its obligations rather than told to remember
    them. It **decides nothing and always exits 0**; each reminder just points at the owner of the actual
    check (labels, caps, the health pass below — including its `watchdog due` reminder). Act on the
    reminders through those owners; ignore none silently.
+   Every path here is **absolute**, from the record resolved above: the follow-up store is `.gauntlet/`
+   under `repository.project_root`, and the tool uses `--followups` **as given** — a cwd-relative path
+   makes the answer depend on where the heartbeat was launched, and a driver working in a worktree would
+   find no store there at all.
 
    Once bound and confirmed owner, decide on **liveness of THIS run**, not on whether some `state.jsonl`
    exists — and scope **every** git/gh scan to this run's `gauntlet-run-<run-id>` label so another run's

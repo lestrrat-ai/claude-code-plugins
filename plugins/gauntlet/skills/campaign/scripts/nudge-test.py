@@ -11,7 +11,9 @@ that emits every line unconditionally — which is no printer at all.
 
 from __future__ import annotations
 
+import io
 import tempfile
+from contextlib import redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -42,8 +44,9 @@ def row(pr, status, **kw) -> dict:
     return r
 
 
-def fire(rows, *, hdr=None, n_followups=0, rundir=None, now=None) -> list:
-    return N.reminders(hdr or header(run_id="g1"), rows, n_followups, rundir, now)
+def fire(rows, *, hdr=None, n_followups: "int | None" = 0, rundir=None, now=None,
+         followups_path: "Path | None" = None) -> list:
+    return N.reminders(hdr or header(run_id="g1"), rows, n_followups, rundir, now, followups_path)
 
 
 # A fixed "now" and two stamps around it, so the quiet-run rule is DETERMINISTIC: one older than
@@ -158,6 +161,45 @@ def t_followups_fire_only_when_open():
           "open follow-ups must nudge, with the count")
     check(not has(fire([], n_followups=0), "open follow-up"),
           "zero open follow-ups must NOT nudge")
+
+
+def t_unread_followup_store_is_disclosed():
+    """An UNREAD follow-up store must SAY SO, naming why — never fall silent. Silence is what a caller
+    reads as "this run has no open follow-ups", and the store goes unread on two ordinary invocations:
+    `--followups` omitted, and a path that is not there. The store path is not derivable from `--rundir`
+    (`.gauntlet/` is a project-root concern, not a run-directory one) and the printer always exits 0, so
+    DISCLOSURE — not a default and not a refusal — is the whole fix."""
+    # unit level: not-read (None) discloses; a successful read never does.
+    absent = fire([], n_followups=None)
+    check(has(absent, "follow-up store NOT READ (no --followups given)"),
+          "an omitted --followups must disclose that the store was not read, and why")
+    missing = fire([], n_followups=None, followups_path=Path("/nonexistent/typo.jsonl"))
+    check(has(missing, "follow-up store NOT READ (no file at /nonexistent/typo.jsonl)"),
+          "a --followups path that is not there must disclose it, NAMING the path it tried")
+    # Teeth: a store that WAS read never claims it was not — neither with open entries nor empty.
+    check(not has(fire([], n_followups=3), "NOT READ"),
+          "a store that was read must report its count, never the not-read disclosure")
+    check(not has(fire([], n_followups=0), "NOT READ"),
+          "an EMPTY store that was read is genuinely zero — it must stay silent, not disclose")
+    # main() plumbing: the same two invocations end to end, plus a real store proving the count wins.
+    with tempfile.TemporaryDirectory() as d:
+        rd = Path(d)
+        led = rd / "state.jsonl"
+        led.write_text('{"type": "header", "run_id": "g1", "required_set": "none"}\n', encoding="utf-8")
+        check("follow-up store NOT READ (no --followups given)" in _run_main(["--file", str(led)]),
+              "a --file-only invocation must DISCLOSE the unread store — the silent-misuse case")
+        typo = rd / "typo.jsonl"
+        check(f"follow-up store NOT READ (no file at {typo})"
+              in _run_main(["--file", str(led), "--followups", str(typo)]),
+              "a mistyped --followups path must DISCLOSE it end to end, naming the path")
+        # Teeth end to end: a REAL store with an open entry prints the count and no disclosure. Built
+        # through followups.py's own writer, so this fixture never restates that store's schema.
+        store = rd / "followups.jsonl"
+        N.F.dump(store, [{"id": "fu1", "title": "t", "evidence": "e", "deferred_why": "w"}], 0)
+        out = _run_main(["--file", str(led), "--followups", str(store)])
+        check("1 open follow-up(s) — start any you can." in out and "NOT READ" not in out,
+              "a store that exists must yield the COUNT and no disclosure — the disclosure must "
+              "discriminate on whether the store was actually read")
 
 
 # --- held PRs short-circuit ---------------------------------------------------
@@ -324,6 +366,44 @@ def t_watchdog_due_silent_without_open_work():
                   f"a run with no open work must NOT fire the watchdog-due reminder (rows={rows}, wd={wd!r})")
 
 
+def _run_main(argv) -> str:
+    """main()'s printed output, so a fixture can pin the FLAG PLUMBING and not only `reminders()`."""
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        code = N.main(argv)
+    check(code == 0, f"main({argv!r}) must exit 0 — a nudge never blocks")
+    return buf.getvalue()
+
+
+def t_rundir_defaults_to_the_ledger_directory():
+    """`--file` alone must NOT report every intent file missing. The ledger IS `<rundir>/state.jsonl`, so
+    the run directory is its parent and nudge derives it. Before this, a `--file`-only call passed
+    rundir=None, `rundir_has` read that as "absent", and every review-due PR got a confident, wrong
+    "no intent-<N>.md" line with no error and no warning."""
+    with tempfile.TemporaryDirectory() as d:
+        rd = Path(d)
+        led = rd / "state.jsonl"
+        led.write_text('{"type": "header", "run_id": "g1", "required_set": "none"}\n'
+                       '{"type": "row", "id": "pr9", "pr": "9", "status": "in_review", "tier": "HIGH",'
+                       ' "reviews_ok": "0", "ci": "green"}\n', encoding="utf-8")
+        (rd / "intent-9.md").write_text("x", encoding="utf-8")
+        check("no intent-9.md" not in _run_main(["--file", str(led)]),
+              "an intent file NEXT TO the ledger must silence the nudge with NO --rundir passed — the run "
+              "directory is the ledger's parent, never unknown")
+        # Teeth: the derived rundir is really being READ, not just suppressing the rule. Remove the file and
+        # the same --file-only invocation must fire again.
+        (rd / "intent-9.md").unlink()
+        check("no intent-9.md" in _run_main(["--file", str(led)]),
+              "with the intent file gone the same --file-only invocation must fire the nudge — the derived "
+              "run directory is read, not ignored")
+        # An explicit --rundir still WINS over the derived default.
+        other = rd / "elsewhere"
+        other.mkdir()
+        (other / "intent-9.md").write_text("x", encoding="utf-8")
+        check("no intent-9.md" not in _run_main(["--file", str(led), "--rundir", str(other)]),
+              "an explicit --rundir must override the derived default")
+
+
 def t_a_nudge_never_blocks():
     # main() over a real ledger file exits 0 no matter what it prints.
     with tempfile.TemporaryDirectory() as d:
@@ -345,6 +425,8 @@ CASES = [
      t_settled_base_report),
     ("fanout-open-only", "fan-out nudges only with open work", t_fanout_fires_only_with_open_work),
     ("followups-open-only", "follow-ups nudge only when open, with the count", t_followups_fire_only_when_open),
+    ("followups-unread-disclosed", "an unread follow-up store SAYS so, naming why — never silence",
+     t_unread_followup_store_is_disclosed),
     ("parked-short-circuits", "a parked PR fires only its held reminder", t_parked_pr_fires_only_its_own_reminder),
     ("repairing-splits", "repairing splits on whether a decision is recorded", t_repairing_splits_on_decision),
     ("intent-missing", "intent nudge fires only without the file", t_intent_missing_fires_only_without_the_file),
@@ -358,5 +440,7 @@ CASES = [
     ("quiet-names-the-park", "a parked-only quiet run says it waits on the user and surfaces the question", t_quiet_run_names_the_park),
     ("watchdog-due-fires", "watchdog-due reminder fires on unset/overdue/invalid with open work, silent when ok", t_watchdog_due_fires_on_unset_overdue_invalid_with_open_work),
     ("watchdog-due-needs-open-work", "watchdog-due reminder is silent with no open/terminal-only rows", t_watchdog_due_silent_without_open_work),
+    ("rundir-defaults-to-ledger-dir", "--file alone derives the run directory from the ledger's parent",
+     t_rundir_defaults_to_the_ledger_directory),
     ("never-blocks", "a nudge always exits 0", t_a_nudge_never_blocks),
 ]
