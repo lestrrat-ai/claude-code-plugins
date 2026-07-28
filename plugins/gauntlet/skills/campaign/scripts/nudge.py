@@ -83,11 +83,31 @@ def required(tier: str) -> int:
     return 1 if tier == "TRIVIAL" else 2
 
 
-def open_followups(followups_path: "Path | None") -> int:
+def open_followups(followups_path: "Path | None") -> "int | None":
+    """How many follow-ups are OPEN — or `None` when the store was NOT READ (no `--followups` was given,
+    or the path given is not there). `None` is NOT `0`, and keeping them apart is the whole point: an
+    unread store counted as zero is INDISTINGUISHABLE in the output from a genuinely empty queue, so an
+    omitted or mistyped flag retired the durable follow-up queue with no error, no warning, and a
+    confident header above it. The caller DISCLOSES the `None` (`followups_line`); it never invents a
+    count from a store it did not open.
+    """
     if followups_path is None or not followups_path.exists():
-        return 0
+        return None
     entries = F.load(followups_path)
     return sum(1 for e in entries if e.get("state") not in OPEN_FOLLOWUP_HIDDEN)
+
+
+def followups_line(n_followups: "int | None", followups_path: "Path | None") -> "str | None":
+    """The one follow-up reminder: a COUNT when the store was read, a DISCLOSURE naming why when it was
+    not, and silence ONLY for a read that genuinely found nothing open. An unread store is never silent —
+    that silence is what a caller reads as "this run has no open follow-ups".
+    """
+    if n_followups is None:
+        where = f"no file at {followups_path}" if followups_path is not None else "no --followups given"
+        return f"follow-up store NOT READ ({where}) — open follow-ups are UNKNOWN, not zero."
+    if n_followups:
+        return f"{n_followups} open follow-up(s) — start any you can."
+    return None
 
 
 def rundir_has(rundir: "Path | None", name: str) -> bool:
@@ -108,12 +128,15 @@ def resolve_rundir(file_arg: str, rundir_arg: "str | None") -> Path:
     return Path(file_arg).resolve().parent
 
 
-def reminders(header: dict, rows: list, n_followups: int, rundir: "Path | None",
-              now: "datetime | None" = None) -> list:
+def reminders(header: dict, rows: list, n_followups: "int | None", rundir: "Path | None",
+              now: "datetime | None" = None, followups_path: "Path | None" = None) -> list:
     """Compute the reminder lines. Pure: same inputs → same output. Returns a list of strings.
 
     `now` is the current UTC time, injectable so the quiet-run rule is testable; it defaults to
     `datetime.now(timezone.utc)` when a caller (main) does not pass one.
+
+    `followups_path` is only what the follow-up store was LOOKED FOR at — it is never read here, and it
+    exists so an unread store can name the path it tried (`followups_line`).
     """
     if now is None:
         now = datetime.now(timezone.utc)
@@ -153,8 +176,9 @@ def reminders(header: dict, rows: list, n_followups: int, rundir: "Path | None",
             out.append(f"base {base} (PR(s) {prs}): required set {rset}.")
     if active:
         out.append(f"{len(active)} PR(s) open — reconcile and fan out work up to caps.")
-    if n_followups:
-        out.append(f"{n_followups} open follow-up(s) — start any you can.")
+    fu_line = followups_line(n_followups, followups_path)
+    if fu_line:
+        out.append(fu_line)
 
     # --- watchdog-due reminder -------------------------------------------------
     # The durable long-cadence health-pass deadline (ledger.py's `watchdog_due`). When it is due, never armed,
@@ -233,9 +257,9 @@ def reminders(header: dict, rows: list, n_followups: int, rundir: "Path | None",
     return out
 
 
-def render(header: dict, rows: list, n_followups: int, rundir: "Path | None",
-           now: "datetime | None" = None) -> str:
-    lines = reminders(header, rows, n_followups, rundir, now)
+def render(header: dict, rows: list, n_followups: "int | None", rundir: "Path | None",
+           now: "datetime | None" = None, followups_path: "Path | None" = None) -> str:
+    lines = reminders(header, rows, n_followups, rundir, now, followups_path)
     run_id = header.get("run_id", "-")
     head = f"NUDGE (run {run_id}) — {len(lines)} reminder(s):"
     body = "\n".join(f"  - {line}" for line in lines)
@@ -245,7 +269,10 @@ def render(header: dict, rows: list, n_followups: int, rundir: "Path | None",
 def main(argv: "list[str] | None" = None) -> int:
     parser = argparse.ArgumentParser(description=DESCRIPTION)
     parser.add_argument("--file", help="the run ledger (<rundir>/state.jsonl)")
-    parser.add_argument("--followups", help="the follow-up store (.gauntlet/followups.jsonl)")
+    parser.add_argument("--followups", help="the follow-up store (<project_root>/.gauntlet/followups.jsonl). "
+                                            "Used AS GIVEN — a relative path resolves against the CWD, so "
+                                            "pass an absolute one. Omitted, or not found, the reminder SAYS "
+                                            "the store was not read; it never reports zero")
     parser.add_argument("--rundir", help="the run directory, for intent/CI/progress file checks "
                                          "(default: the directory holding --file)")
     parser.add_argument("--self-test", action="store_true", help="run every fixture and assert the rules "
@@ -258,9 +285,10 @@ def main(argv: "list[str] | None" = None) -> int:
     if args.file is None:
         parser.error("the following arguments are required: --file")
     header, rows = L.load(Path(args.file))
-    n_followups = open_followups(Path(args.followups) if args.followups else None)
+    followups_path = Path(args.followups) if args.followups else None
+    n_followups = open_followups(followups_path)
     rundir = resolve_rundir(args.file, args.rundir)
-    print(render(header, rows, n_followups, rundir))
+    print(render(header, rows, n_followups, rundir, followups_path=followups_path))
     return 0  # a nudge NEVER blocks — it only reminds
 
 
