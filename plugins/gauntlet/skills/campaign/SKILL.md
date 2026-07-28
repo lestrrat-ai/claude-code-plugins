@@ -116,7 +116,8 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
 
 8. At heartbeat entry, once you own the run and load its ledger, run `nudge.py` and READ its advisory
    reminders — computed from durable state, decides nothing, always exits 0 (`references/loop-control.md`
-   step 1). Then produce the run's validated PR snapshot through `reconcile.py fetch`, reconcile it
+   step 1). Those reminders, and every worker report this step folds, are driver-internal
+   (`references/loop-control.md`, "Driver-internal outputs"). Then produce the run's validated PR snapshot through `reconcile.py fetch`, reconcile it
    through `reconcile.py detect` (treat `state.jsonl` as cache), and fold completed
    review / CI / fix tasks against the SHA each ran on. On a host with a fresh-worker mechanism, the
    Step 1 reconcile runs in ONE fresh reconcile worker per heartbeat and the driver folds, dispatches,

@@ -12,6 +12,32 @@ from its compact report; inline Step 1 is the fallback (no worker mechanism, or 
 worker). `runtime-adapter.md`, "Reconcile worker", owns the contract — what the driver passes in, what
 the worker returns, and what never moves into it. The steps below are unchanged whoever executes them.
 
+### Driver-internal outputs
+
+**`nudge.py`'s reminders, the reconcile worker's report, a review pass's report, and a fix worker's
+report are DRIVER-INTERNAL.** The driver READS each one and ACTS on it; it does **NOT** reproduce it —
+verbatim, quoted at length, or walked step by step — in what it shows the user. They are the loop's only
+unbounded output, and relaying them buries the decisions only the user can make.
+
+**This bounds REPRODUCING. It never weakens READING or ACTING.** Every obligation an internal output
+carries still runs in full: a fix worker's sweep-site dispositions still reach the driver's own recording
+step in the SAME heartbeat (`fix-subagent-contract.md`) — one that stops arriving there is work lost
+permanently — and a review pass's report still reaches its tally check (`stage-2-review-gate.md`, "Does
+this pass COUNT?").
+
+**What this NEVER silences: anything only the USER can act on.** Where another rule already requires
+something to reach the user, this one removes nothing from it and grants no discretion to trim it — a
+verbosity rule that hides a decision the user alone can make is worse than the noise it saves. Those
+rules keep their own wording; these are illustrations of them, not a second copy:
+
+- **Every park question, WITH how long it has waited**, in each of the three park classes — API approval,
+  review-standoff ruling, machine-blocker ruling ("Only the user's answer unparks a PR" in Step 3, and
+  the health pass in Step 5). Only the user's answer unparks a PR, so silence here wedges the run for good.
+- **The `ledger.py table` output, WHOLE** — every `#` disclosure line included (Step 5).
+- **Every disclosure the final report owes** (`bailout-and-final-report.md`, "Final report") — among them
+  `skill_version`, the required-set `unknown`-versus-`none` distinction, `authored@` intents, and open
+  follow-up candidates the user has not agreed to.
+
 **Every heartbeat — reconcile, dispatch, reschedule:**
 
 ### Step 1 — Resolve repository context, then the run + lease, then init / resume / start fresh
@@ -30,7 +56,8 @@ the worker returns, and what never moves into it. The steps below are unchanged 
    state so an amnesiac fresh-context heartbeat is HANDED its obligations rather than told to remember
    them. It **decides nothing and always exits 0**; each reminder just points at the owner of the actual
    check (labels, caps, the health pass below — including its `watchdog due` reminder). Act on the
-   reminders through those owners; ignore none silently.
+   reminders through those owners; ignore none silently. Its output is driver-internal
+   ("Driver-internal outputs" above).
    Every path here is **absolute**, from the record resolved above: the follow-up store is `.gauntlet/`
    under `repository.project_root`, and the tool uses `--followups` **as given** — a cwd-relative path
    makes the answer depend on where the heartbeat was launched, and a driver working in a worktree would
@@ -257,7 +284,8 @@ the worker returns, and what never moves into it. The steps below are unchanged 
    never set `reviews_ok` by hand. It refuses unless the base-preflight `proceed` above stamped `base_ok_sha`
    for this head (the `--file` on the precondition run is what records it).
    For any completed task (review, CI watch,
-   CI/review fix), record the result against the SHA it ran on and act per Stage 2.
+   CI/review fix), record the result against the SHA it ran on and act per Stage 2. Every report folded
+   here is driver-internal ("Driver-internal outputs" above).
 ### Step 3 — Dispatch due work
 
 3. **Dispatch due work — non-blocking, idempotent, bounded, work-conserving.** Scan the whole run,

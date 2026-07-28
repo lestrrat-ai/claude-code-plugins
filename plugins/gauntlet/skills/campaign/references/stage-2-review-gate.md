@@ -821,6 +821,8 @@ pass is a trapdoor, not a disclosure:
 **`ok` is not SATISFIED.** The tool parses the reviewer's exact terminal result but does not judge the
 report's prose, raise `reviews_ok`, or merge. `ledger.py verdict` remains the only tally writer.
 
+**The report itself is driver-internal** (`loop-control.md`, "Driver-internal outputs").
+
 ### Recording a verdict — `ledger.py verdict` is the ONLY sanctioned path
 
 As each verdict lands, record it with:
