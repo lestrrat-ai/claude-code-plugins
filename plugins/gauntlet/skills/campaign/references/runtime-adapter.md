@@ -199,8 +199,13 @@ Both arguments are REQUIRED, and the command refuses to run without either one:
 run_argv(["python3", backoff_script, "decide",
           "--message-file", captured_failure_text_file,
           "--attempts-spent", external_launches_this_pass_has_already_made],
-         repository.project_root)
+         repository.project_root, null, null)
 ```
+
+`stdin_file`/`stdout_file` are spelled `null` because `decide` prints its `BackoffDecision` as JSON on
+STDOUT, and by the `run_argv` declaration above a non-null `stdout_file` leaves `ProcessResult.stdout`
+empty. A host that supplies one reads no `action` and no `attempts_cap`, so the retry cap below is
+never reached.
 
 `--message` takes the text directly in place of `--message-file`; exactly one of the two is accepted.
 **Never omit `--attempts-spent` and never re-send `0`** after a failure that already spent a launch: the

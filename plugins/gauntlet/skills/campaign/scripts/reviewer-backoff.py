@@ -39,6 +39,7 @@ import json
 import math
 import re
 import sys
+import unicodedata
 from bisect import bisect_left, bisect_right
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -86,8 +87,9 @@ DEFAULT_WAIT_SECONDS = {USAGE_LIMIT: 300, TRANSIENT: 30, UNKNOWN: 60}
 # matches when it stands as a WHOLE WORD — never as a substring inside a longer word — with any run
 # of whitespace standing in for each of its spaces and an optional trailing `s` for the plural. The
 # digit and line-leading shapes below are REFINEMENTS of that rule, tightening it for one kind of
-# marker; they are NOT the only markers that carry an anchor. `classify()` folds the apostrophe
-# variants once before any of this runs. Add a marker and it inherits all of it.
+# marker; they are NOT the only markers that carry an anchor. `classify()` runs `_normalize` once
+# before any of this, so every marker also inherits the apostrophe and combining-mark folds that
+# make the word anchor mean what it says. Add a marker and it inherits all of it.
 
 REFUSAL_MARKERS = (
     "can't help",
@@ -243,10 +245,34 @@ _LINE_ANCHORED_MARKERS = frozenset({"usage:"})
 #: outcome this file exists to prevent. NFKC is NOT the tool for it: NFKC leaves U+2019 and U+2018
 #: exactly as they are, so the set is explicit. Every entry is one character wide, so folding shifts
 #: no offset the delay guess later measures.
+#:
+#: The MODIFIER LETTER range U+02B9-U+02BF is folded WHOLE rather than member by member, and it is
+#: spelled as a range so that adding a member is not a decision anyone has to remember to make.
+#: Hand-picking members out of it is exactly what left `ʻ` (U+02BB) unfolded while its immediate
+#: neighbours `ʹ` (U+02B9) and `ʼ` (U+02BC) were folded — so a genuine `I canʻt help with this
+#: review` classified `unknown` and was answered by this campaign's own engine, the worst outcome
+#: this file has. Every member of that range is a LETTER to `\w`, so an unfolded one glues a
+#: marker's two halves into one word that no marker can ever match; there is no anchor rule that
+#: could have caught it, only this fold.
 _APOSTROPHE_FOLD = {
     ord(character): "'"
-    for character in "‘’‛ʹʼ′´＇`"
+    for character in "‘’‛′´＇`" + "".join(chr(code) for code in range(0x02B9, 0x02C0))
 }
+
+#: What a Unicode COMBINING MARK (general category `M*`) folds to before any marker is matched. A
+#: mark continues the word its base letter starts, but Python's `\w` is `str.isalnum()`-based and a
+#: mark is not alphanumeric, so an unfolded mark SATISFIES a word anchor instead of closing it:
+#: `quota` + U+0301 + `tion` claimed a usage limit and waited five minutes for a limit nobody hit,
+#: on text that is one ordinary word. `_` is the stand-in because it is `\w`-true and exactly one
+#: character wide, so the anchors see the word continuation that is really there and no offset the
+#: delay guess later measures moves. It is never shown to anyone: `decide()` reports the marker from
+#: the vocabulary above, never a slice of the folded text.
+#:
+#: Folding here rather than in each pattern is deliberate and is the whole point. The anchoring rule
+#: has TWO scans — the markers and `TRIGGER_RE` — and threading a second word-character class
+#: through both is how one of them ends up a version behind the other. One fold ahead of both cannot
+#: drift, and `DELAY_RE` inherits it for free.
+_MARK_STAND_IN = "_"
 
 
 def _phrase(marker: str) -> str:
@@ -267,7 +293,12 @@ def _marker_pattern(marker: str) -> "re.Pattern[str]":
     to more letters no longer matches, so a runtime's `TimeoutError` or `ConnectTimeout` classifies
     `unknown` rather than `transient`. Both are retryable, so that costs the unknown default wait
     instead of the transient one — while the anchor is what stops `quota` from claiming a usage
-    limit inside `unquotable` or `quotation`."""
+    limit inside `unquotable` or `quotation`.
+
+    `\\w` alone does NOT decide what continues a word here, and reading these patterns as if it did
+    is how the anchor was believed to hold when it did not. `_normalize` has already folded every
+    combining mark into a `\\w` character by the time any of this runs — see `_MARK_STAND_IN` — and
+    that fold is half of the guarantee this docstring states."""
 
     if marker in _LINE_ANCHORED_MARKERS:
         # A banner marker must OPEN a line. That is stricter than the word anchor, so it replaces it.
@@ -279,15 +310,33 @@ def _marker_pattern(marker: str) -> "re.Pattern[str]":
     return re.compile(rf"(?<!\w){_phrase(marker)}s?(?!\w)", re.IGNORECASE)
 
 
+def _fold_marks(message: str) -> str:
+    """Fold every Unicode combining mark to `_MARK_STAND_IN`, so the word anchors read a mark as the
+    word continuation it is. See `_MARK_STAND_IN` for why this is not a character class inside each
+    pattern.
+
+    The category test runs over the message's DISTINCT characters, so the cost is one pass to
+    collect them and one `str.translate`, both linear in the message and neither keeping per-match
+    state — which is what `MAX_SCANNED_CHARS` relies on when it leaves the marker scan unbounded. An
+    all-ASCII message, the ordinary one, returns unchanged without a single category lookup."""
+
+    if message.isascii():
+        return message
+    table = {ord(character): _MARK_STAND_IN
+             for character in set(message)
+             if unicodedata.category(character).startswith("M")}
+    return message.translate(table) if table else message
+
+
 def _normalize(message: str) -> str:
-    """Fold the apostrophe variants so one spelling of each marker suffices.
+    """Fold the apostrophe variants and the combining marks so one spelling of each marker suffices.
 
     Applied ONCE to the whole message before any marker is matched — not per marker, not per class —
     so a marker added later inherits it. Whitespace is deliberately NOT rewritten here: collapsing
     newlines would destroy the line structure the line-leading `usage:` banner depends on, and
     `_marker_pattern` already absorbs a wrapped line inside each marker instead."""
 
-    return message.translate(_APOSTROPHE_FOLD)
+    return _fold_marks(message.translate(_APOSTROPHE_FOLD))
 
 
 _PATTERNS = {
@@ -316,38 +365,56 @@ _UNIT_ALTERNATION = (
     r"|hours?|hrs?|h"
     r"|days?|d"
 )
-#: THE LOOKBEHINDS HAVE ONE JOB: never start reading in the MIDDLE of a number a provider wrote.
-#: So they exclude every character a written number can contain or lead with — a digit, a decimal
-#: point, a thousands separator, a sign — rather than the particular one each reported case used.
-#: Re-anchoring past any of them answers a number nobody stated: `1,800 seconds` read as 800, and
-#: `10,000 seconds` as 0, which relaunched the external reviewer five seconds into a limit hours
-#: long and burned the pass's attempt. `(?<![\d.,])` covers the first three, so `1.5 seconds` and
-#: `1,800 seconds` both read as no delay at all and take the class default. `\b` after the unit
-#: keeps `3pm` and `2026-07-25T13:00:00Z` from yielding one. `(?<!(?<![\d.])[-+])` covers the sign:
-#: `retry after -2 hours` states no wait this code can honour, so it too must read as unreadable
-#: rather than re-anchor past the minus and answer 7200. The INNER lookbehind is what keeps a RANGE
-#: readable — in `30-60 seconds` the `-` follows a digit, so it separates two numbers rather than
-#: signing one, and the pair still guesses 60 exactly as the section header above says it does. A
-#: bare `[-+]` in the lookbehind would break that. Unread is the ORDINARY landing for every one of
-#: these; a mis-read is not, because the caller acts on it.
+#: THE LEAD-IN HAS ONE JOB: never start reading in the MIDDLE of a number a provider wrote. It is a
+#: WHITELIST, and that direction is the whole fix. The rule used to LIST the characters that may not
+#: precede the digits — a digit, a decimal point, a thousands separator, an ASCII sign — and a list
+#: of what is forbidden leaves every character NOT on it a way in. It let `1,800 seconds` read as
+#: 800 and `10,000 seconds` as 0, which relaunched the external reviewer five seconds into a limit
+#: hours long and burned the pass's attempt; once those ASCII spellings were listed, `retry after
+#: −2 seconds` (U+2212 MINUS SIGN) read as 2 and `retry after 1٫5 seconds` (U+066B ARABIC DECIMAL
+#: SEPARATOR) read as 5 the same way. Every one of those takes a magnitude and drops the sign or the
+#: integer part beside it: a PARTIALLY read number, which the caller then acts on — not the ordinary
+#: `unreadable` landing this file is built around.
+#: So the scan now begins ONLY where the text positively says a number begins: at the start of the
+#: message, after whitespace, after the approximation marker `~`, or after an opening bracket.
+#: Anything else — a digit, any separator, any sign, in any script, spelled any way — leaves the
+#: number UNREAD and the failure takes its class default. Adding a lead-in is how a new shape becomes
+#: readable; nothing has to be enumerated to keep an unfamiliar one safe.
+#: ONE EXCEPTION keeps a RANGE readable: a `-` that ITSELF follows a digit separates two numbers
+#: rather than signing one, so `30-60 seconds` still guesses 60 exactly as the section header above
+#: says it does. Admitting a bare `-` would take `retry after -2 hours` back to 7200.
+#: `\b` after the unit keeps `3pm` and `2026-07-25T13:00:00Z` from yielding a delay.
 #: The value group is deliberately UNBOUNDED: `MAX_READABLE_DIGITS` bounds the conversion instead,
-#: because a width limit in the pattern makes an over-width run match NOTHING (the lookbehind blocks
-#: re-anchoring inside the digits), which reads a stated over-cap delay as `unreadable` rather than
-#: as over-cap.
+#: because a width limit in the pattern makes an over-width run match NOTHING (the lead-in admits no
+#: start inside the digits), which reads a stated over-cap delay as `unreadable` rather than as
+#: over-cap.
 DELAY_RE = re.compile(
-    rf"(?<!(?<![\d.])[-+])(?<![\d.,])(?P<value>\d+)\s*(?P<unit>{_UNIT_ALTERNATION})\b",
+    rf"(?:\A|(?<=\s)|(?<=[~(\[])|(?<=(?<=\d)-))"
+    rf"(?P<value>\d+)\s*(?P<unit>{_UNIT_ALTERNATION})\b",
     re.IGNORECASE,
 )
 #: A number only means a delay when something retry-ish introduces it. Without this, `attempt 2 of
 #: 3` and `reviewed 40 files` would both read as timers.
-#: The alternation is WORD-LEADING — `\b` in front, nothing at the end — so a trigger must START a
-#: word rather than merely sit inside one. That is what stops ordinary telemetry from supplying a
-#: timer: `retrieved 40 files in 3 seconds` no longer poses as a retry word, and `service
-#: unavailable` no longer poses as `available`. Leaving the tail open keeps the inflections the
-#: earlier substrings already covered — `waiting`, `resets`, `resumed`, `backoff`, `cooldown`.
+#: The alternation is anchored at BOTH ENDS, under the same rule `_marker_pattern` applies to every
+#: marker: a trigger counts only as a WHOLE WORD. The leading `\b` alone stopped telemetry from
+#: posing as a trigger — `retrieved 40 files in 3 seconds` no longer supplies one, and `service
+#: unavailable` no longer poses as `available` — but an open tail let a trigger match inside a
+#: longer word, so ordinary prose stating no wait at all produced a real one: `The waiter was quoted
+#: at 900 seconds` guessed 900s, the cap exactly, and `resettlement of 300 seconds of logs` guessed
+#: 300s. Anchoring the markers and leaving this scan a version behind is what made that possible;
+#: the two scans share one rule now.
+#: EVERY INFLECTION IS THEREFORE SPELLED OUT, and that is the only reason this list is long. A bare
+#: stem with `\b` after it loses `waiting`, `resets`, `resumed` and `retrying` — wordings providers
+#: actually use — so a stem is not an option here. Add a trigger and spell its inflections; never
+#: shorten one back to a stem, and never re-open the tail to cover an inflection you left out.
 TRIGGER_RE = re.compile(
-    r"\b(?:retry|retries|retrying|retried|try\s+again|wait|back\s?off|reset|available|resume"
-    r"|cool\s?down)",
+    r"\b(?:retry|retries|retrying|retried|try\s+again"
+    r"|wait|waits|waiting|waited"
+    r"|back\s?offs?"
+    r"|reset|resets|resetting"
+    r"|available"
+    r"|resume|resumes|resumed|resuming"
+    r"|cool\s?downs?)\b",
     re.IGNORECASE,
 )
 #: How far from a trigger word a number may sit and still be that trigger's delay — the same distance
@@ -376,8 +443,9 @@ MAX_READABLE_DIGITS = 9
 #: no per-match state, so it costs no more on a huge message, while bounding it would drop a refusal
 #: marker sitting past the bound and silently turn a `stop-and-ask` into the same-engine native
 #: fallback this file exists to prevent. Do not "complete" this fix by bounding `classify()` too.
-#: `_normalize` ahead of that scan is one linear `str.translate` and keeps no per-match state
-#: either, so it leaves that reasoning intact.
+#: `_normalize` ahead of that scan is linear in the message and keeps no per-match state either, so
+#: it leaves that reasoning intact — see `_fold_marks` for the one part of it that is not a bare
+#: `str.translate`.
 MAX_SCANNED_CHARS = 65536
 
 

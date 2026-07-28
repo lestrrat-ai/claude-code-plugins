@@ -785,6 +785,30 @@ def check_document_contract() -> None:
     ):
         require(needle in runtime, f"runtime adapter lost typed owner: {needle}")
 
+    # runtime-adapter.md OWNS the `run_argv` type, so EVERY call it writes must spell all four
+    # fields. Other references may use a two-field shorthand only where they declare one locally
+    # (pr-adoption.md does); this file declares none, and a reader of the owner has nowhere else to
+    # look. The backoff `decide` call was written with two, which left a host to guess `stdout_file`
+    # — and a non-null one empties `ProcessResult.stdout` by this file's own declaration, so the
+    # returned `action` and `attempts_cap` become unreadable and the retry cap is never enforced.
+    # Counting arity rather than matching the one repaired line is the point: the next short call
+    # goes red without anyone remembering to add a needle for it.
+    for match in re.finditer(r"run_argv\(", runtime):
+        index, depth, fields = match.end(), 1, 1
+        while index < len(runtime) and depth:
+            character = runtime[index]
+            if character in "([":
+                depth += 1
+            elif character in ")]":
+                depth -= 1
+            elif character == "," and depth == 1:
+                fields += 1
+            index += 1
+        line = runtime[:match.start()].count("\n") + 1
+        require(fields == 4,
+                f"runtime-adapter.md:{line} calls run_argv with {fields} of the 4 fields its own "
+                f"declaration requires, in the file that owns the type and declares no shorthand")
+
     for needle in (
         '["python3", review_dispatch_script, "prepare"',
         '"--prompt-profile", prompt_profile',

@@ -94,6 +94,14 @@ OTHER_MESSAGES = (
     "I am sorry, but I can't\nhelp with that request.",
     "retry after -2 hours",
     "retry after 1,800 seconds",
+    # The Unicode spellings of those same shapes, and the two word anchors that were a version apart.
+    "I canʻt help with this review",
+    "quota\u0301tion is ordinary prose",
+    "retry after −2 seconds",
+    "retry after 1٫5 seconds",
+    "The waiter was quoted at 900 seconds",
+    "resettlement of 300 seconds of logs",
+    "the error is retryable; 800 seconds of telemetry followed",
 )
 
 
@@ -205,6 +213,32 @@ def t_a_marker_matches_whole_words_only() -> None:
     for text in ("This request violates the content policy.",
                  "Your request is forbidden by our content policies."):
         check(kind(text) == B.REFUSAL, f"a policy refusal ({text!r}) stopped being a refusal")
+    # The SAME rule beyond ASCII, which is where the anchor alone did not carry it. A combining mark
+    # continues the word its base letter starts, but it is not `\w`, so an unfolded one SATISFIED the
+    # closing anchor instead of shutting it: `quota` + U+0301 + `tion` is one ordinary word that
+    # claimed a usage limit and waited five minutes for a limit nobody hit. The ASCII spellings of
+    # that hazard are pinned above; a rule that holds in ASCII and not in Unicode is the defect, so
+    # the mark spellings are pinned beside them — including the one at end of text, where there is no
+    # following letter to close the anchor at all.
+    #
+    # Every mark below is written as an ESCAPE rather than as the character, on purpose. A decomposed
+    # mark is invisible in a diff, and one NFC pass over this file — an editor setting, a formatter —
+    # rewrites `quota` + U+0301 + `tion` into a precomposed `á`, which is a DIFFERENT string that
+    # passes these checks without exercising anything. An escape cannot be normalized away.
+    for text in ("quota\u0301tion is ordinary prose",
+                 "hit the quota\u0301"):
+        check(kind(text) == B.UNKNOWN,
+              f"{text!r} claimed a class from a marker a combining mark had glued into a word")
+        check(wait(text) == B.DEFAULT_WAIT_SECONDS[B.UNKNOWN],
+              f"{text!r} took another class's default delay")
+    # …and the other side of that boundary, twice: folding a mark must not LOSE a marker that really
+    # is a whole word, and it must not GLUE one together where none was written.
+    check(kind("quota exceeded for thi\u0301s org") == B.USAGE_LIMIT,
+          "a combining mark elsewhere in the message cost a marker standing as its own word")
+    check(kind("I can't help with thi\u0301s review") == B.REFUSAL,
+          "a combining mark elsewhere in the message lost a genuine refusal")
+    check(kind("token usage\u0301 limit of 200000") != B.USAGE_LIMIT,
+          "folding a mark manufactured a marker out of two words that were never one")
 
 
 def t_a_refusal_survives_typography_and_wrapping() -> None:
@@ -236,6 +270,22 @@ def t_a_refusal_survives_typography_and_wrapping() -> None:
                  "I can't, on reflection, help with that"):
         check(kind(text) != B.REFUSAL,
               f"{text!r} matched a marker across words that are not adjacent")
+    # The MODIFIER LETTER range U+02B9-U+02BF is folded WHOLE, and this loop is mechanical for that
+    # reason: a second hand-written list is what went one member short the first time. `ʹ` (U+02B9)
+    # and `ʼ` (U+02BC) were folded while `ʻ` (U+02BB) sitting between them was not, so a genuine
+    # `I canʻt help with this review` classified `unknown`, waited, and was then answered by this
+    # campaign's own engine. Every member of the range is a LETTER to `\w`, so an unfolded one glues
+    # `can` and `t` into a single word that `can't help` can never match, at any attempt count.
+    for code in range(0x02B9, 0x02C0):
+        spelling = f"I can{chr(code)}t help with this review"
+        check(kind(spelling) == B.REFUSAL,
+              f"a refusal spelled with U+{code:04X} was lost to {kind(spelling)!r}")
+        # Both ends of the retry budget: a spent budget is what turns a lost refusal into the
+        # same-engine native pass, so the fresh count alone would not pin the outcome that matters.
+        for spent in (0, B.MAX_EXTERNAL_ATTEMPTS):
+            check(action(spelling, spent) == B.STOP_AND_ASK,
+                  f"a refusal spelled with U+{code:04X} did not reach the operator at {spent} "
+                  f"attempts spent")
     # And folding an apostrophe manufactures no marker where none was written.
     check(kind("the model can t help itself to more tokens") != B.REFUSAL,
           "a message with no apostrophe at all was folded into a refusal")
@@ -348,6 +398,48 @@ def t_delay_needs_a_retry_word_nearby() -> None:
               f"telemetry {text!r} supplied a delay from a word that merely contains a retry word")
 
 
+def t_a_trigger_matches_whole_words_only() -> None:
+    # The trigger scan takes the SAME whole-word rule every marker takes. Anchored at the front only,
+    # a trigger matched INSIDE a longer word, so ordinary prose stating no wait at all produced a
+    # real one: the first of these guessed 900s, the wait cap exactly.
+    for text in ("The waiter was quoted at 900 seconds",
+                 "resettlement of 300 seconds of logs",
+                 "the error is retryable; 800 seconds of telemetry followed",
+                 "the waitlist cleared 120 seconds later",
+                 "availableness was measured over 240 seconds"):
+        check(B.guess_delay_seconds(text) is None,
+              f"ordinary prose {text!r} supplied a delay from a trigger buried inside a word")
+        check(wait(text) == B.DEFAULT_WAIT_SECONDS[kind(text)],
+              f"{text!r} waited on a delay nobody stated")
+    # …and the other side of that boundary, which is the whole difficulty and the ONLY reason the
+    # alternation spells out inflections instead of stems: a bare stem with `\b` after it loses every
+    # one of these, and each is a wording providers actually use to state a real delay.
+    for text, expected in (("retry after 30 seconds", 30),
+                           ("retries in 30 seconds", 30),
+                           ("retrying in 25 seconds", 25),
+                           ("retried after 25 seconds", 25),
+                           ("try again in 45 seconds", 45),
+                           ("wait 10 seconds", 10),
+                           ("waits 10 seconds", 10),
+                           ("waiting 30 seconds for the window", 30),
+                           ("waited 10 seconds", 10),
+                           ("backoff of 15 seconds", 15),
+                           ("back off for 15 seconds", 15),
+                           ("backoffs of 15 seconds", 15),
+                           ("reset in 40 seconds", 40),
+                           ("resets in 45 seconds", 45),
+                           ("resetting in 40 seconds", 40),
+                           ("available in 50 seconds", 50),
+                           ("resume in 20 seconds", 20),
+                           ("resumes in 20 seconds", 20),
+                           ("resumed after 20 seconds", 20),
+                           ("resuming in 20 seconds", 20),
+                           ("cooldown of 15 seconds", 15),
+                           ("cool down for 15 seconds", 15)):
+        check(B.guess_delay_seconds(text) == expected,
+              f"{text!r} guessed {B.guess_delay_seconds(text)!r}, not {expected}")
+
+
 def t_unreadable_delay_shapes_are_not_errors() -> None:
     for text in ("retry after 2026-07-25T13:00:00Z",
                  "retry at 3pm",
@@ -417,6 +509,34 @@ def t_the_scan_never_starts_inside_a_number() -> None:
                            ("wait, 60 seconds", 60),
                            ("retry after 2 hours", 7200),
                            ("retrying in 214 ms", 1)):
+        check(B.guess_delay_seconds(text) == expected,
+              f"{text!r} guessed {B.guess_delay_seconds(text)!r}, not {expected}")
+    # THE SAME RULE BEYOND ASCII, which is where naming the forbidden characters instead of the
+    # allowed ones failed. Once the ASCII sign and separators were named, every character NOT named
+    # was still a way in: `−2 seconds` (U+2212) read as 2 and `1٫5 seconds` (U+066B) read as 5, each
+    # taking a magnitude and dropping the sign or the integer part beside it, then waiting five
+    # seconds on a number nobody stated. Their ASCII spellings are pinned above, so a rule that holds
+    # in ASCII and not in Unicode is the defect. These four are illustrations of a class, NOT a list
+    # to complete: the scan starts only where a lead-in below says a number begins, so a spelling
+    # nobody thought of stays unread rather than half-read.
+    for text in ("retry after −2 seconds",       # U+2212 MINUS SIGN
+                 "retry after －2 hours",          # U+FF0D FULLWIDTH HYPHEN-MINUS
+                 "retry after 1٫5 seconds",       # U+066B ARABIC DECIMAL SEPARATOR
+                 "retry after 1٬800 seconds"):    # U+066C ARABIC THOUSANDS SEPARATOR
+        check(B.guess_delay_seconds(text) is None,
+              f"{text!r} started reading inside a written number")
+        check(action(text) == B.WAIT_EXTERNAL,
+              f"{text!r} escalated instead of taking its class default")
+        check(wait(text) == B.DEFAULT_WAIT_SECONDS[kind(text)],
+              f"{text!r} did not take its class default")
+    # …and the other side of THAT boundary: the lead-in whitelist is what decides where a number may
+    # begin, so every lead-in it admits has to keep working. The start of the message is one of them
+    # and has no other fixture, so dropping it would otherwise go unnoticed.
+    for text, expected in (("60 seconds until retry", 60),
+                           ("retry after ~60 seconds", 60),
+                           ("retry after (60 seconds)", 60),
+                           ("retry after [60 seconds]", 60),
+                           ("retry after\n60 seconds", 60)):
         check(B.guess_delay_seconds(text) == expected,
               f"{text!r} guessed {B.guess_delay_seconds(text)!r}, not {expected}")
 
@@ -561,6 +681,8 @@ CASES = [
     ("usage-banner", "`usage:` claims a line-leading help dump, never telemetry prose",
      t_line_anchored_usage_banner),
     ("delay-proximity", "a number is a delay only near a retry word", t_delay_needs_a_retry_word_nearby),
+    ("trigger-word-anchor", "a retry trigger introduces a delay as a whole word, every inflection "
+     "included, never as a substring inside another word", t_a_trigger_matches_whole_words_only),
     ("unreadable-delay", "unreadable delay text takes the default instead of escalating",
      t_unreadable_delay_shapes_are_not_errors),
     ("first-pair", "the guess reads the first readable number-and-unit pair", t_first_readable_pair_wins),
