@@ -92,8 +92,10 @@ def _ledger():
 
 def sections(rows: list[dict]) -> "list[tuple[str, tuple[str, ...], list[dict]]]":
     """The three terminal-class projections, in a FIXED order. Row order is the ledger's, so the output is
-    deterministic. A declined-API PR is terminal-`aborted`, so it appears in BOTH `aborted` and
-    `api-declined`; that overlap is documented in the file's header and is not double-counting.
+    deterministic. A declined-API PR appears in BOTH `api-declined` and its terminal section — `aborted`,
+    or `merged` when the user merged it after the campaign gave up (`files-and-ledger.md`, "GitHub-owned vs
+    campaign-owned row fields": `api_approval` records the decision, `status` the live position). That
+    overlap is documented in the file's header and is not double-counting.
     """
     merged = [r for r in rows if r["status"] == "merged"]
     aborted = [r for r in rows if r["status"] == "aborted"]
@@ -124,8 +126,9 @@ def render(run_id: str, base_branches: "list[str]", now: str,
     out.append("Each `## <section>` heading is followed by zero or more rows, one JSON object per PR:")
     out.append("  merged        pr, slug, head_sha (at merge), tier, review_rounds, base_branch")
     out.append("  aborted       pr, slug, ci_reason, blocker_ruling, base_branch  (the durable why it stopped)")
-    out.append("  api-declined  pr, slug, api_approval, base_branch. A declined PR is ALSO aborted, so it")
-    out.append("                appears in BOTH sections — this is a reminder projection, not double-counting.")
+    out.append("  api-declined  pr, slug, api_approval, base_branch. A declined PR is ALSO in its terminal")
+    out.append("                section (aborted, or merged if the user merged it after the campaign gave")
+    out.append("                up), so it appears in BOTH — a reminder projection, not double-counting.")
     out.append("Each object's `base_branch` is the row's EFFECTIVE base at distillation (its own recorded")
     out.append("base, else the run's legacy header base). `base_branches` below is the sorted, deduplicated")
     out.append("set of those bases; prune each entry against ITS OWN base, never the run's (carryover.md).")

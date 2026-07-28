@@ -19,7 +19,7 @@ Two entry paths feed it (see "Run identity and concurrency" for the full grammar
   reported blocker before adoption.
 
 Each adopted PR **records its own live `baseRefName`** on its ledger row — the row's `base_branch`, written
-**once at creation** by `pr-adopt.py` (`add-row --base-branch`) and **immutable** afterward (`files-and-ledger.md`,
+**once at creation** by `pr-adopt.py` (`add-row --base-branch`) and **never retargeted** afterward (`files-and-ledger.md`,
 the row `base_branch` field). Resolve a row's base through `ledger.py`'s `effective_base` (an explicit row
 value, else the legacy header fallback), never the raw header field. **Adopting several PRs at once does
 NOT require their bases to agree** — one run may hold PRs targeting different bases (some on `v3`, others on
@@ -132,7 +132,7 @@ For each `#PR` to adopt:
    field is added.
 
    **Re-adoption base gate — AFTER the terminal-row refusal and BEFORE any refresh write.** The recorded
-   row `base_branch` is immutable, and
+   row `base_branch` is never retargeted, and
    the campaign never migrates a row to a new base. On a re-adoption, `pr-adopt.py` first compares the PR's
    live `baseRefName` with the row's `effective_base`; **if they differ it PARKS the row** (machine-blocker,
    `status = awaiting-user`, `ci_reason` = `base changed from <recorded> to <live>; not supported mid-run`,
@@ -150,7 +150,7 @@ For each `#PR` to adopt:
      it reused a pre-existing local branch or checkout;
      `pr` = `<N>`; `head_sha` = `headRefOid`.
    - **On a NEW row only, initialize:** `base_branch` = the PR's live `baseRefName` (recorded ONCE through
-     `add-row --base-branch`, immutable after — this is the per-row base every later action resolves through
+     `add-row --base-branch`, never retargeted after — this is the per-row base every later action resolves through
      `effective_base`); `reviews_ok` = `0` (no verdicts yet); `ci` = `pending`;
      `tier` = bootstrap `STANDARD`; after step 5 follow `stage-2-review-gate.md`, "2a-triage", for the
      complete procedure;

@@ -160,12 +160,19 @@ When the loop exits, summarize:
   passes actually wrote and never invent a line for a pass that omitted one. This is non-actionable,
   non-gating calibration metadata — a place a human might look, never a reopened finding (Stage 2a).
 - **What each base REQUIRED** — the required-check set, now **per base** (`effective_required_set`;
-  `stage-2-ci.md` owns its states). A run may span several bases (`v3`, `main`), so report **each distinct
+  `stage-2-ci.md` owns its states), over the bases **this run GATED on and READ** — not every base the
+  terminal ledger names. A run may span several bases (`v3`, `main`), so report **each distinct gated
   base and which state it was in**, because it is what every `green` on that base rests on: `declared:…` —
   name the checks that had to pass; `none` — that base required nothing, **read and confirmed**, not merely
   unobserved. **NEVER report `unknown` as "no required checks"**: it means campaign **could not read** them
   **for that base**, nothing merged on it, and any PR that reached it **escalated** — say which base's read
   failed, so the user can fix the access rather than wonder why those PRs stalled.
+  **A row whose `base_branch` came from the terminal GitHub-owned refresh is NOT a gated base here**: it
+  contributes its base to **Merged** above and nothing to this bullet (`files-and-ledger.md`, "GitHub-owned
+  vs campaign-owned row fields", owns that write). Its `required_set` is campaign-owned, so it still holds
+  the set read for the base this run gated on, and grouping it under the refreshed base would report one
+  base's required checks under another base's name. Neither re-label that set nor substitute `unknown` for
+  it: no read failed, and `unknown` states above the opposite of what happened on that base.
 - **Repaired** — every PR that reached a review-loop cap and recorded a reassessment decision: its
   `review_rounds`, the decision, and a pointer to `repair-<pr>-<k>.md` (`repair-pass.md`). For a legacy
   `demote@…` row, **report each demoted finding explicitly** — they are true findings that were deliberately

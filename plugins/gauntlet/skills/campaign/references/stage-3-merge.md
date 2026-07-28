@@ -17,9 +17,9 @@ the counters would merge a PR whose disputed finding or API change the user has 
 whose diff the reassessment pass is in the middle of rescoping. For a park, only the user's answer unparks
 it, and **to the `status` that
 answer dictates** — `in_review` for a **resume** answer; terminal `aborted` for a **terminal** one (a
-`declined` API change, a `blocker_ruling` of `abort`), which never returns to `in_review` and is never
-merged (`loop-control.md` step 3, "Only the user's answer unparks a PR", owns the mapping). Until the
-answer lands the PR is skipped, never merged.
+`declined` API change, a `blocker_ruling` of `abort`), which never returns to `in_review` and which
+the campaign never merges (`loop-control.md` step 3, "Only the user's answer unparks a PR", owns the
+mapping). Until the answer lands the PR is skipped, never merged.
 
 ### The merge precondition — TWO enums, and NEITHER of them is a CI signal
 
@@ -132,7 +132,11 @@ branch — the repo's "Automatically delete head branches" setting alone governs
 
 Each phase leaves a durable or safely repeatable checkpoint. Re-run the same command after any failure:
 GitHub `MERGED` skips the merge call; base updates are fast-forward-only; absent owned worktrees/branches
-count as completed cleanup; a terminal ledger row is a no-op.
+count as completed cleanup; a terminal ledger row is a no-op — except an `aborted` row whose live view
+reports MERGED, which is the user merging the PR this run gave up on. That is RECORDED: one terminal write
+flips `status` to `merged` and refreshes the GitHub-owned fields from the same view, and nothing else runs —
+no merge, no base-sync, and no cleanup of the worktree and branch the abort handed back. `files-and-ledger.md`,
+"GitHub-owned vs campaign-owned row fields", owns which fields move and which deliberately do not.
 
 When the checked-out local base is what git fast-forwards and an unrelated actor's **uncommitted** edits in
 that checkout block it, the command **refuses and lists the blocking paths it detected** (each staged, unstaged,

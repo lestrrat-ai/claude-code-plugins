@@ -757,19 +757,129 @@ def t_repeat_after_closed_terminal_is_noop():
         finally:
             finish(td, real)
 
-    # Guardrail: an `aborted` row whose live PR is OPEN or MERGED is a CONTRADICTION, not a no-op — the PR is
-    # no longer closed-without-merge. It must REFUSE naming the mismatch (not the generic "not in_review"),
-    # mirroring the merged+non-MERGED guard.
-    for live_state in ("OPEN", "MERGED"):
-        td, root, f, led, real = scenario(state=live_state, status="aborted")
-        try:
-            code, _result, err = invoke(f, led, root)
-            check(code != 0 and "aborted but GitHub state is" in err,
-                  f"aborted+{live_state} must refuse as a contradiction, got code={code} err={err!r}")
-            check(f.merged_calls == 0, f"aborted+{live_state} contradiction must not merge")
-        finally:
-            finish(td, real)
+    # Guardrail: an `aborted` row whose live PR is OPEN is a CONTRADICTION, not a no-op — the PR is neither
+    # closed-without-merge nor merged. It must REFUSE naming the mismatch (not the generic "not in_review"),
+    # mirroring the merged+non-MERGED guard. (aborted+MERGED is NOT a contradiction — it is the user merging
+    # the PR this run gave up on, recorded by t_aborted_row_records_external_merge_whole.)
+    td, root, f, led, real = scenario(state="OPEN", status="aborted")
+    try:
+        code, _result, err = invoke(f, led, root)
+        check(code != 0 and "aborted but GitHub state is" in err,
+              f"aborted+OPEN must refuse as a contradiction, got code={code} err={err!r}")
+        check(f.merged_calls == 0, "aborted+OPEN contradiction must not merge")
+    finally:
+        finish(td, real)
 
+
+def t_aborted_row_records_external_merge_whole():
+    """An `aborted` row GitHub reports MERGED records `merged` AND the whole GitHub-owned set, together.
+
+    THIS IS THE MUTATION PIN for the two-kinds-of-field rule (`files-and-ledger.md`, "GitHub-owned vs
+    campaign-owned row fields"). Drop `github_owned=` from the terminal write in `merge.py` and the row
+    still reaches `merged` — every "did it record the merge?" check keeps passing — while `head_sha` and
+    `base_branch` stay at their ABORT-time values, so the row claims a merge of the wrong commit into the
+    wrong branch. The three field checks below are what go red.
+
+    The drift knobs are the ORDINARY post-abort situation, not a corner case: bailout leaves the PR OPEN and
+    strips this run's labels (`bailout-and-final-report.md`), so by the time the user merges it themselves
+    the head may have moved and the base may have been retargeted. That is precisely why this path relaxes
+    the live-ref pins — and precisely why it must refresh what those pins used to guarantee.
+    """
+    live_head = "b" * 40
+    td, root, f, led, real = scenario(state="MERGED", status="aborted", labels=[],
+                                      view_head=live_head, view_base="release", view_branch="renamed")
+    try:
+        # Seed the campaign-owned fields AWAY from their defaults, so "frozen" and "reset at the accessor
+        # door" are both discriminating checks rather than assertions about untouched defaults.
+        seed_header, seed_rows = L.load(led)
+        seed_rows[0].update(ci_reason="required check absent: integration-tests",
+                            blocker_ruling="abort@2026-07-04T17:00:00Z", review_rounds="4",
+                            base_ok_sha=SHA, settled_strikes="3", unusable_refetches="1",
+                            ci_stalled_since="2026-07-04T10:00:00Z", ci_fingerprint="sha256:seed")
+        L.dump(led, seed_header, seed_rows)
+
+        code, result, err = invoke(f, led, root)
+        check(code == 0 and result is not None and result["status"] == "merged",
+              f"a verified external merge of an aborted row was not recorded: code={code} err={err!r}")
+        check(result is not None and result["cleanup"] == {},
+              f"the record is ledger-only, so it owns no cleanup result: {result}")
+
+        row = L.find_row(L.load(led)[1], "9")
+        check(row is not None, "fixture ledger lost PR 9")
+        assert row is not None
+        # GITHUB-OWNED: all three move, from the one view, in the one write.
+        check(row["status"] == "merged", f"status was not recorded: {row['status']!r}")
+        check(row["head_sha"] == live_head,
+              f"head_sha kept its abort-time value {row['head_sha']!r}, not the merged head {live_head!r}")
+        check(row["base_branch"] == "release",
+              f"base_branch kept its abort-time value {row['base_branch']!r}, not the live base 'release'")
+        # CAMPAIGN-OWNED: this run's own account of its work is not revised by a later external event.
+        check(row["reviews_ok"] == "2" and row["tier"] == "HIGH" and row["review_rounds"] == "4"
+              and row["ci_reason"] == "required check absent: integration-tests"
+              and row["blocker_ruling"] == "abort@2026-07-04T17:00:00Z",
+              f"a campaign-owned field was rewritten by the external merge: {row}")
+        # The head moved, so the head-move reset fired AT THE DOOR (`ledger.py`'s `apply_head_sha`) — this
+        # site hand-resets nothing, and `stage-2-ci.md`'s "any head write through the accessor" rule holds.
+        check(all(row[field] == L.ROW_DEFAULTS[field] for field in L.LIVENESS_COUNTERS)
+              and row["base_ok_sha"] == L.ROW_DEFAULTS["base_ok_sha"],
+              f"the head-move reset did not fire at the accessor door: {row}")
+        # Nothing but the ledger write ran: no second merge, no cleanup, no base fast-forward.
+        argvs = [argv for argv, _ in f.calls]
+        check(f.merged_calls == 0 and not any(a[:3] == ["gh", "pr", "merge"] for a in argvs),
+              "recording the disposition issued a merge")
+        check(not any("worktree" in a and "remove" in a for a in argvs), "the record ran owned cleanup")
+        check(not any(a[3:5] == ["merge", "--ff-only"] for a in argvs),
+              "the record fast-forwarded a base this run never merged into")
+        check(f.worktree_present and f.branch_present,
+              "the record destroyed resources the abort returned to the user")
+
+        # Idempotent: a re-run over the now-`merged` row is the ordinary merged-repeat no-op — and it is
+        # reached BECAUSE the refresh landed, since that path pins the live head and base against the row
+        # (unchanged main behavior) and an unrefreshed row would refuse there. The row's `branch` is
+        # campaign-owned (it names the LOCAL branch, which a GitHub-side rename does not touch), so the
+        # merged-repeat's headRefName pin still sees the rename; drop that one knob for the re-run.
+        f.view_branch = f.branch
+        code, result, err = invoke(f, led, root)
+        check(code == 0 and result is not None and result["status"] == "already-complete",
+              f"re-running over the recorded disposition was not a no-op: code={code} err={err!r}")
+    finally:
+        finish(td, real)
+
+    # FAIL CLOSED on a live value that cannot be what it claims to be: a headRefOid that is not a full
+    # 40-char object id is refused BEFORE any mutation, so the store never caches an unusable copy.
+    td, root, f, led, real = scenario(state="MERGED", status="aborted", labels=[], view_head="b" * 7)
+    try:
+        code, _result, err = invoke(f, led, root)
+        check(code != 0 and "headRefOid" in err, f"a malformed live head was not refused: {err!r}")
+        check(status(led) == "aborted", "a refused refresh still mutated the ledger")
+    finally:
+        finish(td, real)
+
+    # …and FAIL CLOSED the other way: a live base the ROW CANNOT REPRESENT. `-` is the `base_branch`
+    # schema's own "not set / inherit the header" spelling, so caching it would make a PR that HAS a base
+    # read as carrying none. The DIAGNOSTIC is the thing pinned here, not merely the refusal: GitHub
+    # resolved this base and reported it, so "unresolved" — which is what `_validate_ref` correctly means
+    # about the LEDGER-side `-` — would be a false report about a live value. The check is a substring the
+    # generic wording cannot satisfy.
+    #
+    # HARNESS LIMIT this fixture is scoped to, deliberately: the Fake stubs `check-ref-format` to succeed
+    # unconditionally, so only the pure-Python guard is exercisable here; a fixture asserting on a name
+    # GIT rejects would pass for the wrong reason. `-` is that pure-Python case.
+    td, root, f, led, real = scenario(state="MERGED", status="aborted", labels=[],
+                                      view_head="b" * 40, view_base=L.ROW_DEFAULTS["base_branch"])
+    try:
+        before = led.read_bytes()
+        code, _result, err = invoke(f, led, root)
+        check(code != 0 and "cannot represent" in err,
+              f"an unrepresentable live base was not refused for the right reason: {err!r}")
+        check("unresolved" not in err,
+              f"the refusal claims GitHub failed to resolve a base it did resolve: {err!r}")
+        # Byte-identical, not merely `aborted`: a partial write of `head_sha` alone must not pass either.
+        check(led.read_bytes() == before, "a refused refresh still wrote the ledger")
+        check(status(led) == "aborted", "a refused refresh moved the row off its recorded abort")
+        check(f.merged_calls == 0, "a refused refresh issued a merge")
+    finally:
+        finish(td, real)
 
 def t_head_race_between_view_and_merge_refuses_before_landing():
     # A push advances the live tip to a DIFFERENT SHA in the window between the pre-merge view (which
@@ -1668,7 +1778,9 @@ CASES = [
     ("merge-accepted", "MERGED confirmation outranks a lost merge response", t_merge_transport_failure_after_acceptance_continues),
     ("terminal-write-resume", "a failed terminal write resumes after already-completed cleanup", t_terminal_write_failure_resumes_after_cleanup),
     ("terminal-repeat", "repeated invocation after terminal state is a no-op", t_repeat_after_terminal_is_noop),
-    ("aborted-terminal-repeat", "repeating after a CLOSED close-out is an already-complete no-op (moved refs tolerated); aborted+OPEN/MERGED refuses as a contradiction", t_repeat_after_closed_terminal_is_noop),
+    ("aborted-terminal-repeat", "repeating after a CLOSED close-out is an already-complete no-op (moved refs tolerated); aborted+OPEN refuses as a contradiction", t_repeat_after_closed_terminal_is_noop),
+    ("aborted-external-merge", "an aborted row GitHub reports MERGED records `merged` AND refreshes every GitHub-owned field from that view, freezes the campaign-owned ones, merges/cleans nothing, and fails closed on a malformed live head or an unrepresentable live base",
+     t_aborted_row_records_external_merge_whole),
     ("head-race", "--match-head-commit refuses a tip that advanced before the merge landed", t_head_race_between_view_and_merge_refuses_before_landing),
     ("merge-method", "merge method is a validated input; squash-disabled repo has a prevailing-method recourse", t_merge_method_input_validated_and_applied),
     ("absent-resume", "an absent-but-unfinalized MERGED row resumes its remaining phases through run", t_absent_snapshot_merged_row_resumes_via_run),

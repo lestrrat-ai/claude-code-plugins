@@ -375,9 +375,11 @@ Header field notes (the header fields above; per-row fields follow):
   **admission** is LIVE too: adoption surfaces PRs on DIFFERENT bases into one run, each row owning the
   base it was created with, and PRs adopted together need **NOT** agree on `baseRefName` (`pr-adoption.md`,
   "PR adoption"). A new run leaves the header `base_branch` at `-` and records only per-row bases. It is **TOOL-OWNED and
-  IMMUTABLE after creation** (`CREATE_ONLY` in `scripts/ledger.py`): `add-row` writes it and **`set` has no
-  `--base-branch` flag**, so the recorded base can never be rewritten — the campaign does not migrate a row
-  to a new base. The default is **`-`**, which is both the schema's "not set" spelling **and** its "inherit
+  FIXED FOR THE ROW'S WORKING LIFE** (`CREATE_ONLY` in `scripts/ledger.py`): `add-row` writes it and **`set` has no
+  `--base-branch` flag**, so no driver can retarget a row it is still driving — the campaign does not migrate
+  a live row to a new base. The one write outside those doors is the **terminal** GitHub-owned refresh
+  ("GitHub-owned vs campaign-owned row fields"), which is not a retarget: it fires only on a row that is
+  already done, and it records the base the PR actually merged into. The default is **`-`**, which is both the schema's "not set" spelling **and** its "inherit
   the legacy header" signal, and is **DISTINCT from any explicit base name**: a `-` row inherits, an
   explicit-base row does not — which is what lets one run mix legacy inheriting rows with new explicit-base
   rows. An old ledger's rows read back `-` and resolve exactly as they always did, with no migration.
@@ -519,9 +521,13 @@ Header field notes (the header fields above; per-row fields follow):
   the user answers, so a later heartbeat — or a fresh agent that adopted the run — reads it and never
   re-asks about a PR already decided. It records the decision (an input); `status` stays the
   live position, so the two never contradict: `approved` pairs with the PR back in normal
-  gate flow, `declined` with a terminal `aborted`. A one-off approval lands here only; it never flips
+  gate flow, `declined` with a terminal `aborted` — **campaign's own** transitions. `status` may still move
+  on afterward without touching this field, because it is GitHub-owned and this one is not ("GitHub-owned vs
+  campaign-owned row fields"). A one-off approval lands here only; it never flips
   the run-wide `api_changes` header.
-- `status` — `in_review` → `merged`, or `aborted`; plus the **HELD** (non-terminal) statuses below.
+- `status` — `in_review` → `merged`, or `aborted`; plus the **HELD** (non-terminal) statuses below. The
+  merged/closed aspect of it is **GitHub-owned**, so `aborted` → `merged` is also reachable: the abort
+  leaves the PR open and the user may merge it themselves ("GitHub-owned vs campaign-owned row fields").
   **The vocabulary is CLOSED**: `STATUSES` in `scripts/ledger.py` is the one enumeration, and
   `set`/`add-row --status` **refuses** any value outside it. That refusal is what makes the dispatch
   allow-list safe to be strict — a status the guard cannot clear is a status nothing can write, so one
@@ -598,6 +604,40 @@ Header field notes (the header fields above; per-row fields follow):
     keep being driven, and the answer folds in as its own heartbeat (`loop-control.md` step 3, "Only the
     user's answer unparks a PR" — the owning definition of the record + unpark for **every** park class).
     NEVER park without surfacing the question, and NEVER park into a state whose exit is undefined.
+
+### GitHub-owned vs campaign-owned row fields
+
+A row holds **two kinds** of field, and the difference decides what a **live GitHub read** may write.
+
+| Kind | Authority | Members |
+|------|-----------|---------|
+| **GitHub-owned** | GitHub. The row only CACHES a copy | `head_sha`, `base_branch`, and the merged/closed aspect of `status`. `GITHUB_OWNED_FIELDS` in `scripts/merge.py` pairs each cached field with the live `gh pr view` field it copies |
+| **Campaign-owned** | This run. GitHub knows nothing about them | every other row field — what this run decided, spent, was told, or created |
+
+**A live read that updates one GitHub-owned field MUST update them ALL, from that SAME snapshot, in ONE
+write.** They describe one PR at one instant; refreshed apart, the row states a combination that never
+existed. `ci` is derived from GitHub too but is **NOT** in this set — `ci-status.py`'s own derivation path
+owns it, SHA-pinned and fail-closed, and no other site may write it.
+
+**Campaign-owned fields stay FROZEN at whatever this run last recorded, on purpose.** They are this run's
+account of its own work, and no later external event revises it: a PR the user merges after the campaign
+gave up does not retroactively give it more review rounds, a lower tier, or the user's approval. The one
+apparent exception is not one — refreshing `head_sha` goes through `ledger.py`'s `apply_head_sha` accessor
+like every other head write, so a genuine head move fires the head-move reset at the door (the `head_sha`
+field, "What a genuine head move resets"). That voids SHA-pinned evidence about the OLD head; it does not
+revise anything this run decided.
+
+**The base refresh raises the same question about its neighbours, and the answer is not here:**
+`bailout-and-final-report.md`'s **What each base REQUIRED** bullet owns it.
+
+**Where this actually fires: `merge.py`'s terminal write, on an `aborted` row GitHub now reports MERGED.**
+The abort leaves the PR open for its owner (`bailout-and-final-report.md`), so the user may merge it
+themselves; the finalizer records that (`stage-3-merge.md`). Recording `status = merged` **alone** is the
+failure this rule exists to stop: the row then reads `merged` beside an abort-time `head_sha` and
+`base_branch`, so the final report and the carryover projection name **the wrong commit and the wrong base
+branch** — and a user who retargeted the PR before merging it gets a history file asserting a merge into a
+branch the PR never touched. Refreshing the set together removes that whole class instead of qualifying
+each description of it.
 
 ### Review-pass artifacts — use `scripts/review-pass.py`
 
