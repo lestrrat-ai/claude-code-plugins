@@ -129,15 +129,19 @@ is the absence of a verdict.
 
 **On a capable external process failure, retry once. If it still can't deliver a verdict, take
 `runtime-adapter.md`'s fresh native fallback transition** rather than stalling, looping, or skipping the
-gate. A pre-launch capability miss (the paired CLI is absent) has no process to retry and takes that
+gate. **Before that retry, take `runtime-adapter.md`'s provider-limit row for the failure capture** — it
+owns whether the pass waits before the retry, or skips the retry altogether. A pre-launch capability miss
+(the paired CLI is absent) has no process to retry and takes that
 fallback immediately. Note in the final report which cross-engine routes were unavailable and which passes
 used the recovery profile or ran on the native-worker fallback. The gate is unchanged: a worker pass is a fresh, context-isolated re-roll that counts toward
 the review gate exactly like an external pass. The runtime owner defines the native limitations and the
 only machine-blocker transition; do not restate them here.
 
-**Prepare every retry from `runtime-adapter.md`, "Review preparation mapping".** The transition does not
-inspect provider error text: it assigns `codex-recovery` to the existing external Codex attempt `2` and
-`standard` to every other route. The retry always starts a fresh process and never resumes the failed
+**Prepare every retry from `runtime-adapter.md`, "Review preparation mapping".** The retry's prompt
+profile, model and session choice does not inspect provider error text: preparation assigns
+`codex-recovery` to the existing external Codex attempt `2` and `standard` to every other route. That is
+a statement about PREPARATION only, and never about the route decision above, which does read the
+capture. The retry always starts a fresh process and never resumes the failed
 external session. The profile changes only the opening framing, does not require a model switch, and
 keeps the complete shared prompt contract, attempt budget, producer, and canonical argv. The shipped
 adapter has no trusted alternate-model mapping, so it passes no model-selection argument.

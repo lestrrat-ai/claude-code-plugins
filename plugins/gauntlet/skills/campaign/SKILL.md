@@ -286,6 +286,7 @@ a line the tool writes.
 | `emit-finding.py` | Reviewer's door: record one FINDING (the only sanctioned way; findings must anchor or they do not gate) | `references/stage-2-review-gate.md` |
 | `emit-amendment.py` | Reviewer's door: raise one plan amendment (the only sanctioned way; `ts` is tool-stamped, the proposed unit is validated like a plan unit) | `references/stage-2-review-gate.md` |
 | `reviewer-liveness.py` | Probe whether a dispatched reviewer's output stream is still moving; decides nothing, always exits 0 | `references/stage-2-review-gate.md` |
+| `limit-retry.py` | `decide` — whether a failed external reviewer WAITS (and how long) before its one retry, or falls back natively now; reads a fixed provider-limit marker set plus the `Retry-After` header, holds no state, adds no attempt | `references/runtime-adapter.md` |
 | `base-preflight.py` | Decide proceed / rebase-first / recheck / park from live merge-state plus fetched base ancestry before review or fix; performs no rebase — with `--file`, `proceed` records `base_ok_sha` and `park` records the ledger-owned machine blocker | `references/stage-2-review-gate.md` |
 | `format-preflight.py` | `check` — refuse to format any file whose formatter-write could escape the worktree (the file, or any path component, is a symlink); reads only, formats nothing | `references/stage-2-ci.md` |
 | `worker-prompt.py` | `fix` — bind one complete review/CI fix prompt and logical model class, then atomically publish its exact bytes + metadata | `references/fix-subagent-contract.md` |

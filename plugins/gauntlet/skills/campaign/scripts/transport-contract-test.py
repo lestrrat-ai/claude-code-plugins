@@ -794,10 +794,25 @@ def check_document_contract() -> None:
     require("producer rule applies to initial launch, relaunch, and native fallback" in reviewer,
             "native report producer no longer covers every attempt state")
     reviewer_flat = " ".join(reviewer.split())
-    require("does not inspect provider error text" in reviewer_flat and
+    # PR #175's guarantee, pinned to the SUBJECT it actually guards. The bare phrase "does not inspect
+    # provider error text" once read as a denial of the route decision too, which does read the capture
+    # (`runtime-adapter.md`'s provider-limit row). Pinning the scoped subject keeps #175 gating without
+    # re-forbidding the route.
+    require("The retry's prompt profile, model and session choice does not inspect provider error text"
+            in reviewer_flat and
             "never resumes the failed external session" in reviewer_flat and
             "does not require a model switch" in reviewer_flat,
             "reviewer retry recovered provider matching, session resume, or model switching")
+    # The route to the limit decision, pinned at BOTH ends: reviewer.md owns the retry and must send the
+    # capture to the row, and runtime-adapter.md's row must still name the command that decides it.
+    # Without these the helper silently becomes unreachable and the retry rots back to an immediate one.
+    require("Before that retry, take `runtime-adapter.md`'s provider-limit row for the failure capture"
+            in reviewer_flat,
+            "reviewer.md no longer routes the failure capture through the provider-limit row before "
+            "its one retry")
+    require("scripts/limit-retry.py decide --message-file <failure_capture> --attempts-spent" in runtime
+            and "failure_capture: Path | Null" in runtime,
+            "runtime-adapter.md lost the provider-limit decision or its transition input")
     stage_flat = " ".join(stage.split())
     require('"--file", ledger_file' in stage_flat and
             '"--prompt-profile", prompt_profile' in stage_flat,

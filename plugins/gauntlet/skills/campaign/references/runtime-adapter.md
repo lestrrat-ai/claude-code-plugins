@@ -157,17 +157,25 @@ review_transition(
   capability: ReviewIsolationCapability,
   event: "selected" | "external-system-failure" | "native-system-failure",
   external_retry_spent: Bool,
-  native_attempts_exhausted: Bool
+  native_attempts_exhausted: Bool,
+  failure_capture: Path | Null
 ) -> ReviewAction
 ```
 
-This operation owns every route change:
+`failure_capture` is the path to the failed process's captured output. It is `Null` whenever there is no
+such output to read — on `selected`, and on a pre-launch capability miss, which never started a process.
+
+This operation owns every route change. **The rows are mutually exclusive: read each row's whole Input
+cell before taking it.** The row that runs `limit-retry.py` is the **provider-limit row** (`reviewer.md`
+points here by that name): a failure that arrives with a capture matches it and no other, and reaches
+the retry row only by being sent there.
 
 | Input | Action |
 |---|---|
 | selected cross-engine route, paired CLI available | `launch-external` at native-limitation level (no stronger-boundary claim) |
-| `external-system-failure`, external retry not spent | re-evaluate capability, then `retry-external` only if still available |
-| selected cross-engine route unavailable before launch (paired CLI absent), or `external-system-failure` after retry | report the failure, then `fallback-native` (disclosed) |
+| `external-system-failure` with a non-`Null` `failure_capture`, external retry not spent | decide first with `python3 <skill-dir>/scripts/limit-retry.py decide --message-file <failure_capture> --attempts-spent <external launches this pass has made>` (never omit `--attempts-spent`; it has no default). On `wait-external`, sleep `wait_seconds` and then take the retry row below. On `fallback-native`, skip the retry and take the reported-failure row below. |
+| `external-system-failure`, external retry not spent, and either `failure_capture` is `Null` or the provider-limit row above sent it here | re-evaluate capability, then `retry-external` only if still available |
+| selected cross-engine route unavailable before launch (paired CLI absent), or `external-system-failure` after retry, or the provider-limit row above sent it here | report the failure, then `fallback-native` (disclosed) |
 | native route/fallback can follow the installed contract | `launch-native` with the native limitations below |
 | native attempts cannot follow the installed contract or produce valid artifacts and their budget is exhausted | `park-machine-blocker` |
 
