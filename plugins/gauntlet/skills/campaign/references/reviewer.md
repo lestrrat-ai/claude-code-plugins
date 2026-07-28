@@ -124,9 +124,18 @@ the former puts untrusted bytes at the wrong boundary, while the latter can stay
 
 An external reviewer can fail in a way that yields **no usable verdict**: quota/rate-limit
 exhaustion, auth failures, timeouts, other system errors, or a refusal to perform the task at all.
-Distinguish this from a real review — a
-run that returns an actual finding list or a `VERDICT: …` line is a *result*, act on it. A *failure*
-is the absence of a verdict.
+Distinguish this from a real review by the report's TERMINAL verdict, never by a `VERDICT:` line being
+present at all — a refusal can carry one, because the review prompt asks a stopping reviewer for one:
+
+- A *result* is a report whose terminal line is a BINARY verdict — `VERDICT: SATISFIED` or
+  `VERDICT: NOT SATISFIED`. Act on it.
+- A *failure* is the absence of one: no terminal verdict at all, or a terminal `VERDICT: DEFERRED`
+  pointing at no outstanding `plan_amendment_request` (the spurious deferral of
+  `stage-2-review-gate.md`, "Does this pass COUNT? — ASK THE TOOL, never the eye"). Put the captured
+  text through the backoff owner BEFORE any retry, so a reviewer that declined the task reaches
+  `stop-and-ask` instead of being retried and then answered by the orchestrator's own engine.
+- A terminal `VERDICT: DEFERRED` that DOES point at an outstanding `plan_amendment_request` is neither.
+  It keeps routing through progress state and is not a system failure.
 
 **On a capable external process failure, take the action `runtime-adapter.md`, "External reviewer
 failure — marker class and rough backoff", returns** rather than stalling, looping, or skipping the

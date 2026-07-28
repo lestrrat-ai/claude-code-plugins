@@ -122,8 +122,11 @@ NOT_FOUND_MARKERS = (
     "no such file or directory",
     "executable file not found",
     "unknown option",
-    "usage:",
 )
+#: Same class, weaker evidence. A help banner is a strong hint the tool could not run, but it can ride
+#: along with a real limit or auth message in the same capture, so it is matched only AFTER the classes
+#: a wait or the operator can fix.
+NOT_FOUND_WEAK_MARKERS = ("usage:",)
 #: The account cannot authenticate. A wait cannot fix it either; only the operator can.
 AUTH_MARKERS = (
     "authentication failed",
@@ -168,12 +171,15 @@ TRANSIENT_MARKERS = (
 #: Class order. The first class with a matching marker wins; `unknown` is what is left. Refusal
 #: leads because a declined task is not a transport failure and must never be recovered by swapping
 #: in a same-engine reviewer. The two "cannot run at all" classes come next so that, say, `codex:
-#: command not found` is never read as a retryable blip.
+#: command not found` is never read as a retryable blip. The WEAK not-found tier sits after the
+#: classes a wait or the operator can fix, because a help banner alongside a real limit message means
+#: the limit — but still before `transient`, so a banner naming a `--timeout` flag stays not-found.
 CLASS_ORDER = (
     (REFUSAL, REFUSAL_MARKERS),
     (NOT_FOUND, NOT_FOUND_MARKERS),
     (AUTH, AUTH_MARKERS),
     (USAGE_LIMIT, USAGE_LIMIT_MARKERS),
+    (NOT_FOUND, NOT_FOUND_WEAK_MARKERS),
     (TRANSIENT, TRANSIENT_MARKERS),
 )
 #: Classes that end the pass's external route immediately: a wait would change nothing.

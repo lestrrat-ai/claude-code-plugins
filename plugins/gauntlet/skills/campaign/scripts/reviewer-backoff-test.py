@@ -131,6 +131,11 @@ def t_refusal_stops_and_asks() -> None:
     # A spent retry budget must not downgrade a refusal into a same-engine native pass.
     check(action("I'm sorry, but I can't help with that.", B.MAX_EXTERNAL_ATTEMPTS)
           == B.STOP_AND_ASK, "a spent budget downgraded a refusal to native fallback")
+    # A refusal that ends with the protocol's own deferral line is still a refusal. The prompt ASKS a
+    # stopping reviewer for that line, so `reviewer.md` routes it to this helper before any retry.
+    check(action("This request violates the content policy.\n"
+                 "VERDICT: DEFERRED — cannot review this request.") == B.STOP_AND_ASK,
+          "a refusal carrying a terminal DEFERRED line stopped reaching the operator")
     # And refusal outranks a transient marker in the same text.
     mixed = "the request timed out, and I cannot help with that anyway"
     check(kind(mixed) == B.REFUSAL, "a transient marker outranked a refusal in the same message")
@@ -185,6 +190,13 @@ def t_line_anchored_usage_banner() -> None:
           "telemetry prose `token usage:` was read as a CLI help dump")
     check(kind("  usage: codex\nmemory usage: 82%") == B.NOT_FOUND,
           "an indented help banner on a later line stopped matching")
+    # …and the banner is the WEAK half of not-found: alongside a real limit message, the limit wins,
+    # so the case this helper exists for keeps its wait and its one external retry.
+    riding_along = "usage: rate limit exceeded; retry after 60 seconds"
+    check(kind(riding_along) == B.USAGE_LIMIT,
+          "a banner riding along with a real limit message claimed not-found")
+    check(action(riding_along) == B.WAIT_EXTERNAL,
+          "a banner riding along with a real limit message dropped the wait and fell back")
 
 
 # --- the guess is approximate, and unreadable is normal -----------------------

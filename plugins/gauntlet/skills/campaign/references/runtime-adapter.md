@@ -157,9 +157,18 @@ review_transition(
   capability: ReviewIsolationCapability,
   event: "selected" | "external-system-failure" | "native-system-failure",
   external_retry_spent: Bool,
-  native_attempts_exhausted: Bool
+  native_attempts_exhausted: Bool,
+  failure_text: Text | null
 ) -> ReviewAction
 ```
+
+`failure_text` is the captured external-process output. It is set only for `external-system-failure`,
+and it is what the row below hands to `reviewer-backoff.py decide`; every other event passes `null`.
+
+**`ReviewAction` is an action NAME, never a record** — the "Review preparation mapping" table below
+enumerates it. The caller runs `decide` itself and KEEPS the whole `BackoffDecision`, so `wait_seconds`
+travels with the caller into the bounded wait described under "External reviewer failure" below; it
+never needs to ride on the returned action.
 
 This operation owns every route change:
 
