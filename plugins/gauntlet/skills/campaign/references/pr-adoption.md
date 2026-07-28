@@ -132,7 +132,7 @@ For each `#PR` to adopt:
    field is added.
 
    **Re-adoption base gate — AFTER the terminal-row refusal and BEFORE any refresh write.** The recorded
-   row `base_branch` is immutable, and
+   row `base_branch` is never retargeted, and
    the campaign never migrates a row to a new base. On a re-adoption, `pr-adopt.py` first compares the PR's
    live `baseRefName` with the row's `effective_base`; **if they differ it PARKS the row** (machine-blocker,
    `status = awaiting-user`, `ci_reason` = `base changed from <recorded> to <live>; not supported mid-run`,
@@ -150,7 +150,7 @@ For each `#PR` to adopt:
      it reused a pre-existing local branch or checkout;
      `pr` = `<N>`; `head_sha` = `headRefOid`.
    - **On a NEW row only, initialize:** `base_branch` = the PR's live `baseRefName` (recorded ONCE through
-     `add-row --base-branch`, immutable after — this is the per-row base every later action resolves through
+     `add-row --base-branch`, never retargeted after — this is the per-row base every later action resolves through
      `effective_base`); `reviews_ok` = `0` (no verdicts yet); `ci` = `pending`;
      `tier` = bootstrap `STANDARD`; after step 5 follow `stage-2-review-gate.md`, "2a-triage", for the
      complete procedure;

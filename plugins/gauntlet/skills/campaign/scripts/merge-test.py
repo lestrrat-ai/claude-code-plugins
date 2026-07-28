@@ -855,6 +855,31 @@ def t_aborted_row_records_external_merge_whole():
     finally:
         finish(td, real)
 
+    # …and FAIL CLOSED the other way: a live base the ROW CANNOT REPRESENT. `-` is the `base_branch`
+    # schema's own "not set / inherit the header" spelling, so caching it would make a PR that HAS a base
+    # read as carrying none. The DIAGNOSTIC is the thing pinned here, not merely the refusal: GitHub
+    # resolved this base and reported it, so "unresolved" — which is what `_validate_ref` correctly means
+    # about the LEDGER-side `-` — would be a false report about a live value. The check is a substring the
+    # generic wording cannot satisfy.
+    #
+    # HARNESS LIMIT this fixture is scoped to, deliberately: the Fake stubs `check-ref-format` to succeed
+    # unconditionally, so only the pure-Python guard is exercisable here; a fixture asserting on a name
+    # GIT rejects would pass for the wrong reason. `-` is that pure-Python case.
+    td, root, f, led, real = scenario(state="MERGED", status="aborted", labels=[],
+                                      view_head="b" * 40, view_base=L.ROW_DEFAULTS["base_branch"])
+    try:
+        before = led.read_bytes()
+        code, _result, err = invoke(f, led, root)
+        check(code != 0 and "cannot represent" in err,
+              f"an unrepresentable live base was not refused for the right reason: {err!r}")
+        check("unresolved" not in err,
+              f"the refusal claims GitHub failed to resolve a base it did resolve: {err!r}")
+        # Byte-identical, not merely `aborted`: a partial write of `head_sha` alone must not pass either.
+        check(led.read_bytes() == before, "a refused refresh still wrote the ledger")
+        check(status(led) == "aborted", "a refused refresh moved the row off its recorded abort")
+        check(f.merged_calls == 0, "a refused refresh issued a merge")
+    finally:
+        finish(td, real)
 
 def t_head_race_between_view_and_merge_refuses_before_landing():
     # A push advances the live tip to a DIFFERENT SHA in the window between the pre-merge view (which
@@ -1754,7 +1779,7 @@ CASES = [
     ("terminal-write-resume", "a failed terminal write resumes after already-completed cleanup", t_terminal_write_failure_resumes_after_cleanup),
     ("terminal-repeat", "repeated invocation after terminal state is a no-op", t_repeat_after_terminal_is_noop),
     ("aborted-terminal-repeat", "repeating after a CLOSED close-out is an already-complete no-op (moved refs tolerated); aborted+OPEN refuses as a contradiction", t_repeat_after_closed_terminal_is_noop),
-    ("aborted-external-merge", "an aborted row GitHub reports MERGED records `merged` AND refreshes every GitHub-owned field from that view, freezes the campaign-owned ones, merges/cleans nothing, and fails closed on a malformed live head",
+    ("aborted-external-merge", "an aborted row GitHub reports MERGED records `merged` AND refreshes every GitHub-owned field from that view, freezes the campaign-owned ones, merges/cleans nothing, and fails closed on a malformed live head or an unrepresentable live base",
      t_aborted_row_records_external_merge_whole),
     ("head-race", "--match-head-commit refuses a tip that advanced before the merge landed", t_head_race_between_view_and_merge_refuses_before_landing),
     ("merge-method", "merge method is a validated input; squash-disabled repo has a prevailing-method recourse", t_merge_method_input_validated_and_applied),

@@ -83,7 +83,7 @@ HEADER_DEFAULTS = {
     # inherits, through `effective_base` — the schema-owned resolver, the sanctioned door for base
     # consumers. Per-row base resolution is LIVE: adoption records each row's base and every consumer
     # resolves through the accessor, never this header directly. Mixed-base ADMISSION is ENABLED: adoption
-    # admits PRs on DIFFERENT bases into one run and each admitted row owns its immutable base. A new run
+    # admits PRs on DIFFERENT bases into one run and each admitted row owns its own recorded base. A new run
     # leaves this header at `-`; an old single-base ledger keeps its header value and every one of its rows reads it.
     # files-and-ledger.md, "Base branch", owns the field.
     "base_branch": "-",
@@ -270,7 +270,7 @@ ROW_FIELDS = (
     # and do not go green" (stage-2-ci.md). An old single-base row reads back `-` and inherits (its base IS the
     # header base); a new run writes `unknown` on each row until a grouped read succeeds.
     # An ordinary settable field: the grouped required-set refresh writes the
-    # canonical value through `set` (unlike `base_branch`, which is immutable after creation).
+    # canonical value through `set` — a door `base_branch` has no flag at (`CREATE_ONLY`, which owns why).
     "required_set",
     # WHERE THIS PR'S INTENT CAME FROM — the PROVENANCE of `<rundir>/intent-<pr>.md`:
     #   `-`                not adopted yet
@@ -826,7 +826,7 @@ def find_row(rows: list[dict], pr: str) -> "dict | None":
 # header value. They are the sanctioned door every base/required-set consumer resolves through, and that
 # resolution is LIVE: adoption records each row's base, and every consumer routes through these accessors
 # rather than reading the header field directly. Mixed-base ADMISSION is ENABLED: adoption admits PRs on
-# DIFFERENT bases into one run and each admitted row owns its immutable base.
+# DIFFERENT bases into one run and each admitted row owns its own recorded base.
 # `-` is the row default and means exactly "inherit the header": an old
 # ledger's rows carry `-` and resolve to the header value they always used, while a row with an explicit
 # base (or an explicit required set) has that value returned unchanged. This is what lets legacy inheriting

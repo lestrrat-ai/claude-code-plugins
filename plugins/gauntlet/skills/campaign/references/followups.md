@@ -203,7 +203,7 @@ about and one whose partial rejection strands the rest.
    from one PR** takes **that PR's recorded base** (`effective_base` of its ledger row) as the proposed
    target; a **run-level** follow-up has **no implicit target**, so the **user chooses** it. The user may
    override the proposed target before the PR is opened. The resulting PR then enters through **normal
-   adoption**, which records its live `baseRefName` once as its immutable row base (`pr-adoption.md`).
+   adoption**, which records its live `baseRefName` once as its own recorded row base (`pr-adoption.md`).
    **Adoption admits PRs on DIFFERENT bases into one run** (`pr-adoption.md`, "PR adoption"), so the
    follow-up folds into THIS run (step 4) **regardless of whether its target matches the existing rows** —
    a different-base target is adopted here, never diverted for base disagreement. That PR is opened

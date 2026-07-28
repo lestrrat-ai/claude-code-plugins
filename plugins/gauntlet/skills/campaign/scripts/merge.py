@@ -589,6 +589,14 @@ def _github_owned(root: Path, view: dict) -> dict:
     full 40-char lowercase object id, and `base_branch` is a name `git check-ref-format` accepts. A view
     that cannot satisfy both is refused here, before any mutation — the store never caches an unusable copy
     of a GitHub-owned field.
+
+    THE BOUNDARY, recorded rather than engineered around: a branch named exactly `-` is a name GitHub
+    accepts and the ROW CANNOT REPRESENT, because that one character is already the `base_branch` schema's
+    own "not set / inherit the legacy header" spelling (`ledger.py`, `ROW_DEFAULTS`). Caching it would make
+    a row that HAS a base read as carrying none. So this refuses instead, saying the value arrived and is
+    unrepresentable — NOT that it is unresolved, which is what `_validate_ref` means for the LEDGER-side
+    `-` and would be a false report about a base GitHub did resolve. Only that exact one-character name is
+    affected: hyphenated, dash-LEADING and dash-TRAILING names all record verbatim.
     """
     values: dict = {}
     for field, live in GITHUB_OWNED_FIELDS:
@@ -596,6 +604,12 @@ def _github_owned(root: Path, view: dict) -> dict:
     if not SHA_RE.match(values["head_sha"]):
         raise Refusal(
             f"live headRefOid {values['head_sha']!r} is not a full lowercase 40-character object id")
+    if values["base_branch"] == L.ROW_DEFAULTS["base_branch"]:
+        raise Refusal(
+            f"live baseRefName is {values['base_branch']!r}, which the ledger row cannot represent: that "
+            f"exact name is the `base_branch` schema's own \"not set / inherit the legacy header\" spelling "
+            f"(`ledger.py`). GitHub reported this base, so recording it as the row's would make a PR that "
+            f"HAS a base read as carrying none")
     _validate_ref(root, values["base_branch"], "live baseRefName")
     return values
 
