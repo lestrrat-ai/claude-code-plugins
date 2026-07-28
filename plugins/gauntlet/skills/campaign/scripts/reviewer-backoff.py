@@ -140,7 +140,17 @@ REFUSAL_MARKERS = (
     "won't provide assistance",
     "decline",
     "refusal",
-    "refused",
+    # The agent sense of this stem is anchored by the following infinitive. The bare stem `refused`
+    # also matched transport and telemetry wording -- a connection that "was refused by the
+    # upstream", a peer that "refused the connection", a merge "refused by the branch ruleset" --
+    # and, because a non-digit marker compiles with no word boundary, it matched as a pure substring
+    # inside `ECONNREFUSED`. Each of those manufactured a stop-and-ask and ended autonomous handling
+    # of the PR. Transport wording the marker no longer matches lands in `unrecognized` and takes
+    # the native fallback; it is deliberately NOT added to TRANSIENT_MARKERS.
+    # Disclosed residual, deliberately not excluded: browser wording of the form `<host> refused to
+    # connect` still classifies refusal. That is a browser page, not external-reviewer process
+    # output, and separating it from an agent refusal would need an exclusion list.
+    "refused to",
     "content filter",
     "content policy",
     "safety policy",
@@ -582,8 +592,10 @@ def _surviving_candidates(candidates: list[_ClassCandidate]) -> list[_ClassCandi
 
     A marker whose span sits inside a strictly longer marker's span explained less of the message
     than that longer one did, so it is discarded before any class ordering happens. This is what
-    stops the refusal marker `refused` from outranking the transient marker `connection refused`
-    that contains it.
+    stops the marker `timeout` from standing in for the longer marker `gateway timeout` that
+    contains it, so the reported reason names the marker that explained the whole phrase. The rule
+    is written on SPANS, not on classes: a containment pair that crosses two classes is dropped the
+    same way, and the drop decides which class survives to be ordered.
 
     Two bounds are deliberate. Merely OVERLAPPING claims are both kept: `service unavailable for 90
     bananas` must stay a broken timer, and its attempt span overlaps but does not sit inside the

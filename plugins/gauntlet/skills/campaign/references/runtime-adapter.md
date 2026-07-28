@@ -189,7 +189,7 @@ time with timezone-aware arithmetic.
 The classifier collects every marker, every parsed timer, and every timer attempt in the message
 FIRST, as a claim on a span of the text, and only then applies the class order. A marker whose span
 sits inside a strictly longer marker's span is a fragment of that longer one and is dropped before
-the class order runs, so `refused` inside `connection refused` never outranks it. Merely overlapping
+the class order runs, so `timeout` inside `gateway timeout` never stands in for it. Merely overlapping
 claims both survive, and only markers can drop markers: a timer span says nothing about the words
 inside it, so a timer attempt straddling refusal wording never swallows it.
 

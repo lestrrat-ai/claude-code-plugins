@@ -1198,6 +1198,7 @@ def review_action(capability: Mapping[str, object], *, event: str = "selected",
                 BACKOFF.RETRY_EXTERNAL,
                 BACKOFF.WAIT_EXTERNAL,
                 BACKOFF.FALLBACK_NATIVE,
+                BACKOFF.STOP_AND_ASK,
             ), f"reviewer backoff returned an unmapped action: {decision.action}")
             return decision.action
         require(event == "selected", f"unsupported external review event: {event}")
@@ -1333,6 +1334,33 @@ def run_isolation_transition_fixtures() -> None:
             current_time=now,
             pr=188,
         ) == "fallback-native", f"{route} opaque provider failure did not fall back")
+
+        # A reviewer refusal is the one transition() action that never reaches the operator through
+        # any other route: no retry, no wait, and no native fallback that would swap in a same-engine
+        # reviewer for a task the reviewer declined on content or policy grounds.
+        refusal = BACKOFF.classify("I'm sorry, but I can't help with that.", now)
+        require(refusal.kind == BACKOFF.REFUSAL,
+                f"{route} fixture text was not classified as a reviewer refusal")
+        require(review_action(
+            shipped,
+            event="external-system-failure",
+            external_failure=refusal,
+            session=BACKOFF.SessionState(),
+            current_time=now,
+            pr=188,
+        ) == "stop-and-ask", f"{route} reviewer refusal did not reach the operator")
+        require(review_action(
+            shipped,
+            event="external-system-failure",
+            external_failure=refusal,
+            session=BACKOFF.SessionState(),
+            current_time=now,
+            pr=188,
+            external_retry_spent=True,
+        ) == "stop-and-ask", f"{route} spent retry downgraded a reviewer refusal to native fallback")
+        clear = BACKOFF.SessionState()
+        require(BACKOFF.transition(refusal, now=now, state=clear, pr_number=188).state == clear,
+                f"{route} reviewer refusal changed the session state")
 
         # Paired CLI absent -> unavailable -> immediate native fallback, no retry consumed.
         absent = dict(shipped, launch_mechanism_present=False)

@@ -1092,7 +1092,11 @@ def test_retry_phrase_without_a_value_falls_back_without_disabling() -> None:
 
 
 def test_longer_marker_outranks_the_fragment_inside_it() -> None:
-    """`refused` is a fragment of `connection refused`; the marker explaining more text wins."""
+    """Transport connection-refused text stays transient: the marker explaining more text wins.
+
+    The live containment pair the rule now turns on is `timeout` inside `gateway timeout`, pinned by
+    reason string in ``test_longest_marker_supplies_the_reported_reason``.
+    """
 
     now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
     for message in (
@@ -1114,6 +1118,62 @@ def test_longer_marker_outranks_the_fragment_inside_it() -> None:
     permanent = MODULE.decide("permission denied; connection refused", now=now, pr_number=188)
     check(permanent.kind == MODULE.PERMANENT,
           "a permanent marker lost to a transport refusal")
+
+
+def test_longest_marker_supplies_the_reported_reason() -> None:
+    """The surviving containment pair is pinned by reason, not only by class.
+
+    `gateway timeout` contains `timeout` and both are transient, so the class alone cannot show that
+    the fragment was dropped. Without the fragment rule both messages report `transient marker:
+    timeout`, because `timeout` sits earlier in TRANSIENT_MARKERS.
+    """
+
+    now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    for message in ("gateway timeout", "504 gateway timeout"):
+        result = MODULE.classify(message, now)
+        check(result.kind == MODULE.TRANSIENT,
+              f"a gateway timeout was not classified transient: {message!r}")
+        check(result.reason == "transient marker: gateway timeout",
+              f"a fragment marker supplied the reason: {message!r} -> {result.reason!r}")
+
+
+def test_transport_wording_is_never_a_reviewer_refusal() -> None:
+    """Transport and telemetry text carrying the bare `refused` stem never stops the campaign.
+
+    Asserted as safe-outcome PROPERTIES, not as a specific kind: today these land unrecognized and
+    take the native fallback, and a later transient marker covering them must not move this fixture.
+    """
+
+    now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    for message in (
+        "The connection was refused by the upstream.",
+        "connection actively refused by the remote host",
+        "the peer refused the connection",
+        "the merge was refused by the branch ruleset",
+        "Error: connect ECONNREFUSED 127.0.0.1:443",
+    ):
+        result = MODULE.decide(message, now=now, pr_number=188)
+        check(result.kind != MODULE.REFUSAL,
+              f"transport wording was read as a reviewer refusal: {message!r}")
+        check(result.action != MODULE.STOP_AND_ASK,
+              f"transport wording manufactured a stop-and-ask: {message!r}")
+        check(result.external_disabled is False,
+              f"transport wording disabled the external route: {message!r}")
+
+
+def test_infinitive_anchored_refusal_still_stops_and_asks() -> None:
+    """Narrowing the stem to `refused to` keeps the agent sense reaching the operator."""
+
+    now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    for message in (
+        "the model refused to comply",
+        "the reviewer refused to continue this review",
+    ):
+        result = MODULE.decide(message, now=now, pr_number=188)
+        check(result.kind == MODULE.REFUSAL,
+              f"an agent refusal lost the refusal class: {message!r}")
+        check(result.action == MODULE.STOP_AND_ASK,
+              f"an agent refusal skipped the operator: {message!r}")
 
 
 def test_refusal_wording_survives_a_longer_timer_attempt() -> None:
@@ -1404,6 +1464,9 @@ CASES = [
     ("valueless-retry-phrase-transient", "a valueless retry phrase keeps a transient classification", test_retry_phrase_without_a_value_keeps_transient_classification),
     ("valueless-retry-phrase-unrecognized", "a valueless retry phrase falls back without disabling", test_retry_phrase_without_a_value_falls_back_without_disabling),
     ("marker-fragment-precedence", "a longer marker outranks the fragment inside it", test_longer_marker_outranks_the_fragment_inside_it),
+    ("marker-fragment-reason", "the longest marker supplies the reported reason", test_longest_marker_supplies_the_reported_reason),
+    ("transport-wording-not-refusal", "transport wording is never a reviewer refusal", test_transport_wording_is_never_a_reviewer_refusal),
+    ("infinitive-anchored-refusal", "infinitive-anchored refusal wording still stops and asks", test_infinitive_anchored_refusal_still_stops_and_asks),
     ("refusal-survives-timer-attempt", "a timer attempt never swallows refusal wording", test_refusal_wording_survives_a_longer_timer_attempt),
     ("valueless-trigger-transient", "a valueless trigger word keeps the transient class", test_trigger_word_without_a_value_keeps_the_transient_class),
     ("status-code-not-timer-value", "a status code after a trigger word is not a timer value", test_status_code_after_a_trigger_word_is_not_a_timer_value),
