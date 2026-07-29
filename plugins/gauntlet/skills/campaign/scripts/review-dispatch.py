@@ -543,7 +543,10 @@ def self_test() -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    # `__doc__` is this module's docstring, which is present; the guard states that for the checker and
+    # would name the impossible case loudly rather than crashing on None.
+    doc = __doc__ or ""
+    parser = argparse.ArgumentParser(description=doc.splitlines()[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
     command = sub.add_parser("prepare", help="materialize one fresh review launch attempt")
     command.add_argument("--run-dir", required=True, help="absolute active run-artifact directory")

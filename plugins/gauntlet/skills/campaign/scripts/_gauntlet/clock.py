@@ -1,4 +1,3 @@
-# ci: pyright
 """The `Z`-suffixed UTC stamp shared by Gauntlet campaign stores."""
 
 from __future__ import annotations

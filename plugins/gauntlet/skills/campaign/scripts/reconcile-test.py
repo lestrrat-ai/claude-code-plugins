@@ -48,7 +48,9 @@ check = checker(M.SelfTestFailure)
 
 # --- fixture builders ---------------------------------------------------------
 
-def entry(number, *, head=None, headRefOid=SHA_A, title=None, base="main", state="OPEN",
+# `headRefOid` is typed to admit None on purpose: the null-canonical-field fixture builds a
+# deliberately malformed entry to prove the refusal, and that null IS the input under test.
+def entry(number, *, head=None, headRefOid: "str | None" = SHA_A, title=None, base="main", state="OPEN",
           mergeable="MERGEABLE", mergeStateStatus="CLEAN", label_names=None, raw_labels=_UNSET) -> dict:
     """A canonical `prs.json` entry. Defaults carry the run label + `gauntlet-reviewing`, so the happy path
     passes the run-scope check; `label_names`/`raw_labels` override for the scope and malformed fixtures."""
@@ -84,11 +86,19 @@ def build_prs(tmp, entries) -> Path:
     return prs
 
 
-def run(ledger: Path, prs: Path, run_id=RUN_ID):
+def run(ledger: Path, prs: Path, run_id=RUN_ID) -> "tuple[int, dict, str]":
+    """Drive `detect` through the CLI and return (exit code, parsed stdout, stderr).
+
+    Every caller here is a SUCCESS-path fixture that goes straight on to subscript the parse, so empty or
+    unparseable stdout is a fixture failure and is raised as one. Returning `None` for it, as this used to,
+    only deferred the report to a confusing subscript of nothing several lines later. The refusal fixtures
+    do not come through here: they drive `capture_cli` themselves and assert on stderr.
+    """
     code, out, err = capture_cli(
         M.main, ["detect", "--ledger", str(ledger), "--prs", str(prs), "--run-id", run_id])
-    parsed = json.loads(out) if out.strip() else None
-    return code, parsed, err
+    if not out.strip():
+        raise M.SelfTestFailure(f"detect printed nothing on stdout (exit {code}, stderr {err!r})")
+    return code, json.loads(out), err
 
 
 def scenario(rows, entries, *, base_branch="main", run_id=RUN_ID):
@@ -473,7 +483,7 @@ def t_missing_canonical_field_refused():
 
 
 def t_null_canonical_field_refused():
-    code, out, err = _refusal([row(41)], [entry(41, headRefOid=None)])
+    code, _out, err = _refusal([row(41)], [entry(41, headRefOid=None)])
     check(code == 2, f"a null canonical field must exit 2, got {code}")
     check("null" in err and "headRefOid" in err, f"the refusal must name null + field, got {err!r}")
 
@@ -481,7 +491,7 @@ def t_null_canonical_field_refused():
 def t_wrong_type_canonical_field_refused():
     bad = entry(41)
     bad["number"] = "41"          # a string where an int is required
-    code, out, err = _refusal([row(41)], [bad])
+    code, _out, err = _refusal([row(41)], [bad])
     check(code == 2, f"a wrong-typed field must exit 2, got {code}")
     check("number" in err and "integer" in err, f"the refusal must name field + expected shape, got {err!r}")
 
@@ -489,7 +499,7 @@ def t_wrong_type_canonical_field_refused():
 def t_boolean_number_refused():
     bad = entry(41)
     bad["number"] = True          # bool is a subclass of int — must be refused, not read as a number
-    code, out, err = _refusal([row(41)], [bad])
+    code, _out, err = _refusal([row(41)], [bad])
     check(code == 2, f"a boolean number must exit 2, got {code}")
     check("number" in err and "boolean" in err, f"the refusal must name the boolean, got {err!r}")
 
@@ -504,25 +514,25 @@ def t_foreign_label_refuses_whole_file():
 
 def t_one_foreign_entry_refuses_the_whole_file():
     # A good entry FOLLOWED by a foreign one — the whole file is refused, the good row is NOT reconciled.
-    code, out, err = _refusal([row(41)], [entry(41), entry(99, label_names=["gauntlet-run-OTHER"])])
+    code, out, _err = _refusal([row(41)], [entry(41), entry(99, label_names=["gauntlet-run-OTHER"])])
     check(code == 2, f"one foreign entry refuses the whole file, got {code}")
     check(out.strip() == "", "a partly-foreign snapshot yields no facts at all")
 
 
 def t_labels_not_a_list_refused():
-    code, out, err = _refusal([row(41)], [entry(41, raw_labels="gauntlet-reviewing")])
+    code, _out, err = _refusal([row(41)], [entry(41, raw_labels="gauntlet-reviewing")])
     check(code == 2, f"a non-list `labels` must exit 2, got {code}")
     check("labels" in err, f"the refusal must name `labels`, got {err!r}")
 
 
 def t_malformed_label_element_refused():
-    code, out, err = _refusal([row(41)], [entry(41, raw_labels=[{"name": RUN_LABEL}, 123])])
+    code, _out, err = _refusal([row(41)], [entry(41, raw_labels=[{"name": RUN_LABEL}, 123])])
     check(code == 2, f"a malformed label element must exit 2, got {code}")
     check("label" in err, f"the refusal must name the label problem, got {err!r}")
 
 
 def t_duplicate_number_refused():
-    code, out, err = _refusal([row(41)], [entry(41), entry(41, head="dup")])
+    code, _out, err = _refusal([row(41)], [entry(41), entry(41, head="dup")])
     check(code == 2, f"a duplicate PR number in the snapshot must exit 2, got {code}")
     check("41" in err and "twice" in err, f"the refusal must name the duplicated PR, got {err!r}")
 
@@ -531,7 +541,7 @@ def t_prs_not_json_refused():
     with tempfile.TemporaryDirectory() as d:
         ledger = build_ledger(d, [row(41)])
         prs = build_prs(d, "{ not json")
-        code, out, err = capture_cli(
+        code, _out, err = capture_cli(
             M.main, ["detect", "--ledger", str(ledger), "--prs", str(prs), "--run-id", RUN_ID])
     check(code == 2, f"invalid JSON must exit 2, got {code}")
     check("not valid JSON" in err, f"the refusal must say the JSON is invalid, got {err!r}")
@@ -541,7 +551,7 @@ def t_prs_not_an_array_refused():
     with tempfile.TemporaryDirectory() as d:
         ledger = build_ledger(d, [row(41)])
         prs = build_prs(d, {"number": 41})     # an object, not an array
-        code, out, err = capture_cli(
+        code, _out, err = capture_cli(
             M.main, ["detect", "--ledger", str(ledger), "--prs", str(prs), "--run-id", RUN_ID])
     check(code == 2, f"a non-array prs.json must exit 2, got {code}")
     check("not a JSON array" in err, f"the refusal must say it is not an array, got {err!r}")
@@ -551,7 +561,7 @@ def t_missing_ledger_refused():
     with tempfile.TemporaryDirectory() as d:
         prs = build_prs(d, [entry(41)])
         missing = Path(d) / "nope.jsonl"
-        code, out, err = capture_cli(
+        code, _out, err = capture_cli(
             M.main, ["detect", "--ledger", str(missing), "--prs", str(prs), "--run-id", RUN_ID])
     check(code == 2, f"a missing ledger must exit 2, got {code}")
     check("no ledger" in err, f"the refusal must name the missing ledger, got {err!r}")

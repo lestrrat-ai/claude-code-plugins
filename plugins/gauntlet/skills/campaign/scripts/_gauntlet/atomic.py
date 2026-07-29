@@ -1,4 +1,3 @@
-# ci: pyright
 """Atomic text-file replacement shared by Gauntlet's local stores."""
 
 from __future__ import annotations

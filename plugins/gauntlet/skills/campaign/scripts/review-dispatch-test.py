@@ -429,7 +429,10 @@ def t_second_install_failure_rolls_back_first_file() -> None:
                 raise OSError("injected second-stage failure")
             return real_stage(path, content)
 
-        D._stage_bytes = fail_second_stage
+        # The suite swaps a private module attribute to inject the failure. `setattr` is how that is
+        # spelled for a ModuleType the checker knows nothing about; the assignment form claims an
+        # attribute the type does not declare.
+        setattr(D, "_stage_bytes", fail_second_stage)
         try:
             D.install_pair(prompt, b"prompt", progress, b"identity")
         except OSError as exc:
@@ -437,7 +440,7 @@ def t_second_install_failure_rolls_back_first_file() -> None:
         else:
             check(False, "second staging failure must refuse preparation")
         finally:
-            D._stage_bytes = real_stage
+            setattr(D, "_stage_bytes", real_stage)
         check(not prompt.exists() and not progress.exists(), "staging failure created a target file")
         check(not list(root.glob(".review-dispatch-*.tmp")), "staging failure left a temp file")
 

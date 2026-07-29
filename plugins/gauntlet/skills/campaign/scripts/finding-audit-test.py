@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# ci: pyright
 """Fixtures for ``finding-audit.py``'s complete-audit and fix-scope contract."""
 
 from __future__ import annotations

@@ -1,4 +1,3 @@
-# ci: pyright
 """The `gh pr view` fetch shared by Gauntlet campaign deciders."""
 
 from __future__ import annotations

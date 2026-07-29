@@ -286,7 +286,7 @@ def t_malformed_ledger_is_refused() -> None:
         ledger_path = tmp / "state.jsonl"
         out_dir = tmp / "history"
         ledger_path.write_text("this is not json at all\n", encoding="utf-8")
-        code, out, err = capture_cli(
+        code, out, _err = capture_cli(
             C.main, ["distill", "--ledger", str(ledger_path), "--out-dir", str(out_dir), "--now", NOW])
         check(code == C.EXIT_OPERATOR,
               f"a malformed ledger is an operator error ({C.EXIT_OPERATOR}); got {code}")
@@ -301,7 +301,7 @@ def t_header_without_run_id_is_refused() -> None:
         # A header whose run_id is unset (`-`) is not a run's ledger. (The base is no longer gated here.)
         header = dict(L.HEADER_DEFAULTS)  # run_id defaults to "-"
         rows = [_row("41", slug="s", status="merged", head_sha=SHA_A, tier="TRIVIAL", review_rounds="1")]
-        code, out, err, out_dir = _distill(tmp, header, rows)
+        code, out, err, _out_dir = _distill(tmp, header, rows)
         check(code == C.EXIT_OPERATOR,
               f"a header with no run_id is an operator error ({C.EXIT_OPERATOR}); got {code}")
         check("run_id" in err, f"the refusal says the run identity is missing: {err!r}")
@@ -319,7 +319,7 @@ def t_missing_now_is_an_operator_error() -> None:
                       [_row("41", slug="s", status="merged", head_sha=SHA_A, tier="TRIVIAL",
                             review_rounds="1")])
         # No --now at all: argparse REQUIRES it and exits 2 (the operator-error code) before any work.
-        code, out, err = capture_cli(
+        code, _out, _err = capture_cli(
             C.main, ["distill", "--ledger", str(ledger_path), "--out-dir", str(out_dir)])
         check(code == C.EXIT_OPERATOR,
               f"a missing --now is an operator error ({C.EXIT_OPERATOR}); got {code}")
@@ -335,7 +335,7 @@ def t_blank_now_is_refused() -> None:
         _write_ledger(ledger_path, _header(),
                       [_row("41", slug="s", status="merged", head_sha=SHA_A, tier="TRIVIAL",
                             review_rounds="1")])
-        code, out, err = capture_cli(
+        code, _out, _err = capture_cli(
             C.main, ["distill", "--ledger", str(ledger_path), "--out-dir", str(out_dir), "--now", "   "])
         check(code == C.EXIT_OPERATOR, f"a whitespace --now is refused ({C.EXIT_OPERATOR}); got {code}")
         check(not (out_dir / "g260704-0915-a3f29c1b.md").exists(), "a blank clock writes no file")

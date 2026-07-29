@@ -268,7 +268,7 @@ def t_decided_repair_rebases_clean_base():
         s = Scenario(Path(tmp)).build(status=L.REPAIR_STATUS, reviews_ok=0,
                                       repair_decision=RECORDED_REPAIR)
         s.advance_base({12: "12-BASE"})
-        code, out, err = s.invoke()
+        code, _out, err = s.invoke()
         check(code == M.EXIT_OK,
               f"a decided repair's clean base-only rebase must exit 0 (code={code}, err={err})")
         new_head = head(s.wt)
