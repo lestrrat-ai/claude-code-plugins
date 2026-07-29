@@ -31,7 +31,7 @@ import tempfile
 from pathlib import Path
 from typing import Callable
 
-from _gauntlet.modules import load_module_from_path
+from _gauntlet.modules import load_module_from_path, load_sibling
 
 HERE = Path(__file__).resolve().parent
 TEMPLATE = HERE / "worker-prompt-template.txt"
@@ -40,14 +40,7 @@ FORMAT_PREFLIGHT = HERE / "format-preflight.py"
 LEDGER = HERE / "ledger.py"
 
 
-def _load_ledger():
-    mod = load_module_from_path("worker_prompt_ledger", LEDGER)
-    if mod is None:
-        raise RuntimeError(f"cannot load the ledger accessor at {LEDGER}")
-    return mod
-
-
-L = _load_ledger()
+L = load_sibling("worker_prompt_ledger", HERE, "ledger.py")
 
 EXIT_OK = 0
 EXIT_REFUSED = 2

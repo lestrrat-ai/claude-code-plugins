@@ -47,22 +47,13 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Callable
 
-from _gauntlet.modules import load_module_from_path
+from _gauntlet.modules import load_sibling
 from _gauntlet.testing import run_sibling_suite
 
 _HERE = Path(__file__).resolve().parent
 SIBLING = _HERE / "triage-test.py"
-LEDGER_PY = _HERE / "ledger.py"
 
-
-def _load_ledger():
-    mod = load_module_from_path("triage_ledger", LEDGER_PY)
-    if mod is None:
-        raise RuntimeError(f"cannot load the ledger accessor at {LEDGER_PY}")
-    return mod
-
-
-L = _load_ledger()
+L = load_sibling("triage_ledger", _HERE, "ledger.py")
 
 EXIT_OK = 0
 EXIT_REFUSED = 2

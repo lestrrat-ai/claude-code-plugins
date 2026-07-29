@@ -19,7 +19,7 @@ import tempfile
 from pathlib import Path
 from typing import Callable, NoReturn
 
-from _gauntlet.modules import load_module_from_path
+from _gauntlet.modules import load_module_from_path, load_sibling
 from _gauntlet.testing import run_sibling_suite
 
 
@@ -59,14 +59,7 @@ def _load_review_pass():
 RP = _load_review_pass()
 
 
-def _load_ledger():
-    mod = load_module_from_path("review_dispatch_ledger", LEDGER)
-    if mod is None:
-        raise RuntimeError(f"cannot load the ledger accessor at {LEDGER}")
-    return mod
-
-
-L = _load_ledger()
+L = load_sibling("review_dispatch_ledger", _HERE, "ledger.py")
 
 
 class Refusal(Exception):

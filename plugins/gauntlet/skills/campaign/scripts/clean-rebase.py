@@ -46,7 +46,7 @@ from pathlib import Path
 
 from _gauntlet.argv import bind_separate_option_value
 from _gauntlet.git_refs import select_base_fetch_refs
-from _gauntlet.modules import load_module_from_path
+from _gauntlet.modules import load_sibling
 from _gauntlet.testing import run_sibling_suite
 
 DESCRIPTION = next(iter((__doc__ or "").splitlines()), "")
@@ -56,14 +56,7 @@ SIBLING = _HERE / "clean-rebase-test.py"     # the fixture suite — this tool's
 LEDGER_PY = _HERE / "ledger.py"
 
 
-def _load_ledger():
-    mod = load_module_from_path("clean_rebase_ledger", LEDGER_PY)
-    if mod is None:
-        raise RuntimeError(f"cannot load the ledger accessor at {LEDGER_PY}")
-    return mod
-
-
-L = _load_ledger()
+L = load_sibling("clean_rebase_ledger", _HERE, "ledger.py")
 
 # TERMINAL statuses — a done PR is never rebased. `files-and-ledger.md` (`status`: "in_review -> merged,
 # or aborted; plus the HELD (non-terminal) statuses") owns the enumeration; these are the two it names as
