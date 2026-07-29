@@ -185,8 +185,8 @@ def open_followups(followups_path: "Path | None") -> "tuple[int | None, str | No
         return None, refusal
     if info is None:
         return None, f"no file at {followups_path}"
+    loader_stderr = io.StringIO()
     try:
-        loader_stderr = io.StringIO()
         with redirect_stderr(loader_stderr):
             entries = F.load(followups_path)
     except (OSError, ValueError, SystemExit) as exc:
