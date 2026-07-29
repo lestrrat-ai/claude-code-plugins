@@ -20,7 +20,7 @@ from io import StringIO
 from pathlib import Path
 
 from _gauntlet.modules import load_sibling
-from _gauntlet.testing import checker
+from _gauntlet.testing import capture_cli, checker
 
 OWNER = Path(__file__).resolve().parent / "label-mirror.py"
 
@@ -273,7 +273,22 @@ def t_required_boundary():
         check(out["desired"] == desired, f"[{tier} {ok}/{out['required']}] desired must be {desired}, got {out!r}")
 
 
+def t_malformed_repo_fails_before_any_gh_call():
+    """A malformed `--repo` is refused at the CLI boundary, before the mirror touches GitHub.
+
+    This tool had NO validation, and `--repo` here is documented as NEVER resolved from the checkout — so
+    an unvalidated value was the only thing naming the repository whose labels get edited.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        led = build_ledger(Path(d), tier="STANDARD", reviews_ok="2")
+        code, _out, err = capture_cli(M.main, ["mirror", "--ledger", str(led), "--pr", "9",
+                                               "--repo", "not-a-repo"])
+        check(code != 0, "a malformed --repo must be refused")
+        check("'not-a-repo'" in err, f"the refusal must quote the value, got {err!r}")
+
+
 CASES = [
+    ("malformed-repo-refused", "a malformed --repo is refused at the CLI boundary, before any gh call", t_malformed_repo_fails_before_any_gh_call),
     ("reviewing-to-accepted", "a met gate swaps reviewing->accepted with the exact argv", t_reviewing_to_accepted_swaps),
     ("readopt-escalation", "a re-adoption tier escalation flips a stale accepted->reviewing with the exact argv", t_readopt_escalation_flips_accepted_to_reviewing),
     ("accepted-stays", "an already-accepted PR is a no-op — no edit call", t_accepted_stays),

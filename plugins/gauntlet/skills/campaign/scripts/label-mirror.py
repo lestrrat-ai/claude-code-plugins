@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Callable, NoReturn
 
 from _gauntlet.modules import load_sibling
+from _gauntlet.repository import repo_problem
 from _gauntlet.testing import run_sibling_suite
 
 _HERE = Path(__file__).resolve().parent
@@ -236,6 +237,11 @@ def main(argv: "list[str] | None" = None) -> int:
 
     if args.cmd == "self-test":
         return self_test()
+    # An explicit --repo is interpolated into every `gh` argv this tool builds, so it is checked at
+    # the CLI boundary before anything runs. `_gauntlet/repository.py` owns the check and its wording.
+    problem = repo_problem(args.repo)
+    if problem is not None:
+        fail(problem)
     return mirror(args.ledger, args.pr, args.repo, dry_run=args.dry_run)
 
 

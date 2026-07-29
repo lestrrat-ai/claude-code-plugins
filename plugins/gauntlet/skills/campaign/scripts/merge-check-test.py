@@ -662,7 +662,58 @@ def t_shared_field_problem_semantics():
           "reordering the request must reorder the report")
 
 
+def t_malformed_repo_is_not_yet_before_any_fetch():
+    """A malformed `--repo` fails closed to `not-yet` at the CLI boundary, before any `gh` runs.
+
+    This tool had NO validation at all. It decides whether a PR may MERGE, so an unvalidated value here
+    reached a `gh` argv on the path to the most irreversible act the campaign performs."""
+    code, out, _err = capture_cli(M.main, ["check", "--pr", "9", "--file", "/nonexistent/state.jsonl",
+                                           "--repo", "not-a-repo"])
+    check(code != 0, "a malformed --repo must exit non-zero")
+    result = json.loads(out)
+    check(result["verdict"] == "not-yet", f"a malformed --repo must fail closed to not-yet, got {result!r}")
+    check("'not-a-repo'" in result["reason"], f"the reason must quote the value, got {result!r}")
+    # The repo check runs BEFORE the ledger is opened: the deliberately absent --file never surfaces.
+    check("state.jsonl" not in result["reason"],
+          f"the repo guard must fire before the ledger read, got {result!r}")
+
+
+def t_empty_repo_is_not_yet_before_ledger_and_absent_still_reads_ledger():
+    """An explicit empty `--repo` refuses before the ledger read, while omission retains that read path."""
+    loads = []
+
+    def load(path):
+        loads.append(path)
+        return dict(_HEADER), []
+
+    old = M.L.load
+    setattr(M.L, "load", load)
+    try:
+        empty = capture_cli(M.main, ["check", "--pr", "9", "--file", "/ignored/state.jsonl", "--repo", ""])
+        empty_loads = list(loads)
+        absent = capture_cli(M.main, ["check", "--pr", "9", "--file", "/ignored/state.jsonl"])
+    finally:
+        setattr(M.L, "load", old)
+
+    code, out, _err = empty
+    check(code != 0, "an empty --repo must exit non-zero")
+    result = json.loads(out)
+    check(result["verdict"] == "not-yet", f"an empty --repo must fail closed to not-yet, got {result!r}")
+    check(repr("") in result["reason"], f"the refusal must quote the empty value, got {result!r}")
+    check(empty_loads == [], f"an empty --repo must refuse before the ledger read, got {empty_loads!r}")
+
+    code, out, _err = absent
+    check(code == 0, f"an omitted --repo must retain its normal ledger path, got {code}")
+    result = json.loads(out)
+    check(result == {"verdict": "not-yet", "reason": "no ledger row"},
+          f"an omitted --repo must retain the normal no-row result, got {result!r}")
+    check(loads == [Path("/ignored/state.jsonl")],
+          f"an omitted --repo must read its ledger, got {loads!r}")
+
+
 CASES = [
+    ("malformed-repo-not-yet", "a malformed --repo fails closed to not-yet at the CLI boundary, before the ledger read", t_malformed_repo_is_not_yet_before_any_fetch),
+    ("empty-repo-not-yet", "an empty --repo refuses before the ledger read; an omitted --repo still reads it", t_empty_repo_is_not_yet_before_ledger_and_absent_still_reads_ledger),
     ("shared-field-problem", "the shared view validator's own semantics: order, empty request, and every missing/wrong-type message", t_shared_field_problem_semantics),
     ("clean-all-met", "CLEAN + every precondition met -> merge", t_clean_and_all_met),
     ("has-hooks", "HAS_HOOKS -> merge", t_has_hooks_merges),

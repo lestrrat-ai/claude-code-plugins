@@ -18,6 +18,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from _gauntlet import repository as REPO_MOD
 from _gauntlet.gitfixture import FIXTURE_EMAIL, GitFixture
 from _gauntlet.modules import load_sibling
 from _gauntlet.testing import (capture_cli, checker, deeply_nested_json, gh_writing,
@@ -969,7 +970,100 @@ def t_shared_remote_and_clone_primitives():
                 check(False, f"{label} must raise the bound failure type when git fails")
 
 
+def t_malformed_repo_rechecks_before_any_fetch():
+    """A malformed `--repo` fails closed to `recheck` at the CLI boundary, before any `gh` runs.
+
+    This tool had NO validation at all: the value went straight into a `gh` argv, and gh answered about a
+    repository the caller never named. The refusal exits non-zero like every other non-`proceed` verdict,
+    so a caller gating on `$?` cannot mistake it for a cleared base.
+    """
+    code, out, _err = capture_cli(M.main, ["check", "--pr", "9", "--repo", "not-a-repo"])
+    check(code != 0, "a malformed --repo must exit non-zero")
+    result = json.loads(out)
+    check(result["verdict"] == "recheck", f"a malformed --repo must fail closed to recheck, got {result!r}")
+    check("'not-a-repo'" in result["reason"], f"the reason must quote the value, got {result!r}")
+
+
+def t_empty_repo_rechecks_before_view_and_absent_still_fetches():
+    """An explicit empty `--repo` refuses before the view read, while an omitted flag still fetches.
+
+    The guard must distinguish the two argparse values: `""` means the caller supplied an invalid repository;
+    `None` means the optional flag was absent and permits the current-checkout fetch path.
+    """
+    calls = []
+
+    def fetch(pr, *, fields, repo=None, cwd=None, view_json=None):
+        calls.append((pr, fields, repo, cwd, view_json))
+        return view(mergeStateStatus="DIRTY"), None
+
+    old = M.pr_view_json
+    setattr(M, "pr_view_json", fetch)
+    try:
+        empty = capture_cli(M.main, ["check", "--pr", "9", "--repo", ""])
+        empty_calls = list(calls)
+        absent = capture_cli(M.main, ["check", "--pr", "9"])
+    finally:
+        setattr(M, "pr_view_json", old)
+
+    code, out, _err = empty
+    check(code != 0, "an empty --repo must exit non-zero")
+    result = json.loads(out)
+    check(result["verdict"] == "recheck", f"an empty --repo must fail closed to recheck, got {result!r}")
+    check(repr("") in result["reason"], f"the refusal must quote the empty value, got {result!r}")
+    check(empty_calls == [], f"an empty --repo must refuse before the view read, got {empty_calls!r}")
+
+    code, out, _err = absent
+    check(code != 0, "an omitted --repo may reach its normal non-proceed result")
+    result = json.loads(out)
+    check(result["verdict"] == "rebase-first",
+          f"an omitted --repo must retain the current-checkout fetch path, got {result!r}")
+    check(calls == [("9", M.VIEW_FIELDS, None, None, None)],
+          f"an omitted --repo must fetch with repo=None, got {calls!r}")
+
+
+def t_shared_repo_validator_semantics():
+    """`_gauntlet/repository.py`'s OWN contract, exercised directly rather than through a caller.
+
+    Six tools now refuse a malformed `--repo` through this one check, so its semantics need a fixture that
+    does not depend on any caller's door. Five of those tools had NO validation at all before, which is
+    what makes the accept side matter as much as the reject side: a check that refuses a legitimate
+    repository would break every one of them at once.
+    """
+    fp = REPO_MOD.repo_problem
+    for good in ("lestrrat-ai/claude-code-plugins", "a/b", "o/name.with.dots",
+                 "o/name_with_underscores", "o/-leading-hyphen-is-legal-in-a-NAME",
+                 "A0/b9", "a" * REPO_MOD.OWNER_MAX_LENGTH + "/" + "r" * REPO_MOD.REPOSITORY_MAX_LENGTH):
+        check(fp(good) is None, f"{good!r} is a legal owner/name and must be accepted")
+
+    for bad, why in (
+        ("", "empty"),
+        ("owner", "no slash at all"),
+        ("owner/", "empty name"),
+        ("/name", "empty owner"),
+        ("a/b/c", "two slashes is not owner/name"),
+        ("-lead/b", "an owner may not START with a hyphen"),
+        ("trail-/b", "an owner may not END with a hyphen"),
+        ("a--b/c", "an owner's hyphens are single, never doubled"),
+        ("a b/c", "a space is not an identifier character"),
+        ("o/na me", "a space is not an identifier character in a name either"),
+        ("o/na/me", "a slash inside the name is a third field"),
+        ("a" * (REPO_MOD.OWNER_MAX_LENGTH + 1) + "/b", "over GitHub's owner length limit"),
+        ("a/" + "r" * (REPO_MOD.REPOSITORY_MAX_LENGTH + 1), "over GitHub's name length limit"),
+    ):
+        problem = fp(bad)
+        check(problem is not None, f"{bad!r} must be refused ({why})")
+        assert problem is not None  # narrow for the type checker; `check` above is the readable guard
+        check(repr(bad) in problem, f"the refusal must QUOTE what it refused, got {problem!r}")
+
+    # A shell-metacharacter value is refused like any other malformed one. It reaches `gh` argv, and the
+    # point of checking at the boundary is that it never gets that far.
+    check(fp("o/$(touch pwned)") is not None, "a shell-metacharacter name must be refused")
+
+
 CASES = [
+    ("malformed-repo-rechecks", "a malformed --repo fails closed to recheck at the CLI boundary, before any gh call", t_malformed_repo_rechecks_before_any_fetch),
+    ("empty-repo-rechecks", "an empty --repo refuses before the view read; an omitted --repo still fetches", t_empty_repo_rechecks_before_view_and_absent_still_fetches),
+    ("shared-repo-validator", "the shared --repo validator's own semantics: what it accepts, what it refuses, and that it quotes the value", t_shared_repo_validator_semantics),
     ("shared-remote-clone", "the shared bare-remote and clone primitives: bare on the named branch, a usable identity, and a raise on failure", t_shared_remote_and_clone_primitives),
     ("clean-proceeds", "CLEAN passes the enum screen", t_clean_proceeds),
     ("has-hooks-proceeds", "HAS_HOOKS passes the enum screen", t_has_hooks_proceeds),
