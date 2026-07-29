@@ -165,8 +165,16 @@ def required(tier: str) -> int:
     return 1 if tier == "TRIVIAL" else 2
 
 
-def open_followups(followups_path: "Path | None") -> "tuple[int | None, str | None]":
-    """`(open count, why it was NOT READ)` — and the second is `None` exactly when the first is a real count.
+class FollowupsRead:
+    """The open count and unread reason from one follow-up-store read."""
+
+    def __init__(self, open_count: int | None, unread_reason: str | None):
+        self.open_count = open_count
+        self.unread_reason = unread_reason
+
+
+def open_followups(followups_path: "Path | None") -> FollowupsRead:
+    """A `FollowupsRead` whose reason is `None` exactly when its count is real.
 
     A count of `None` is NOT `0`, and keeping them apart is the whole point: an unread store counted as
     zero is INDISTINGUISHABLE in the output from a genuinely empty queue, so an omitted or mistyped flag
@@ -179,12 +187,12 @@ def open_followups(followups_path: "Path | None") -> "tuple[int | None, str | No
     all say what they are; only a genuinely absent file still reports as absent.
     """
     if followups_path is None:
-        return None, "no --followups given"
+        return FollowupsRead(None, "no --followups given")
     info, refusal = classify_entry(followups_path)
     if refusal is not None:
-        return None, refusal
+        return FollowupsRead(None, refusal)
     if info is None:
-        return None, f"no file at {followups_path}"
+        return FollowupsRead(None, f"no file at {followups_path}")
     loader_stderr = io.StringIO()
     try:
         with redirect_stderr(loader_stderr):
@@ -194,12 +202,12 @@ def open_followups(followups_path: "Path | None") -> "tuple[int | None, str | No
         # what it must never become is a confident zero, and it never does.
         refusal = loader_stderr.getvalue().strip()
         if refusal:
-            return None, f"{followups_path} could not be read ({refusal})"
-        return None, f"{followups_path} could not be read ({type(exc).__name__})"
-    return sum(1 for e in entries if e.get("state") not in OPEN_FOLLOWUP_HIDDEN), None
+            return FollowupsRead(None, f"{followups_path} could not be read ({refusal})")
+        return FollowupsRead(None, f"{followups_path} could not be read ({type(exc).__name__})")
+    return FollowupsRead(sum(1 for e in entries if e.get("state") not in OPEN_FOLLOWUP_HIDDEN), None)
 
 
-def followups_line(n_followups: "int | None", unread: "str | None") -> "str | None":
+def followups_line(followups: FollowupsRead) -> "str | None":
     """The one follow-up reminder: a COUNT when the store was read, a DISCLOSURE naming why when it was
     not, and silence ONLY for a read that genuinely found nothing open. An unread store is never silent —
     that silence is what a caller reads as "this run has no open follow-ups".
@@ -208,10 +216,10 @@ def followups_line(n_followups: "int | None", unread: "str | None") -> "str | No
     refusal that knew exactly what was wrong — a FIFO, a dangling symlink — printed `no file at <path>`
     about a path that plainly had something at it.
     """
-    if n_followups is None:
-        return f"follow-up store NOT READ ({unread}) — open follow-ups are UNKNOWN, not zero."
-    if n_followups:
-        return f"{n_followups} open follow-up(s) — start any you can."
+    if followups.open_count is None:
+        return f"follow-up store NOT READ ({followups.unread_reason}) — open follow-ups are UNKNOWN, not zero."
+    if followups.open_count:
+        return f"{followups.open_count} open follow-up(s) — start any you can."
     return None
 
 
@@ -356,8 +364,8 @@ def resolve_rundir(file_arg: str, rundir_arg: "str | None") -> Path:
     return Path(file_arg).resolve().parent
 
 
-def reminders(header: dict, rows: list, n_followups: "int | None", rundir: "Path | None",
-              followups_unread: "str | None", now: "datetime | None" = None,
+def reminders(header: dict, rows: list, followups: FollowupsRead, rundir: "Path | None",
+              now: "datetime | None" = None,
               followups_path: "Path | None" = None,
               notes: "list | None" = None, notes_unread: "str | None" = None) -> list:
     """Compute the reminder lines. Pure: same inputs → same output. Returns a list of strings.
@@ -368,13 +376,13 @@ def reminders(header: dict, rows: list, n_followups: "int | None", rundir: "Path
     `followups_path` is only what the follow-up store was LOOKED FOR at — it is never read here, and it
     exists so the notes file's path can be named in its own disclosures (`notes_path`).
 
-    `followups_unread` is `open_followups`'s reason, and it is what an unread store discloses. It is
-    passed in rather than re-derived from the path, because only the read knows WHY: a path that could not
-    be opened at all — a FIFO, a socket, a dangling symlink — is not the same as one with nothing at it,
-    and re-deriving turned every one of those into `no file at <path>`.
+    `followups` is `open_followups`'s one result, including its count and unread reason. The reason is not
+    re-derived from the path, because only the read knows WHY: a path that could not be opened at all — a
+    FIFO, a socket, a dangling symlink — is not the same as one with nothing at it, and re-deriving turned
+    every one of those into `no file at <path>`.
 
     `notes` / `notes_unread` are `read_notes`'s result, read by the caller (main) exactly as
-    `n_followups` is — the store reads stay in one place and this stays renderable from fixed inputs. The
+    `followups` is — the store reads stay in one place and this stays renderable from fixed inputs. The
     default `([], None)` is "read, and there was nothing", which is silent.
     """
     if now is None:
@@ -415,7 +423,7 @@ def reminders(header: dict, rows: list, n_followups: "int | None", rundir: "Path
             out.append(f"base {base} (PR(s) {prs}): required set {rset}.")
     if active:
         out.append(f"{len(active)} PR(s) open — reconcile and fan out work up to caps.")
-    fu_line = followups_line(n_followups, followups_unread)
+    fu_line = followups_line(followups)
     if fu_line:
         out.append(fu_line)
 
@@ -502,12 +510,11 @@ def reminders(header: dict, rows: list, n_followups: "int | None", rundir: "Path
     return out
 
 
-def render(header: dict, rows: list, n_followups: "int | None", rundir: "Path | None",
-           followups_unread: "str | None", now: "datetime | None" = None,
+def render(header: dict, rows: list, followups: FollowupsRead, rundir: "Path | None",
+           now: "datetime | None" = None,
            followups_path: "Path | None" = None,
            notes: "list | None" = None, notes_unread: "str | None" = None) -> str:
-    lines = reminders(header, rows, n_followups, rundir, followups_unread, now, followups_path, notes,
-                      notes_unread)
+    lines = reminders(header, rows, followups, rundir, now, followups_path, notes, notes_unread)
     run_id = header.get("run_id", "-")
     head = f"NUDGE (run {run_id}) — {len(lines)} reminder(s):"
     body = "\n".join(f"  - {line}" for line in lines)
@@ -539,10 +546,10 @@ def main(argv: "list[str] | None" = None) -> int:
         parser.error("the following arguments are required: --file")
     header, rows = L.load(Path(args.file))
     followups_path = Path(args.followups) if args.followups else None
-    n_followups, followups_unread = open_followups(followups_path)
+    followups = open_followups(followups_path)
     notes, notes_unread = read_notes(notes_path(followups_path))
     rundir = resolve_rundir(args.file, args.rundir)
-    print(render(header, rows, n_followups, rundir, followups_unread, followups_path=followups_path,
+    print(render(header, rows, followups, rundir, followups_path=followups_path,
                  notes=notes, notes_unread=notes_unread))
     return 0  # a nudge NEVER blocks — it only reminds
 

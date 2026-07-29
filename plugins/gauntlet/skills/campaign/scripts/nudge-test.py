@@ -46,11 +46,11 @@ def row(pr, status, **kw) -> dict:
     return r
 
 
-def fire(rows, *, hdr=None, n_followups: "int | None" = 0, rundir=None, now=None,
+def fire(rows, *, hdr=None, followups=N.FollowupsRead(0, None), rundir=None, now=None,
          followups_path: "Path | None" = None, notes: "list | None" = None,
-         notes_unread: "str | None" = None, followups_unread: "str | None" = None) -> list:
-    return N.reminders(hdr or header(run_id="g1"), rows, n_followups, rundir, followups_unread, now,
-                       followups_path, notes, notes_unread)
+         notes_unread: "str | None" = None) -> list:
+    return N.reminders(hdr or header(run_id="g1"), rows, followups, rundir, now, followups_path, notes,
+                       notes_unread)
 
 
 # A fixed "now" and two stamps around it, so the quiet-run rule is DETERMINISTIC: one older than
@@ -159,9 +159,9 @@ def t_fanout_fires_only_with_open_work():
 
 
 def t_followups_fire_only_when_open():
-    check(has(fire([], n_followups=3), "3 open follow-up"),
+    check(has(fire([], followups=N.FollowupsRead(3, None)), "3 open follow-up"),
           "open follow-ups must nudge, with the count")
-    check(not has(fire([], n_followups=0), "open follow-up"),
+    check(not has(fire([], followups=N.FollowupsRead(0, None)), "open follow-up"),
           "zero open follow-ups must NOT nudge")
 
 
@@ -172,17 +172,17 @@ def t_unread_followup_store_is_disclosed():
     (`.gauntlet/` is a project-root concern, not a run-directory one) and the printer always exits 0, so
     DISCLOSURE — not a default and not a refusal — is the whole fix."""
     # unit level: not-read (None) discloses; a successful read never does.
-    absent = fire([], n_followups=None, followups_unread="no --followups given")
+    absent = fire([], followups=N.FollowupsRead(None, "no --followups given"))
     check(has(absent, "follow-up store NOT READ (no --followups given)"),
           "an omitted --followups must disclose that the store was not read, and why")
-    missing = fire([], n_followups=None, followups_path=Path("/nonexistent/typo.jsonl"),
-                   followups_unread="no file at /nonexistent/typo.jsonl")
+    missing = fire([], followups=N.FollowupsRead(None, "no file at /nonexistent/typo.jsonl"),
+                   followups_path=Path("/nonexistent/typo.jsonl"))
     check(has(missing, "follow-up store NOT READ (no file at /nonexistent/typo.jsonl)"),
           "a --followups path that is not there must disclose it, NAMING the path it tried")
     # Teeth: a store that WAS read never claims it was not — neither with open entries nor empty.
-    check(not has(fire([], n_followups=3), "NOT READ"),
+    check(not has(fire([], followups=N.FollowupsRead(3, None)), "NOT READ"),
           "a store that was read must report its count, never the not-read disclosure")
-    check(not has(fire([], n_followups=0), "NOT READ"),
+    check(not has(fire([], followups=N.FollowupsRead(0, None)), "NOT READ"),
           "an EMPTY store that was read is genuinely zero — it must stay silent, not disclose")
     # main() plumbing: the same two invocations end to end, plus a real store proving the count wins.
     with tempfile.TemporaryDirectory() as d:
