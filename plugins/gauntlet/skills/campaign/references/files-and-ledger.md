@@ -69,15 +69,16 @@ repo root, `.gauntlet/` (git-ignored; add `.gauntlet/` to `.gitignore` if missin
 | `<rundir>/` | Ephemeral scratch, derived by the runtime adapter's owned operation. A **terminal** run's dir is kept so a later bare invocation can detect the *finished* run and offer the finished-run prompt (Loop control step 1); it is otherwise disposable — wiping it only loses that prompt (discovery then falls back to the generic "pass PR numbers" prompt), never carryover, which lives in `history/`. Not wiped mid-run. |
 | `.gauntlet/history/<run-id>.md` | Durable. The carryover ledger — the one thing a *new* run needs to remember from old ones. **Written by `scripts/carryover.py distill`** (Loop control step 5, on normal exit), a mechanical projection of the terminal `state.jsonl`; owned by `carryover.md`. |
 | `.gauntlet/followups.jsonl` | Durable, and **not run-scoped** — one store, shared by every run. The **follow-up ledger**: work the campaign FOUND and deliberately did not do. Unlike `state.jsonl` it is a **source of truth, not a cache** (nothing can rebuild a lost entry), and it has **many writers** (every concurrent run), so its accessor locks the read-modify-write. Every entry is a **CANDIDATE, never an issue** — **nothing in it may be published without the user's agreement on that specific item**. It is a **WORK QUEUE, not an archive**: an entry is **deleted** once a durable record of it exists elsewhere, and kept when nothing else would remember it (`followups.md` owns when). Owned by `scripts/followups.py`; see `followups.md`. |
+| `.gauntlet/nudges.md` | Durable, and **not run-scoped** — one file, shared by every run. The **standing-notes file**: lessons the campaign has learned about its own PROCESS, which no rule in code can hold, delivered to a fresh heartbeat that would otherwise have to remember them. **Hand-written by the driver or the user** — nothing in the plugin writes it, and its **absence is the normal, silent case**. `scripts/nudge.py` READS it each heartbeat and appends each usable line, verbatim, after its computed reminders; it locates the file as **`--followups`'s sibling in this directory**, which is why that path is derived rather than a flag of its own (`loop-control.md`, Step 1). Its content model and its disclosed caps are owned by `nudge.py`'s module docstring. |
 
 **Only `.gauntlet/tmp/` is disposable — never `rm -rf .gauntlet/` itself.** That would take **every
-durable store in the table above** with it — the carryover history and the follow-up ledger, which
-(unlike `state.jsonl`, a cache that re-derives itself from `gh` every heartbeat) **nothing can rebuild**.
-Scratch cleanup targets `.gauntlet/tmp/**` and nothing above it.
+durable store in the table above** with it, and (unlike `state.jsonl`, a cache that re-derives itself
+from `gh` every heartbeat) **nothing can rebuild any of them**. Scratch cleanup targets `.gauntlet/tmp/**`
+and nothing above it.
 
 The history tree keeps **one file per run** (`<run-id>.md`) so concurrent runs never clobber a shared
-file. Those durable stores aside — the carryover history and the follow-up ledger — everything else
-stays ephemeral under the per-run `<rundir>`. See "Fresh runs and carryover".
+file. **Every durable store in the table above** aside, everything else stays ephemeral under the
+per-run `<rundir>`. See "Fresh runs and carryover".
 
 ### Campaign commits NO file of its own
 

@@ -115,7 +115,8 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
 **Heartbeat loop** (`references/loop-control.md` — read at each heartbeat before dispatch)
 
 8. At heartbeat entry, once you own the run and load its ledger, run `nudge.py` and READ its advisory
-   reminders — computed from durable state, decides nothing, always exits 0 (`references/loop-control.md`
+   reminders — computed from durable state, then the standing notes in `.gauntlet/nudges.md` appended
+   after them; decides nothing, always exits 0 (`references/loop-control.md`
    step 1). Those reminders, and every worker report this step folds, are driver-internal
    (`references/loop-control.md`, "Driver-internal outputs"). Then produce the run's validated PR snapshot through `reconcile.py fetch`, reconcile it
    through `reconcile.py detect` (treat `state.jsonl` as cache), and fold completed
@@ -301,7 +302,7 @@ a line the tool writes.
 | `repair-pass.py` | Reassessment pass's door: `permitted` / `bundle` / `decide` — deterministic complete-history prompt, bundle hash binding, closed decision enum, ownership guardrail, repair cap | `references/repair-pass.md` |
 | `followups.py` | Schema-owning accessor for the follow-up store (`.gauntlet/followups.jsonl`) — a durable work QUEUE, not an archive: entries are deleted once recorded elsewhere, kept when nothing else would remember | `references/followups.md` |
 | `carryover.py` | `distill` — project a run's TERMINAL ledger into `.gauntlet/history/<run-id>.md` on normal exit: merged/aborted/API-declined facts, exactly once (refuses a live run and refuses to overwrite) | `references/carryover.md` |
-| `nudge.py` | Advisory reminder printer for heartbeat start; always exits 0 | its own module docstring |
+| `nudge.py` | Advisory reminder printer for heartbeat start: reminders computed from the ledger, then the hand-written standing notes in `.gauntlet/nudges.md` (located as `--followups`'s sibling) appended verbatim; always exits 0 | its own module docstring |
 | `transport-contract-test.py` | Standalone suite the plugin validator runs directly to pin the typed review/adoption boundary; owns no run state | `references/runtime-adapter.md` |
 | `script-table-test.py` | Standalone suite CI runs directly to prove this table and `scripts/` agree; owns no run state | this section |
 | `self-test-runner-test.py` | Standalone suite CI runs directly to prove the shared fixture runner most `self-test` subcommands exit through refuses every way of not passing that it guards; owns no run state | `scripts/_gauntlet/testing.py` |

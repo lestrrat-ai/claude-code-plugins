@@ -39,8 +39,10 @@ def row(pr, status, **kw) -> dict:
 
 
 def fire(rows, *, hdr=None, n_followups: "int | None" = 0, rundir=None, now=None,
-         followups_path: "Path | None" = None) -> list:
-    return N.reminders(hdr or header(run_id="g1"), rows, n_followups, rundir, now, followups_path)
+         followups_path: "Path | None" = None, notes: "list | None" = None,
+         notes_unread: "str | None" = None) -> list:
+    return N.reminders(hdr or header(run_id="g1"), rows, n_followups, rundir, now, followups_path,
+                       notes, notes_unread)
 
 
 # A fixed "now" and two stamps around it, so the quiet-run rule is DETERMINISTIC: one older than
@@ -192,6 +194,187 @@ def t_unread_followup_store_is_disclosed():
         check("1 open follow-up(s) — start any you can." in out and "NOT READ" not in out,
               "a store that exists must yield the COUNT and no disclosure — the disclosure must "
               "discriminate on whether the store was actually read")
+
+
+# --- standing notes -----------------------------------------------------------
+# `<project_root>/.gauntlet/nudges.md` — hand-written standing lessons, delivered verbatim after every
+# computed reminder. Its path is DERIVED from `--followups`, never a flag, so these fixtures pin the
+# derivation as hard as the content rules: a wrong path reads the wrong file, or none, and says nothing.
+
+HEADER_ONLY = '{"type": "header", "run_id": "g1", "required_set": "none"}\n'
+
+
+def _laid_out(d: str) -> "tuple[Path, Path, Path]":
+    """A realistic layout — `(ledger, followups store, notes file)` — with `<rundir>` and `.gauntlet/`
+    as SEPARATE directories, so a fixture that passes only because the two happen to coincide cannot."""
+    root = Path(d)
+    rundir = root / "tmp" / "run"
+    rundir.mkdir(parents=True)
+    gauntlet = root
+    ledger = rundir / "state.jsonl"
+    ledger.write_text(HEADER_ONLY, encoding="utf-8")
+    return ledger, gauntlet / "followups.jsonl", gauntlet / "nudges.md"
+
+
+def t_notes_path_is_derived_from_the_followups_path():
+    """The notes file is `--followups`'s SIBLING `nudges.md` and NOTHING ELSE. That derivation is why
+    there is no `--notes` flag at all: a flag has to be added to the canonical invocation
+    (`loop-control.md`, Step 1), and a delivery channel whose flag was never added there never fires —
+    silently, forever. So the derivation is load-bearing, and it is pinned here.
+
+    Teeth: a `nudges.md` sitting in the RUN DIRECTORY — the other directory nudge already knows — must
+    not be read, and no `--followups` must yield no path at all rather than some guessed one.
+    """
+    check(N.notes_path(Path("/p/.gauntlet/followups.jsonl")) == Path("/p/.gauntlet/nudges.md"),
+          "the notes path must be the --followups path's sibling nudges.md")
+    check(N.notes_path(None) is None,
+          "with no --followups there is NO notes path — never a guessed fallback directory")
+    with tempfile.TemporaryDirectory() as d:
+        led, store, notes = _laid_out(d)
+        notes.write_text("the sibling note\n", encoding="utf-8")
+        (led.parent / "nudges.md").write_text("the rundir note\n", encoding="utf-8")
+        out = _run_main(["--file", str(led), "--followups", str(store), "--rundir", str(led.parent)])
+        check("standing note: the sibling note" in out,
+              "the notes file beside the follow-up store must be READ end to end")
+        check("the rundir note" not in out,
+              "a nudges.md in the RUN directory must NOT be read — the path derives from --followups only")
+
+
+def t_absent_notes_file_says_nothing():
+    """A missing notes file is the NORMAL state — the file is optional, hand-written user data — so the
+    look that finds nothing is SILENT. This is the one place the notes deliberately split from the
+    follow-up store, whose typed path treats "not there" as not-read.
+
+    Teeth: write one line at the same derived path and the SAME invocation must speak. A fixture that
+    only checked the silence would pass against a printer that never reads the file at all.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        led, store, notes = _laid_out(d)
+        quiet = _run_main(["--file", str(led), "--followups", str(store)])
+        check("standing note" not in quiet,
+              "no notes file at the derived path must produce NO note line and NO disclosure")
+        notes.write_text("- keep the ledger honest\n", encoding="utf-8")
+        loud = _run_main(["--file", str(led), "--followups", str(store)])
+        check("standing note: keep the ledger honest" in loud,
+              "the same invocation must deliver the note once the file exists — the silence was a real "
+              "read, not an unread file")
+
+
+def t_unread_notes_are_disclosed():
+    """NOT READ is never silence. Three ways the notes cannot be read, each DISCLOSED and each naming
+    why, and every one of them still exits 0: no `--followups` (so `.gauntlet/` is unknown), something
+    unreadable in the file's place, and bytes that are not UTF-8.
+    """
+    # No --followups: the project root is genuinely unknown and nothing may be guessed.
+    absent = fire([], notes_unread=None, notes=None)
+    check(not has(absent, "standing note"), "the default (read, nothing found) must stay silent")
+    with tempfile.TemporaryDirectory() as d:
+        led, store, notes = _laid_out(d)
+        out = _run_main(["--file", str(led)])
+        check("standing notes NOT READ (no --followups given, so the .gauntlet/ directory is unknown)" in out,
+              "with no --followups the notes must be DISCLOSED unread, naming why — never reported absent")
+        check("standing notes are UNKNOWN, not absent." in out,
+              "the disclosure must say the notes are UNKNOWN, not that there are none")
+        # A DIRECTORY where the file belongs: it stats fine and fails on read.
+        notes.mkdir()
+        out = _run_main(["--file", str(led), "--followups", str(store)])
+        check(f"standing notes NOT READ ({notes} could not be read (IsADirectoryError))" in out,
+              "an unreadable notes path must be DISCLOSED, naming the path and the failure — never raise")
+        notes.rmdir()
+        # Bytes that are not UTF-8 are disclosed, never silently mangled by a lenient decode.
+        notes.write_bytes(b"fine\n\xff\xfe not utf-8\n")
+        out = _run_main(["--file", str(led), "--followups", str(store)])
+        check(f"standing notes NOT READ ({notes} could not be read (UnicodeDecodeError))" in out,
+              "an undecodable notes file must be DISCLOSED, never partially delivered")
+        check("standing note: fine" not in out,
+              "an undecodable file must deliver NO line — a half-read file is not a read file")
+        # Teeth: a file that reads fine never claims it was not read.
+        notes.write_bytes(b"fine\n")
+        out = _run_main(["--file", str(led), "--followups", str(store)])
+        check("standing note: fine" in out and "standing notes NOT READ" not in out,
+              "a readable notes file must deliver its line and NO not-read disclosure — the disclosure "
+              "must discriminate on whether the file was actually read")
+
+
+def t_oversized_notes_file_is_disclosed():
+    """A file too large to hold in memory is DISCLOSED and not read, rather than risking the one thing
+    this printer may never do — fail. Teeth: a file one byte under the cap is read normally."""
+    with tempfile.TemporaryDirectory() as d:
+        led, store, notes = _laid_out(d)
+        notes.write_bytes(b"x" * (N.NOTES_MAX_BYTES + 1))
+        out = _run_main(["--file", str(led), "--followups", str(store)])
+        check(f"over the {N.NOTES_MAX_BYTES}-byte cap" in out and "standing notes NOT READ" in out,
+              "a notes file over the byte cap must be DISCLOSED unread, naming the cap")
+        under = b"under the cap\n" + b"# pad\n" * 100
+        check(len(under) <= N.NOTES_MAX_BYTES, "the fixture's 'under' file must actually be under the cap")
+        notes.write_bytes(under)
+        out = _run_main(["--file", str(led), "--followups", str(store)])
+        check("standing note: under the cap" in out and "standing notes NOT READ" not in out,
+              "a file under the byte cap must be read normally — the guard must be a cap, not a refusal")
+
+
+def t_notes_content_model():
+    """One reminder per line, VERBATIM — minus the shapes that are not reminders. Blank lines and `#`
+    lines are skipped so the file can carry markdown headings and comments, and a leading `- `/`* ` is
+    stripped so a bullet list and a plain list both work. One equality pins every one of those rules:
+    drop any single rule and this list changes.
+    """
+    parsed = N.parse_notes(
+        "# a heading\n"
+        "\n"
+        "- a bullet note\n"
+        "* a star note\n"
+        "a plain note\n"
+        "   \n"
+        "   # an indented comment\n"
+        "  - an indented bullet  \n"
+        "-\n"
+        "a note with a # inside it\n"
+        "-not-a-bullet\n"
+    )
+    check(parsed == ["a bullet note", "a star note", "a plain note", "an indented bullet",
+                     "a note with a # inside it", "-not-a-bullet"],
+          f"the notes content model must skip blanks and # lines, strip a leading bullet marker, and "
+          f"otherwise take the line verbatim — got {parsed!r}")
+    check(N.parse_notes("") == [] and N.parse_notes("# only a comment\n") == [],
+          "a file with no usable line must yield no note — and, having been READ, no disclosure either")
+    check(has(fire([], notes=["delivered as written"]), "standing note: delivered as written"),
+          "a parsed note must reach the reminder list under the standing-note mark")
+
+
+def t_notes_come_after_every_computed_reminder():
+    """Notes go LAST, always. The computed reminders are the live state — the part that goes stale — so
+    they keep the top of the list where they are read first. Teeth: the computed lines must all still be
+    there, and no note may appear before any of them.
+    """
+    lines = fire([row(1, "in_review", ci="pending")], notes=["standing advice"])
+    marked = [i for i, l in enumerate(lines) if l.startswith(N.NOTES_MARK)]
+    computed = [i for i, l in enumerate(lines) if not l.startswith(N.NOTES_MARK)]
+    check(bool(marked) and bool(computed), "the fixture must produce BOTH computed reminders and notes")
+    check(min(marked) > max(computed),
+          f"every standing note must follow every computed reminder — got {lines!r}")
+    check(has(lines, "PR 1: CI pending") and has(lines, "fan out work"),
+          "appending notes must not displace any computed reminder")
+
+
+def t_notes_cap_truncates_and_discloses_the_hidden_count():
+    """The cap bounds how many note lines are RENDERED, so a file that grew without bound cannot drown
+    the computed reminders — and when it bites, THE OMISSION IS NEVER SILENT: the output says how many
+    lines it is hiding and where they are. Teeth: exactly at the cap nothing is hidden and nothing is
+    disclosed, so the disclosure cannot be an always-on line.
+    """
+    cap = N.NOTES_CAP
+    over = [f"note {i}" for i in range(cap + 3)]
+    lines = fire([], notes=over, followups_path=Path("/p/.gauntlet/followups.jsonl"))
+    shown = [l for l in lines if l.startswith(f"{N.NOTES_MARK}: ")]
+    check(len(shown) == cap, f"at most {cap} note lines may be rendered — got {len(shown)}")
+    check(has(lines, f"standing notes TRUNCATED — 3 of {cap + 3} line(s)"),
+          "the truncation must disclose how many lines were hidden, out of how many")
+    check(has(lines, f"(cap {cap}); trim the file.") and has(lines, "/p/.gauntlet/nudges.md"),
+          "the truncation disclosure must name the cap and the file the hidden lines are in")
+    at = fire([], notes=[f"note {i}" for i in range(cap)])
+    check(len([l for l in at if l.startswith(f"{N.NOTES_MARK}: ")]) == cap and not has(at, "TRUNCATED"),
+          "exactly at the cap nothing is hidden, so nothing may be disclosed")
 
 
 # --- held PRs short-circuit ---------------------------------------------------
@@ -419,6 +602,20 @@ CASES = [
     ("followups-open-only", "follow-ups nudge only when open, with the count", t_followups_fire_only_when_open),
     ("followups-unread-disclosed", "an unread follow-up store SAYS so, naming why — never silence",
      t_unread_followup_store_is_disclosed),
+    ("notes-path-derived", "the notes file is --followups's sibling nudges.md and nothing else",
+     t_notes_path_is_derived_from_the_followups_path),
+    ("notes-absent-silent", "a missing notes file is the normal case and says nothing",
+     t_absent_notes_file_says_nothing),
+    ("notes-unread-disclosed", "notes that cannot be read SAY so, naming why — never silence",
+     t_unread_notes_are_disclosed),
+    ("notes-oversized-disclosed", "a notes file over the byte cap is disclosed unread, never a crash",
+     t_oversized_notes_file_is_disclosed),
+    ("notes-content-model", "blanks and # lines skip, a leading bullet strips, the rest is verbatim",
+     t_notes_content_model),
+    ("notes-appended-last", "standing notes follow every computed reminder",
+     t_notes_come_after_every_computed_reminder),
+    ("notes-cap-disclosed", "the note cap truncates and discloses the hidden count",
+     t_notes_cap_truncates_and_discloses_the_hidden_count),
     ("parked-short-circuits", "a parked PR fires only its held reminder", t_parked_pr_fires_only_its_own_reminder),
     ("repairing-splits", "repairing splits on whether a decision is recorded", t_repairing_splits_on_decision),
     ("intent-missing", "intent nudge fires only without the file", t_intent_missing_fires_only_without_the_file),
