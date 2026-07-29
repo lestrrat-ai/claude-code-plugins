@@ -446,6 +446,29 @@ def t_absent_followups_store_still_reports_absent():
               f"an absent store must still report as absent, got {out!r}")
 
 
+def t_malformed_followups_store_is_disclosed_and_exits_zero():
+    """A malformed regular store makes the loader exit, so the nudge boundary must capture its refusal.
+
+    This runs the command in a subprocess because `followups.load()` exits its interpreter for malformed
+    JSONL. The output must remain a successful nudge and carry the loader's line-specific reason.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        led, store, _notes = _laid_out(d)
+        store.write_text("not JSON\n", encoding="utf-8")
+        check(stat.S_ISREG(store.stat().st_mode), "the fixture must create a malformed regular store")
+        done = subprocess.run(  # noqa: S603 - this suite drives its sibling command
+            [sys.executable, str(OWNER), "--file", str(led), "--followups", str(store)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+        )
+        check(done.returncode == 0,
+              f"a malformed store must still exit 0 — a nudge never blocks, got {done.returncode}")
+        check("follow-up store NOT READ" in done.stdout,
+              f"a malformed store must be disclosed unread, got {done.stdout!r}")
+        check("followups: malformed JSON on line 1:" in done.stdout,
+              f"the disclosure must carry the loader's own reason, got {done.stdout!r}")
+        check(done.stderr == "", f"the loader refusal must be disclosed, not leaked to stderr: {done.stderr!r}")
+
+
 def t_non_regular_notes_entry_is_refused_without_blocking():
     """Anything that is not a REGULAR FILE is refused by name BEFORE any read. A FIFO is the case with
     teeth: `stat` reports size 0 and passes the byte cap, so a printer that goes straight to `read_text`
@@ -780,6 +803,8 @@ CASES = [
     ("fifo-followups-store", "a FIFO at the typed --followups path is refused by name, never waited on (fu141)", t_non_regular_followups_store_is_refused_without_blocking),
     ("dangling-followups-symlink", "a dangling --followups symlink is disclosed as one, not reported absent", t_dangling_followups_symlink_is_disclosed_not_reported_absent),
     ("absent-followups-store", "an absent --followups store still reports as absent, unchanged", t_absent_followups_store_still_reports_absent),
+    ("malformed-followups-store", "a malformed regular store is disclosed with its loader reason and exits 0",
+     t_malformed_followups_store_is_disclosed_and_exits_zero),
     ("heartbeat-always", "the heartbeat reminder fires every heartbeat", t_heartbeat_always_fires),
     ("header-always", "the header-reread reminder fires every heartbeat", t_header_reread_always_fires),
     ("labels-active-only", "the labels reminder fires only with an active PR", t_labels_fire_only_with_an_active_pr),

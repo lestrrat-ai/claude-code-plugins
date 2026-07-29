@@ -29,9 +29,11 @@ The design and the full obligation inventory it was trimmed from live in `.gaunt
 from __future__ import annotations
 
 import argparse
+import io
 import os
 import stat
 import sys
+from contextlib import redirect_stderr
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -184,10 +186,15 @@ def open_followups(followups_path: "Path | None") -> "tuple[int | None, str | No
     if info is None:
         return None, f"no file at {followups_path}"
     try:
-        entries = F.load(followups_path)
-    except (OSError, ValueError) as exc:
+        loader_stderr = io.StringIO()
+        with redirect_stderr(loader_stderr):
+            entries = F.load(followups_path)
+    except (OSError, ValueError, SystemExit) as exc:
         # The store is malformed or unreadable. It is still NOT READ, which is what the caller discloses;
         # what it must never become is a confident zero, and it never does.
+        refusal = loader_stderr.getvalue().strip()
+        if refusal:
+            return None, f"{followups_path} could not be read ({refusal})"
         return None, f"{followups_path} could not be read ({type(exc).__name__})"
     return sum(1 for e in entries if e.get("state") not in OPEN_FOLLOWUP_HIDDEN), None
 
