@@ -48,7 +48,7 @@ from pathlib import Path
 
 from _gauntlet.argv import bind_separate_option_value
 from _gauntlet.git_refs import select_base_fetch_refs
-from _gauntlet.modules import load_module_from_path
+from _gauntlet.modules import load_module_from_path, load_sibling
 from _gauntlet.testing import run_sibling_suite
 
 _HERE = Path(__file__).resolve().parent
@@ -57,14 +57,7 @@ LEDGER = _HERE / "ledger.py"                   # the sibling that owns base_ok_s
 PR_ADOPT = _HERE / "pr-adopt.py"               # owns BASE_CHANGE_PARK_REASON — reused, never re-spelt here
 
 
-def _load_ledger():
-    mod = load_module_from_path("base_preflight_ledger", LEDGER)
-    if mod is None:
-        raise RuntimeError(f"cannot load the ledger accessor at {LEDGER}")
-    return mod
-
-
-L = _load_ledger()
+L = load_sibling("base_preflight_ledger", _HERE, "ledger.py")
 
 # Loaded LAZILY (only when a live retarget is found) so the pure decider and self-test never pull the
 # adoption module chain: pr-adopt.py OWNS `BASE_CHANGE_PARK_REASON`, the EXACT machine-blocker wording a

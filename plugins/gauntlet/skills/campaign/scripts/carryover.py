@@ -32,13 +32,12 @@ from pathlib import Path
 from typing import Callable
 
 from _gauntlet.atomic import replace_text
-from _gauntlet.modules import load_module_from_path
+from _gauntlet.modules import load_sibling
 from _gauntlet.testing import run_sibling_suite
 
 DESCRIPTION = "Distill a run's terminal ledger into .gauntlet/history/<run-id>.md — exactly once."
 
 HERE = Path(__file__).resolve().parent
-LEDGER_PY = HERE / "ledger.py"          # the schema owner — its loader's strictness is reused, never re-rolled
 TEST_PY = HERE / "carryover-test.py"    # the fixture suite — this tool's executable contract, a SIBLING
 
 FORMAT_VERSION = "2"
@@ -83,10 +82,8 @@ class Refusal(Exception):
 
 
 def _ledger():
-    mod = load_module_from_path("carryover_ledger", LEDGER_PY)
-    if mod is None:  # pragma: no cover - a broken checkout, not a verdict
-        raise RuntimeError(f"cannot load the ledger accessor at {LEDGER_PY}")
-    return mod
+    """The schema owner, loaded lazily — its loader's strictness is reused, never re-rolled."""
+    return load_sibling("carryover_ledger", HERE, "ledger.py")
 
 
 # --- projection (pure) --------------------------------------------------------
