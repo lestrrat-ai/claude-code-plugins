@@ -29,6 +29,7 @@ The design and the full obligation inventory it was trimmed from live in `.gaunt
 from __future__ import annotations
 
 import argparse
+import os
 import stat
 import sys
 from datetime import datetime, timedelta, timezone
@@ -104,6 +105,41 @@ def entry_kind(mode: int) -> str:
     return "of an unknown type"
 
 
+def classify_entry(path: Path) -> "tuple[os.stat_result | None, str | None]":
+    """`(the entry's stat, why it must NOT be opened)` — at most one of the two is ever set.
+
+    Both `None` means there is NO ENTRY at `path`. That is not "readable" and not "refused"; it is
+    "nothing was there", and each caller decides what an absence means for its own file. The follow-up
+    store treats it as NOT READ, because its path is TYPED and a typo is the likely explanation. The notes
+    file treats it as a completed look that found nothing, because its path is DERIVED and its absence is
+    the normal state. Deciding that here would take the choice from both.
+
+    CLASSIFY BEFORE OPENING, ALWAYS. `read_text` on a FIFO waits for a writer FOREVER, and this printer
+    promises it always exits 0 and never blocks — a heartbeat printer that never returns stalls the
+    campaign loop rather than misreporting one line. `exists()` is not that check: it is True for a FIFO,
+    a socket, a device and a directory alike, and False for a dangling symlink that plainly IS an entry.
+
+    The returned stat is the one this walk already took, so a caller that needs the size (the notes cap)
+    does not stat again — and cannot drift into asking a second, different question.
+    """
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None, None
+    except OSError as exc:
+        return None, f"{path} could not be checked ({type(exc).__name__})"
+    if stat.S_ISLNK(info.st_mode):
+        try:
+            info = path.stat()
+        except FileNotFoundError:
+            return None, f"{path} is a symlink whose target is missing — repoint it or remove it"
+        except OSError as exc:
+            return None, f"{path} could not be checked ({type(exc).__name__})"
+    if not stat.S_ISREG(info.st_mode):
+        return None, f"{path} is {entry_kind(info.st_mode)}, not a regular file — replace it with one"
+    return info, None
+
+
 def _activity_age(last_activity: str, now: datetime) -> "timedelta | None":
     """How long since the run last did something — or None if that is UNKNOWABLE, in which case the
     quiet-run rule stays silent. This is advisory and NEVER raises: a `-` (an old ledger that predates the
@@ -127,28 +163,46 @@ def required(tier: str) -> int:
     return 1 if tier == "TRIVIAL" else 2
 
 
-def open_followups(followups_path: "Path | None") -> "int | None":
-    """How many follow-ups are OPEN — or `None` when the store was NOT READ (no `--followups` was given,
-    or the path given is not there). `None` is NOT `0`, and keeping them apart is the whole point: an
-    unread store counted as zero is INDISTINGUISHABLE in the output from a genuinely empty queue, so an
-    omitted or mistyped flag retired the durable follow-up queue with no error, no warning, and a
-    confident header above it. The caller DISCLOSES the `None` (`followups_line`); it never invents a
-    count from a store it did not open.
+def open_followups(followups_path: "Path | None") -> "tuple[int | None, str | None]":
+    """`(open count, why it was NOT READ)` — and the second is `None` exactly when the first is a real count.
+
+    A count of `None` is NOT `0`, and keeping them apart is the whole point: an unread store counted as
+    zero is INDISTINGUISHABLE in the output from a genuinely empty queue, so an omitted or mistyped flag
+    retired the durable follow-up queue with no error, no warning, and a confident header above it. The
+    caller DISCLOSES the `None` (`followups_line`); it never invents a count from a store it did not open.
+
+    The reason rides along because `not there` is no longer the only way this fails. `classify_entry`
+    refuses a FIFO, a socket, a device, a directory and a dangling symlink BEFORE anything opens the path
+    — a FIFO here used to hang the printer forever, which is the one outcome its contract forbids. Those
+    all say what they are; only a genuinely absent file still reports as absent.
     """
-    if followups_path is None or not followups_path.exists():
-        return None
-    entries = F.load(followups_path)
-    return sum(1 for e in entries if e.get("state") not in OPEN_FOLLOWUP_HIDDEN)
+    if followups_path is None:
+        return None, "no --followups given"
+    info, refusal = classify_entry(followups_path)
+    if refusal is not None:
+        return None, refusal
+    if info is None:
+        return None, f"no file at {followups_path}"
+    try:
+        entries = F.load(followups_path)
+    except (OSError, ValueError) as exc:
+        # The store is malformed or unreadable. It is still NOT READ, which is what the caller discloses;
+        # what it must never become is a confident zero, and it never does.
+        return None, f"{followups_path} could not be read ({type(exc).__name__})"
+    return sum(1 for e in entries if e.get("state") not in OPEN_FOLLOWUP_HIDDEN), None
 
 
-def followups_line(n_followups: "int | None", followups_path: "Path | None") -> "str | None":
+def followups_line(n_followups: "int | None", unread: "str | None") -> "str | None":
     """The one follow-up reminder: a COUNT when the store was read, a DISCLOSURE naming why when it was
     not, and silence ONLY for a read that genuinely found nothing open. An unread store is never silent —
     that silence is what a caller reads as "this run has no open follow-ups".
+
+    The reason comes FROM the read (`open_followups`), never re-derived here. Re-deriving it is how a
+    refusal that knew exactly what was wrong — a FIFO, a dangling symlink — printed `no file at <path>`
+    about a path that plainly had something at it.
     """
     if n_followups is None:
-        where = f"no file at {followups_path}" if followups_path is not None else "no --followups given"
-        return f"follow-up store NOT READ ({where}) — open follow-ups are UNKNOWN, not zero."
+        return f"follow-up store NOT READ ({unread}) — open follow-ups are UNKNOWN, not zero."
     if n_followups:
         return f"{n_followups} open follow-up(s) — start any you can."
     return None
@@ -213,28 +267,18 @@ def read_notes(path: "Path | None") -> "tuple[list, str | None]":
     and it stays SILENT. A disclosure every heartbeat of a run whose user never wrote a note is a false
     alarm, and a disclosure line that is usually noise is one the driver learns to skip past. That
     exemption is the FILE's alone: an unusable containing directory is not an absent file, it is a look
-    that never happened, and it discloses with everything else in (1) below.
+    that never happened, and it discloses with everything else.
 
     It NEVER raises AND IT NEVER BLOCKS. A permissions error, invalid UTF-8, or a file too large to hold
-    all degrade to a named reason — the printer must always exit 0. What is at the path is CLASSIFIED
-    before anything opens it, because `read_text` on a FIFO waits for a writer FOREVER, and a heartbeat
-    printer that never returns stalls the campaign loop rather than misreporting one line.
+    all degrade to a named reason — the printer must always exit 0. `classify_entry` owns what is at the
+    path and what may not be opened; do not restate its rules here.
 
-    The classification is what keeps the "not read" / "nothing there" split honest, and it turns on
-    whether the entry could be LOOKED AT, never on whether a file was FOUND:
-
-    1. `lstat` first, so the link itself is examined rather than what it points at. `FileNotFoundError`
-       here splits on THE CONTAINING DIRECTORY, because the silent case is only ever "a look happened and
-       found no file". A directory that IS there and holds no `nudges.md` is that look — the normal,
-       silent case above. A containing directory that is NOT a directory (missing, or something else
-       entirely) means the look never happened at all, so it is DISCLOSED like every other unusable path.
-       `errno` cannot draw this line: a missing file inside an existing directory and a missing directory
-       both raise `FileNotFoundError` with `ENOENT`. One extra stat on the parent draws it exactly.
-    2. An entry that IS a symlink is resolved with `stat`. A missing target is a found entry that cannot
-       be read, so it is DISCLOSED — never reported as the absence in (1), which is how a moved shared
-       notes file would drop out of every heartbeat with nothing saying so.
-    3. Anything that is not a REGULAR FILE is refused by name before any read. That covers FIFOs (the
-       hang), sockets, devices and directories.
+    ONE decision is this function's alone, and it is why the classify result is not simply returned. When
+    `classify_entry` reports NO ENTRY, this splits on THE CONTAINING DIRECTORY. A directory that IS there
+    and holds no `nudges.md` is a look that COMPLETED and found nothing — the normal, silent case. A
+    containing directory that is not a directory at all means the look never happened, so it DISCLOSES.
+    `errno` cannot draw that line: a missing file inside an existing directory and a missing directory
+    both raise `FileNotFoundError` with `ENOENT`. One stat on the parent draws it exactly.
 
     ACCEPTED RESIDUAL, deliberately not defended against: the entry can change type between the
     classification and the read. Closing it would mean an `os.open` with `O_NONBLOCK` and an `fstat` type
@@ -243,9 +287,10 @@ def read_notes(path: "Path | None") -> "tuple[list, str | None]":
     """
     if path is None:
         return [], "no --followups given, so the .gauntlet/ directory is unknown"
-    try:
-        info = path.lstat()
-    except FileNotFoundError:
+    info, refusal = classify_entry(path)
+    if refusal is not None:
+        return [], refusal
+    if info is None:
         if path.parent.is_dir():
             return [], None  # the look SUCCEEDED and found no file — the normal case, and it says nothing
         # The directory the notes live in is not a directory, so nothing was ever looked at. This is a
@@ -253,17 +298,6 @@ def read_notes(path: "Path | None") -> "tuple[list, str | None]":
         # is exactly why it is worth saying: it fires only for a wrong project root or a deleted
         # `.gauntlet/`, never for the user who simply keeps no notes.
         return [], f"{path.parent} is not a directory, so the notes file could not be looked for"
-    except OSError as exc:
-        return [], f"{path} could not be checked ({type(exc).__name__})"
-    if stat.S_ISLNK(info.st_mode):
-        try:
-            info = path.stat()
-        except FileNotFoundError:
-            return [], f"{path} is a symlink whose target is missing — repoint it or remove it"
-        except OSError as exc:
-            return [], f"{path} could not be checked ({type(exc).__name__})"
-    if not stat.S_ISREG(info.st_mode):
-        return [], f"{path} is {entry_kind(info.st_mode)}, not a regular file — replace it with one"
     size = info.st_size
     if size > NOTES_MAX_BYTES:
         return [], f"{path} is {size} bytes, over the {NOTES_MAX_BYTES}-byte cap — trim it"
@@ -317,15 +351,20 @@ def resolve_rundir(file_arg: str, rundir_arg: "str | None") -> Path:
 
 def reminders(header: dict, rows: list, n_followups: "int | None", rundir: "Path | None",
               now: "datetime | None" = None, followups_path: "Path | None" = None,
-              notes: "list | None" = None, notes_unread: "str | None" = None) -> list:
+              notes: "list | None" = None, notes_unread: "str | None" = None,
+              followups_unread: "str | None" = None) -> list:
     """Compute the reminder lines. Pure: same inputs → same output. Returns a list of strings.
 
     `now` is the current UTC time, injectable so the quiet-run rule is testable; it defaults to
     `datetime.now(timezone.utc)` when a caller (main) does not pass one.
 
     `followups_path` is only what the follow-up store was LOOKED FOR at — it is never read here, and it
-    exists so an unread store can name the path it tried (`followups_line`) and so the notes file's path
-    can be named in its own disclosures (`notes_path`).
+    exists so the notes file's path can be named in its own disclosures (`notes_path`).
+
+    `followups_unread` is `open_followups`'s reason, and it is what an unread store discloses. It is
+    passed in rather than re-derived from the path, because only the read knows WHY: a path that could not
+    be opened at all — a FIFO, a socket, a dangling symlink — is not the same as one with nothing at it,
+    and re-deriving turned every one of those into `no file at <path>`.
 
     `notes` / `notes_unread` are `read_notes`'s result, read by the caller (main) exactly as
     `n_followups` is — the store reads stay in one place and this stays renderable from fixed inputs. The
@@ -369,7 +408,7 @@ def reminders(header: dict, rows: list, n_followups: "int | None", rundir: "Path
             out.append(f"base {base} (PR(s) {prs}): required set {rset}.")
     if active:
         out.append(f"{len(active)} PR(s) open — reconcile and fan out work up to caps.")
-    fu_line = followups_line(n_followups, followups_path)
+    fu_line = followups_line(n_followups, followups_unread)
     if fu_line:
         out.append(fu_line)
 
@@ -458,8 +497,10 @@ def reminders(header: dict, rows: list, n_followups: "int | None", rundir: "Path
 
 def render(header: dict, rows: list, n_followups: "int | None", rundir: "Path | None",
            now: "datetime | None" = None, followups_path: "Path | None" = None,
-           notes: "list | None" = None, notes_unread: "str | None" = None) -> str:
-    lines = reminders(header, rows, n_followups, rundir, now, followups_path, notes, notes_unread)
+           notes: "list | None" = None, notes_unread: "str | None" = None,
+           followups_unread: "str | None" = None) -> str:
+    lines = reminders(header, rows, n_followups, rundir, now, followups_path, notes, notes_unread,
+                      followups_unread)
     run_id = header.get("run_id", "-")
     head = f"NUDGE (run {run_id}) — {len(lines)} reminder(s):"
     body = "\n".join(f"  - {line}" for line in lines)
@@ -491,11 +532,11 @@ def main(argv: "list[str] | None" = None) -> int:
         parser.error("the following arguments are required: --file")
     header, rows = L.load(Path(args.file))
     followups_path = Path(args.followups) if args.followups else None
-    n_followups = open_followups(followups_path)
+    n_followups, followups_unread = open_followups(followups_path)
     notes, notes_unread = read_notes(notes_path(followups_path))
     rundir = resolve_rundir(args.file, args.rundir)
     print(render(header, rows, n_followups, rundir, followups_path=followups_path,
-                 notes=notes, notes_unread=notes_unread))
+                 notes=notes, notes_unread=notes_unread, followups_unread=followups_unread))
     return 0  # a nudge NEVER blocks — it only reminds
 
 

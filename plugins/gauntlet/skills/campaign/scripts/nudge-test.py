@@ -48,9 +48,9 @@ def row(pr, status, **kw) -> dict:
 
 def fire(rows, *, hdr=None, n_followups: "int | None" = 0, rundir=None, now=None,
          followups_path: "Path | None" = None, notes: "list | None" = None,
-         notes_unread: "str | None" = None) -> list:
+         notes_unread: "str | None" = None, followups_unread: "str | None" = None) -> list:
     return N.reminders(hdr or header(run_id="g1"), rows, n_followups, rundir, now, followups_path,
-                       notes, notes_unread)
+                       notes, notes_unread, followups_unread)
 
 
 # A fixed "now" and two stamps around it, so the quiet-run rule is DETERMINISTIC: one older than
@@ -172,10 +172,11 @@ def t_unread_followup_store_is_disclosed():
     (`.gauntlet/` is a project-root concern, not a run-directory one) and the printer always exits 0, so
     DISCLOSURE — not a default and not a refusal — is the whole fix."""
     # unit level: not-read (None) discloses; a successful read never does.
-    absent = fire([], n_followups=None)
+    absent = fire([], n_followups=None, followups_unread="no --followups given")
     check(has(absent, "follow-up store NOT READ (no --followups given)"),
           "an omitted --followups must disclose that the store was not read, and why")
-    missing = fire([], n_followups=None, followups_path=Path("/nonexistent/typo.jsonl"))
+    missing = fire([], n_followups=None, followups_path=Path("/nonexistent/typo.jsonl"),
+                   followups_unread="no file at /nonexistent/typo.jsonl")
     check(has(missing, "follow-up store NOT READ (no file at /nonexistent/typo.jsonl)"),
           "a --followups path that is not there must disclose it, NAMING the path it tried")
     # Teeth: a store that WAS read never claims it was not — neither with open entries nor empty.
@@ -373,6 +374,76 @@ def t_dangling_notes_symlink_is_disclosed():
         check("standing note: the shared note" in out and "standing notes NOT READ" not in out,
               "a symlink to a real file must be READ through — the disclosure must turn on the missing "
               "target, not on the entry being a symlink")
+
+
+def t_non_regular_followups_store_is_refused_without_blocking():
+    """The SAME classify-before-open rule on the TYPED `--followups` path, which never had it.
+
+    `open_followups` used to test `exists()` and go straight to a read. `exists()` is True for a FIFO, so
+    the printer blocked in `open()` waiting for a writer that never comes — the one outcome its contract
+    forbids, and on the store whose path the user types by hand. This is `fu141`, and it predates the
+    notes file entirely.
+
+    Driven in a SUBPROCESS under a hard timeout, so a regression fails this fixture rather than hanging
+    the suite meant to catch it. Teeth: a real store at the same path is read and counted.
+    """
+    if not hasattr(os, "mkfifo"):  # pragma: no cover - POSIX-only fixture
+        return
+    with tempfile.TemporaryDirectory() as d:
+        led, store, _notes = _laid_out(d)
+        os.mkfifo(store)
+        try:
+            check(stat.S_ISFIFO(store.lstat().st_mode), "the fixture must actually create a FIFO")
+            try:
+                done = subprocess.run(  # noqa: S603 - this suite drives its sibling command
+                    [sys.executable, str(OWNER), "--file", str(led), "--followups", str(store)],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+                    timeout=NON_REGULAR_TIMEOUT,
+                )
+            except subprocess.TimeoutExpired:
+                raise AssertionError(
+                    f"a FIFO at the follow-up store HUNG the printer past {NON_REGULAR_TIMEOUT}s — a "
+                    "non-regular entry must be refused before any read, never waited on") from None
+            check(done.returncode == 0, "a FIFO at the store must still exit 0 — a nudge never blocks")
+            check(f"follow-up store NOT READ ({store} is a FIFO, not a regular file" in done.stdout,
+                  f"a FIFO at the store must be DISCLOSED BY WHAT IT IS, got {done.stdout!r}")
+            # The disclosure must not claim the file is absent: something is plainly there.
+            check(f"no file at {store}" not in done.stdout,
+                  "a FIFO is not an absent file, and the disclosure must not say it is")
+        finally:
+            store.unlink()
+        # Built through followups.py's own writer, so this fixture never restates that store's schema.
+        N.F.dump(store, [{"id": "fu1", "title": "t", "evidence": "e", "deferred_why": "w"}], 0)
+        out = _run_main(["--file", str(led), "--followups", str(store)])
+        check("1 open follow-up(s)" in out,
+              f"a real store at the same path must be read and counted, got {out!r}")
+
+
+def t_dangling_followups_symlink_is_disclosed_not_reported_absent():
+    """A `--followups` pointing at a dangling symlink is an entry that WAS found and cannot be read.
+
+    Before the classify step this reported `no file at <path>`, because `exists()` follows the link and
+    returns False. That reads as "you have no follow-up store", when the truth is "your store's target
+    moved". The two need different fixes, so they must not print the same line.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        led, store, _notes = _laid_out(d)
+        store.symlink_to(Path(d) / "gone.jsonl")
+        out = _run_main(["--file", str(led), "--followups", str(store)])
+        check("follow-up store NOT READ" in out and "symlink whose target is missing" in out,
+              f"a dangling store symlink must be disclosed as one, got {out!r}")
+        check(f"no file at {store}" not in out,
+              "a dangling symlink is a found entry, and must not be reported as an absent file")
+
+
+def t_absent_followups_store_still_reports_absent():
+    """The ordinary absence is UNCHANGED. The classify step returns "nothing to refuse" for a path that is
+    simply not there, so the store still reports as absent and never as a refusal."""
+    with tempfile.TemporaryDirectory() as d:
+        led, store, _notes = _laid_out(d)
+        out = _run_main(["--file", str(led), "--followups", str(store)])
+        check(f"follow-up store NOT READ (no file at {store})" in out,
+              f"an absent store must still report as absent, got {out!r}")
 
 
 def t_non_regular_notes_entry_is_refused_without_blocking():
@@ -706,6 +777,9 @@ def t_a_nudge_never_blocks():
 
 
 CASES = [
+    ("fifo-followups-store", "a FIFO at the typed --followups path is refused by name, never waited on (fu141)", t_non_regular_followups_store_is_refused_without_blocking),
+    ("dangling-followups-symlink", "a dangling --followups symlink is disclosed as one, not reported absent", t_dangling_followups_symlink_is_disclosed_not_reported_absent),
+    ("absent-followups-store", "an absent --followups store still reports as absent, unchanged", t_absent_followups_store_still_reports_absent),
     ("heartbeat-always", "the heartbeat reminder fires every heartbeat", t_heartbeat_always_fires),
     ("header-always", "the header-reread reminder fires every heartbeat", t_header_reread_always_fires),
     ("labels-active-only", "the labels reminder fires only with an active PR", t_labels_fire_only_with_an_active_pr),
