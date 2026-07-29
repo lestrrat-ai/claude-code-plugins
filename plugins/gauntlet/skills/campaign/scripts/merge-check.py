@@ -46,6 +46,7 @@ from typing import cast
 from _gauntlet.gh import pr_view_json
 from _gauntlet.modules import load_sibling
 from _gauntlet.testing import run_sibling_suite
+from _gauntlet.view import field_problem
 
 _HERE = Path(__file__).resolve().parent
 SIBLING = _HERE / "merge-check-test.py"     # the fixture suite — this tool's executable contract
@@ -219,20 +220,11 @@ _VIEW_STR_FIELDS = ("mergeable", "mergeStateStatus", "state", "headRefOid", "bas
 def validate_view(view: object) -> "str | None":
     """`None` if `view` is a JSON object carrying every field `decide` consumes at the right JSON type;
     otherwise a short description of the FIRST thing wrong. PURE — no I/O. The CLI turns a non-`None` result
-    into a fail-closed not-yet, so `decide` is never reached with a malformed view."""
-    if not isinstance(view, dict):
-        return f"view is not a JSON object (got {type(view).__name__})"
-    for field in _VIEW_STR_FIELDS:
-        if field not in view:
-            return f"missing field {field!r}"
-        # bool is a subclass of int, not str, so a JSON string is the only thing that passes here.
-        if not isinstance(view[field], str):
-            return f"field {field!r} must be a string, got {type(view[field]).__name__}"
-    if "isDraft" not in view:
-        return "missing field 'isDraft'"
-    if not isinstance(view["isDraft"], bool):
-        return f"field 'isDraft' must be a bool, got {type(view['isDraft']).__name__}"
-    return None
+    into a fail-closed not-yet, so `decide` is never reached with a malformed view.
+
+    `_gauntlet/view.py` owns the check and its wording; the field lists stay here, because which fields this
+    tool needs is this tool's business and no other decider's."""
+    return field_problem(view, strings=_VIEW_STR_FIELDS, bools=("isDraft",))
 
 
 def load_view(pr: str, repo: "str | None", view_json: "str | None") -> dict:
