@@ -46,7 +46,7 @@ import stat
 import sys
 from pathlib import Path
 
-from _gauntlet.modules import load_module_from_path
+from _gauntlet.testing import run_sibling_suite
 
 _HERE = Path(__file__).resolve().parent
 SIBLING = _HERE / "format-preflight-test.py"     # the fixture suite — this tool's executable contract
@@ -186,47 +186,10 @@ def check(cond: bool, msg: str) -> None:
         raise SelfTestFailure(msg)
 
 
-def sibling_cases() -> list:
-    if not SIBLING.exists():
-        raise SelfTestFailure(
-            f"the fixture file {SIBLING} IS MISSING — this suite has no fixtures to run and CANNOT report "
-            f"health. Every rule this file enforces is now unpinned.")
-    mod = load_module_from_path("format_preflight_test", SIBLING, register=True)
-    if mod is None:
-        raise SelfTestFailure(f"{SIBLING} exists but cannot be loaded as a module")
-    cases = getattr(mod, "CASES", None)
-    if not cases:
-        raise SelfTestFailure(f"{SIBLING} exports no CASES — every rule in this file is unpinned while the "
-                              f"suite still exits 0")
-    return list(cases)
-
-
 def self_test() -> int:
-    failures = 0
-    try:
-        cases = sibling_cases()
-    except SelfTestFailure as exc:
-        print(f"FAIL     {'sibling-fixtures':32} -> the fixtures in {SIBLING.name} must be RUNNABLE\n"
-              f"         {exc}")
-        print("\n1 check(s) FAILED — the format-preflight guard's contract is broken.")
-        return 1
-    for name, rule, fn in cases:
-        try:
-            fn()
-        except SelfTestFailure as exc:
-            print(f"FAIL     {name:32} -> {rule}\n         {exc}")
-            failures += 1
-        except Exception as exc:  # noqa: BLE001
-            print(f"FAIL     {name:32} -> {rule}\n         raised {type(exc).__name__}: {exc}")
-            failures += 1
-        else:
-            print(f"ok       {name:32} -> {rule}")
-    print()
-    if failures:
-        print(f"{failures} check(s) FAILED — the format-preflight guard's contract is broken.")
-        return 1
-    print(f"all {len(cases)} fixtures hold — the format-preflight guard's contract is intact.")
-    return 0
+    """Run every fixture in the sibling suite on the shared runner (`_gauntlet/testing.py`)."""
+    return run_sibling_suite(SIBLING, "format_preflight_test", failure=SelfTestFailure,
+                             subject="the format-preflight guard's contract", width=32)
 
 
 if __name__ == "__main__":

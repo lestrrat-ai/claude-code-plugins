@@ -11,16 +11,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-from _gauntlet.modules import load_module_from_path
+from _gauntlet.modules import load_module_from_path, load_sibling
+from _gauntlet.testing import checker
 
 OWNER = Path(__file__).resolve().parent / "merge.py"
-
-
-def _load_owner():
-    mod = load_module_from_path("merge_runner_owner", OWNER)
-    if mod is None:
-        raise RuntimeError(f"cannot load {OWNER}")
-    return mod
 
 
 def _load_reconcile():
@@ -34,7 +28,7 @@ def _load_reconcile():
     return mod
 
 
-M = _load_owner()
+M = load_sibling("merge_runner_owner", OWNER.parent, OWNER.name)
 L = M.L
 # The reconcile detector. The routing-decision fixture drives BOTH tools: the fact reconcile emits, and the
 # `merge.py run` finalizer that fact routes to.
@@ -43,9 +37,7 @@ RECON = _load_reconcile()
 SHA = "a" * 40
 
 
-def check(cond: bool, msg: str) -> None:
-    if not cond:
-        raise M.SelfTestFailure(msg)
+check = checker(M.SelfTestFailure)
 
 
 class Fake:

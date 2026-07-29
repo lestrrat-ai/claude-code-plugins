@@ -36,7 +36,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from _gauntlet.modules import load_module_from_path, load_sibling
+from _gauntlet.modules import load_sibling
+from _gauntlet.testing import run_sibling_suite
 
 HERE = Path(__file__).resolve().parent
 SIBLING = HERE / "merge-test.py"
@@ -793,38 +794,10 @@ class SelfTestFailure(AssertionError):
     """A claimed merge-runner rule did not hold."""
 
 
-def _sibling_cases() -> list:
-    if not SIBLING.exists():
-        raise SelfTestFailure(f"fixture suite is missing at {SIBLING}")
-    mod = load_module_from_path("merge_runner_test", SIBLING, register=True)
-    if mod is None:
-        raise SelfTestFailure(f"cannot load fixture suite at {SIBLING}")
-    cases = getattr(mod, "CASES", None)
-    if not cases:
-        raise SelfTestFailure(f"{SIBLING.name} exports no CASES")
-    return list(cases)
-
-
 def self_test() -> int:
-    failures = 0
-    try:
-        cases = _sibling_cases()
-    except SelfTestFailure as exc:
-        print(f"FAIL sibling-fixtures: {exc}")
-        return 1
-    for name, rule, fn in cases:
-        try:
-            fn()
-        except Exception as exc:  # noqa: BLE001
-            failures += 1
-            print(f"FAIL {name}: {rule}\n     {type(exc).__name__}: {exc}")
-        else:
-            print(f"ok   {name}: {rule}")
-    if failures:
-        print(f"{failures} merge-runner fixture(s) failed")
-        return 1
-    print(f"all {len(cases)} merge-runner fixtures hold")
-    return 0
+    """Run every fixture in the sibling suite on the shared runner (`_gauntlet/testing.py`)."""
+    return run_sibling_suite(SIBLING, "merge_runner_test", failure=SelfTestFailure,
+                             subject="the merge runner's contract", width=34)
 
 
 def main(argv: "list[str] | None" = None) -> int:

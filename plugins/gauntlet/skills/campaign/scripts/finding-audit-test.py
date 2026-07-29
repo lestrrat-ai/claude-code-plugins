@@ -9,27 +9,18 @@ import tempfile
 from pathlib import Path
 from unittest import mock
 
-from _gauntlet.modules import load_module_from_path
-from _gauntlet.testing import capture_cli
+from _gauntlet.modules import load_sibling
+from _gauntlet.testing import capture_cli, checker
 
 
 HERE = Path(__file__).resolve().parent
 OWNER = HERE / "finding-audit.py"
 
 
-def _load_owner():
-    module = load_module_from_path("finding_audit_owner_for_test", OWNER)
-    if module is None:
-        raise RuntimeError(f"cannot load {OWNER}")
-    return module
+A = load_sibling("finding_audit_owner_for_test", OWNER.parent, OWNER.name)
 
 
-A = _load_owner()
-
-
-def check(condition: bool, message: str) -> None:
-    if not condition:
-        raise AssertionError(message)
+check = checker(AssertionError)
 
 
 PURPOSE = "Keep the campaign fix scope bound to audited gating findings."

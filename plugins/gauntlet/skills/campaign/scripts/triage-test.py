@@ -22,26 +22,17 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
-from _gauntlet.modules import load_module_from_path
-from _gauntlet.testing import capture_cli
+from _gauntlet.modules import load_sibling
+from _gauntlet.testing import capture_cli, checker, run_cases
 
 OWNER = Path(__file__).resolve().parent / "triage.py"
 LEDGER = Path(__file__).resolve().parent / "ledger.py"
 
 
-def _load_owner():
-    mod = load_module_from_path("campaign_triage_owner", OWNER, register=True)
-    if mod is None:
-        raise RuntimeError(f"cannot load deterministic tier derivation at {OWNER}")
-    return mod
+M = load_sibling("campaign_triage_owner", OWNER.parent, OWNER.name, register=True)
 
 
-M = _load_owner()
-
-
-def check(condition: bool, message: str) -> None:
-    if not condition:
-        raise M.SelfTestFailure(message)
+check = checker(M.SelfTestFailure)
 
 
 def git(repo: Path, *args: str, check_result: bool = True) -> subprocess.CompletedProcess[bytes]:
@@ -1089,18 +1080,8 @@ CASES = [
 ]
 
 
-def run_cases() -> int:
-    failures = 0
-    for name, description, fn in CASES:
-        try:
-            fn()
-            print(f"PASS {name}: {description}")
-        except Exception as exc:  # noqa: BLE001 - fixture runner must report every case
-            failures += 1
-            print(f"FAIL {name}: {description}: {exc}")
-    print(f"triage fixtures: {len(CASES) - failures} passed, {failures} failed")
-    return 1 if failures else 0
-
-
 if __name__ == "__main__":
-    raise SystemExit(run_cases())
+    # Running this file directly and running `triage.py self-test` must report the same thing, so both
+    # go through the shared runner rather than each keeping a loop.
+    raise SystemExit(run_cases(CASES, failure=M.SelfTestFailure,
+                               subject="the triage classifier's contract", width=34))

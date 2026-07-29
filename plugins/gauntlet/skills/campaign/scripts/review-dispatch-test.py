@@ -11,26 +11,17 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
-from _gauntlet.modules import load_module_from_path
-from _gauntlet.testing import capture_cli
+from _gauntlet.modules import load_sibling
+from _gauntlet.testing import capture_cli, checker
 
 
 OWNER = Path(__file__).resolve().parent / "review-dispatch.py"
 
 
-def _load_owner():
-    mod = load_module_from_path("review_dispatch_owner", OWNER)
-    if mod is None:
-        raise RuntimeError(f"cannot load the review-dispatch tool at {OWNER}")
-    return mod
+D = load_sibling("review_dispatch_owner", OWNER.parent, OWNER.name)
 
 
-D = _load_owner()
-
-
-def check(condition: bool, message: str) -> None:
-    if not condition:
-        raise D.SelfTestFailure(message)
+check = checker(D.SelfTestFailure)
 
 
 SHA = "a3f29c1b7d4e6f8091a2b3c4d5e6f708192a3b4c"

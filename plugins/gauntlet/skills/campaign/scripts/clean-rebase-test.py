@@ -26,26 +26,17 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from _gauntlet.modules import load_module_from_path
-from _gauntlet.testing import capture_cli
+from _gauntlet.modules import load_sibling
+from _gauntlet.testing import capture_cli, checker
 
 OWNER = Path(__file__).resolve().parent / "clean-rebase.py"
 
 
-def _load_owner():
-    mod = load_module_from_path("clean_rebase_owner", OWNER)
-    if mod is None:
-        raise RuntimeError(f"cannot load the clean-rebase tool at {OWNER}")
-    return mod
-
-
-M = _load_owner()
+M = load_sibling("clean_rebase_owner", OWNER.parent, OWNER.name)
 L = M.L  # the ledger module the tool loaded
 
 
-def check(cond, msg) -> None:
-    if not cond:
-        raise M.SelfTestFailure(msg)
+check = checker(M.SelfTestFailure)
 
 
 # --- git / ledger helpers -----------------------------------------------------

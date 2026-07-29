@@ -21,34 +21,21 @@ from io import StringIO
 from pathlib import Path
 from subprocess import CompletedProcess
 
-from _gauntlet.modules import load_module_from_path
-from _gauntlet.testing import capture_cli
+from _gauntlet.modules import load_sibling
+from _gauntlet.testing import capture_cli, checker
 
 OWNER = Path(__file__).resolve().parent / "pr-adopt.py"
 
 
-def _load_owner():
-    mod = load_module_from_path("pr_adopt_owner", OWNER)
-    if mod is None:
-        raise RuntimeError(f"cannot load the pr-adopt tool at {OWNER}")
-    return mod
-
-
-M = _load_owner()
+M = load_sibling("pr_adopt_owner", OWNER.parent, OWNER.name)
 
 
 def _sibling(name: str, filename: str):
-    """Load a sibling campaign tool as a module for the cross-script integration fixture below. Guards the
-    `None` return exactly as `_load_owner` does, so every attribute access is on a real module."""
-    mod = load_module_from_path(name, Path(__file__).resolve().parent / filename)
-    if mod is None:
-        raise RuntimeError(f"cannot load the sibling tool at {filename}")
-    return mod
+    """Load a sibling campaign tool as a module for the cross-script integration fixture below."""
+    return load_sibling(name, OWNER.parent, filename)
 
 
-def check(cond, msg) -> None:
-    if not cond:
-        raise M.SelfTestFailure(msg)
+check = checker(M.SelfTestFailure)
 
 
 def lbl(name: str) -> dict:

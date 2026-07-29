@@ -21,19 +21,12 @@ import sys
 import time
 from pathlib import Path
 
-from _gauntlet.modules import load_module_from_path
+from _gauntlet.modules import load_sibling
 
 OWNER = Path(__file__).resolve().parent / "lease.py"
 
 
-def _load_owner():
-    mod = load_module_from_path("lease_owner", OWNER)
-    if mod is None:
-        raise RuntimeError(f"cannot load the lease accessor at {OWNER}")
-    return mod
-
-
-L = _load_owner()
+L = load_sibling("lease_owner", OWNER.parent, OWNER.name)
 
 
 # --- helpers ------------------------------------------------------------------

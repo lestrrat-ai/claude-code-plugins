@@ -45,7 +45,8 @@ import sys
 from pathlib import Path
 
 from _gauntlet.atomic import replace_text
-from _gauntlet.modules import load_module_from_path, load_sibling
+from _gauntlet.modules import load_sibling
+from _gauntlet.testing import run_sibling_suite
 
 DESCRIPTION = next(iter((__doc__ or "").splitlines()), "")
 
@@ -594,46 +595,10 @@ class SelfTestFailure(AssertionError):
     """A rule this file claims to enforce does not hold."""
 
 
-def sibling_cases() -> list:
-    if not SIBLING.exists():
-        raise SelfTestFailure(f"the fixture file {SIBLING} IS MISSING — this suite has no fixtures to run "
-                              f"and CANNOT report health. Every rule this file enforces is now unpinned.")
-    mod = load_module_from_path("pr_adopt_test", SIBLING, register=True)
-    if mod is None:
-        raise SelfTestFailure(f"{SIBLING} exists but cannot be loaded as a module")
-    cases = getattr(mod, "CASES", None)
-    if not cases:
-        raise SelfTestFailure(f"{SIBLING} exports no CASES — every rule in this file is unpinned while the "
-                              f"suite still exits 0")
-    return list(cases)
-
-
 def self_test() -> int:
-    failures = 0
-    try:
-        cases = sibling_cases()
-    except SelfTestFailure as exc:
-        print(f"FAIL     {'sibling-fixtures':30} -> the fixtures in {SIBLING.name} must be RUNNABLE\n"
-              f"         {exc}")
-        print("\n1 check(s) FAILED — pr-adopt's contract is broken.")
-        return 1
-    for name, rule, fn in cases:
-        try:
-            fn()
-        except SelfTestFailure as exc:
-            print(f"FAIL     {name:30} -> {rule}\n         {exc}")
-            failures += 1
-        except Exception as exc:  # noqa: BLE001
-            print(f"FAIL     {name:30} -> {rule}\n         raised {type(exc).__name__}: {exc}")
-            failures += 1
-        else:
-            print(f"ok       {name:30} -> {rule}")
-    print()
-    if failures:
-        print(f"{failures} check(s) FAILED — pr-adopt's contract is broken.")
-        return 1
-    print(f"all {len(cases)} fixtures hold — pr-adopt's contract is intact.")
-    return 0
+    """Run every fixture in the sibling suite on the shared runner (`_gauntlet/testing.py`)."""
+    return run_sibling_suite(SIBLING, "pr_adopt_test", failure=SelfTestFailure,
+                             subject="pr-adopt's contract")
 
 
 if __name__ == "__main__":

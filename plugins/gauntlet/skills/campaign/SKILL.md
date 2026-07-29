@@ -304,6 +304,7 @@ a line the tool writes.
 | `nudge.py` | Advisory reminder printer for heartbeat start; always exits 0 | its own module docstring |
 | `transport-contract-test.py` | Standalone suite the plugin validator runs directly to pin the typed review/adoption boundary; owns no run state | `references/runtime-adapter.md` |
 | `script-table-test.py` | Standalone suite CI runs directly to prove this table and `scripts/` agree; owns no run state | this section |
+| `self-test-runner-test.py` | Standalone suite CI runs directly to prove the shared fixture runner most `self-test` subcommands exit through refuses every way of not passing that it guards; owns no run state | `scripts/_gauntlet/testing.py` |
 
 Each schema-owning accessor that carries a sibling suite keeps its fixtures in a **sibling
 `*-test.py`** — the accessor's own filename with `-test` appended, in the same directory; its
@@ -311,9 +312,18 @@ Each schema-owning accessor that carries a sibling suite keeps its fixtures in a
 and it is deliberately **not** an enumeration: a list of the suites that exist today is a restatement,
 and it goes stale the next time one is added — by an author who never reads this line. Not every script
 follows it, so do not assume a sibling for one you have not checked: `ci-snapshot.py` has a `self-test`
-whose fixtures are in-file plus golden files under `scripts/fixtures/`, not a sibling module; and the
-standalone suites above (`transport-contract-test.py`, `script-table-test.py`) are run directly, with
-no accessor `self-test` subcommand.
+whose fixtures are in-file plus golden files under `scripts/fixtures/`, not a sibling module; and every
+row above whose Job opens with **Standalone suite** is run directly, with no accessor `self-test`
+subcommand — read them off the table, which `script-table-test.py` keeps complete, rather than from a
+second copy of the list here.
+
+Where an accessor's `self-test` follows the sibling rule it USUALLY routes through one shared
+implementation — `run_sibling_suite` in `scripts/_gauntlet/testing.py` — so the loud-on-missing load, the
+empty-case-table refusal, the loop and the verdict have ONE owner rather than N hand-copies that drift
+apart. The accessor still supplies what is its own: its fixture file, the failure type its fixtures
+raise, the name-column width, and the name of the contract they pin. This is **not universal** — a suite
+whose cases are shaped differently keeps its own loop — so read the accessor's `self_test` to see which
+it is; never assume either way.
 
 ## Worker Dispatch — logical model class
 

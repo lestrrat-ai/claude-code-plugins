@@ -74,7 +74,6 @@ from __future__ import annotations
 
 import argparse
 import fcntl
-import importlib.util
 import json
 import re
 import sys
@@ -90,6 +89,7 @@ from urllib.parse import unquote, urlsplit
 from _gauntlet.atomic import replace_text
 from _gauntlet.jsonl import JsonlError, object_lines
 from _gauntlet.table import config_lines, grid_lines, hidden_notice
+from _gauntlet.testing import run_sibling_suite
 
 DESCRIPTION = "Schema-owning accessor for the follow-up ledger (.gauntlet/followups.jsonl)."
 
@@ -863,29 +863,23 @@ TESTS = Path(__file__).resolve().parent / "followups-test.py"
 
 
 def self_test() -> int:
-    """Run the fixtures in `followups-test.py`.
+    """Run every fixture in `followups-test.py` on the shared runner (`_gauntlet/testing.py`).
 
-    Loaded BY PATH, from THIS script's own directory — never by name and never relative to the cwd:
-    `followups-test` is not a legal module name, and the driver invokes this from arbitrary directories
-    while the script itself lives wherever the plugin is installed. `__file__` is the only thing that knows
-    where its sibling is.
+    The sibling is loaded BY PATH, from THIS script's own directory — never by name and never relative to
+    the cwd: `followups-test` is not a legal module name, and the driver invokes this from arbitrary
+    directories while the script itself lives wherever the plugin is installed. `__file__` is the only
+    thing that knows where its sibling is.
 
-    A MISSING SIBLING IS A LOUD FAILURE, NEVER A PASS. A self-test that reports success because it found no
-    tests is worse than one that fails: it certifies a contract that nothing checked.
+    `failure=AssertionError` is this suite's own failure type reached by its base class: the fixtures
+    raise `ledger-test.py`'s `SelfTestFailure`, which subclasses it, and this file never imports that
+    module. Each fixture is handed its own empty working directory — they build stores on disk.
     """
-    if not TESTS.exists():
-        fail(f"the fixtures are GONE — {TESTS} does not exist. `self-test` verifies NOTHING without them, "
-             f"and it must never report success when it has checked nothing.")
     # The fixtures `import followups`. Run as a script, THIS module is `__main__` and is not registered
     # under its own name — so that import would load and execute a SECOND copy of this file, and the
     # fixtures would then be testing that copy instead of the one running. Register this one first.
     sys.modules.setdefault("followups", sys.modules[__name__])
-    spec = importlib.util.spec_from_file_location("followups_test", TESTS)
-    if spec is None or spec.loader is None:  # a broken install — never an input error
-        fail(f"cannot load the fixtures at {TESTS}")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod.self_test()
+    return run_sibling_suite(TESTS, "followups_test", failure=AssertionError,
+                             subject="the follow-up store's contract", width=24, per_case_dir=True)
 
 
 # --- cli ----------------------------------------------------------------------

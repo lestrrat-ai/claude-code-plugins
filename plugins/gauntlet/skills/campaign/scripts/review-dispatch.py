@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Callable, NoReturn
 
 from _gauntlet.modules import load_module_from_path
+from _gauntlet.testing import run_sibling_suite
 
 
 _HERE = Path(__file__).resolve().parent
@@ -542,44 +543,10 @@ def prepare(args) -> dict:
     return {"route": args.route, "transport": transport}
 
 
-def sibling_cases() -> list:
-    if not SIBLING.exists():
-        raise SelfTestFailure(
-            f"the fixture file {SIBLING} IS MISSING — the review-dispatch tool has no runnable contract"
-        )
-    mod = load_module_from_path("review_dispatch_test", SIBLING, register=True)
-    if mod is None:
-        raise SelfTestFailure(f"{SIBLING} exists but cannot be loaded as a module")
-    cases = getattr(mod, "CASES", None)
-    if not cases:
-        raise SelfTestFailure(f"{SIBLING} exports no CASES — the suite cannot report health")
-    return list(cases)
-
-
 def self_test() -> int:
-    failures = 0
-    try:
-        cases = sibling_cases()
-    except SelfTestFailure as exc:
-        print(f"FAIL     sibling-fixtures -> {exc}")
-        return 1
-    for name, rule, fn in cases:
-        try:
-            fn()
-        except SelfTestFailure as exc:
-            print(f"FAIL     {name:34} -> {rule}\n         {exc}")
-            failures += 1
-        except Exception as exc:  # noqa: BLE001
-            print(f"FAIL     {name:34} -> {rule}\n         raised {type(exc).__name__}: {exc}")
-            failures += 1
-        else:
-            print(f"ok       {name:34} -> {rule}")
-    print()
-    if failures:
-        print(f"{failures} check(s) FAILED — the review-dispatch contract is broken.")
-        return 1
-    print(f"all {len(cases)} fixtures hold — the review-dispatch contract is intact.")
-    return 0
+    """Run every fixture in the sibling suite on the shared runner (`_gauntlet/testing.py`)."""
+    return run_sibling_suite(SIBLING, "review_dispatch_test", failure=SelfTestFailure,
+                             subject="the review-dispatch contract", width=34)
 
 
 def build_parser() -> argparse.ArgumentParser:

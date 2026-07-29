@@ -19,8 +19,8 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-from _gauntlet.modules import load_module_from_path
-from _gauntlet.testing import capture_cli
+from _gauntlet.modules import load_sibling
+from _gauntlet.testing import capture_cli, checker
 
 OWNER = Path(__file__).resolve().parent / "run-id.py"
 
@@ -28,19 +28,10 @@ FIXED = datetime(2026, 7, 4, 9, 15)  # → stamp 260704-0915, matching the doc's
 RUN_ID_RE = r"g\d{6}-\d{4}-[0-9a-f]{8}"
 
 
-def _load_owner():
-    mod = load_module_from_path("run_id_owner", OWNER)
-    if mod is None:
-        raise RuntimeError(f"cannot load the run-id tool at {OWNER}")
-    return mod
+R = load_sibling("run_id_owner", OWNER.parent, OWNER.name)
 
 
-R = _load_owner()
-
-
-def check(cond: bool, msg: str) -> None:
-    if not cond:
-        raise R.SelfTestFailure(msg)
+check = checker(R.SelfTestFailure)
 
 
 # --- the id shape -------------------------------------------------------------

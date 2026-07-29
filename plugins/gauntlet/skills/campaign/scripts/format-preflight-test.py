@@ -15,24 +15,16 @@ import os
 import tempfile
 from pathlib import Path
 
-from _gauntlet.modules import load_module_from_path
+from _gauntlet.modules import load_sibling
+from _gauntlet.testing import checker
 
 OWNER = Path(__file__).resolve().parent / "format-preflight.py"
 
 
-def _load_owner():
-    mod = load_module_from_path("format_preflight_owner", OWNER)
-    if mod is None:
-        raise RuntimeError(f"cannot load the format-preflight guard at {OWNER}")
-    return mod
+R = load_sibling("format_preflight_owner", OWNER.parent, OWNER.name)
 
 
-R = _load_owner()
-
-
-def check(cond, msg):
-    if not cond:
-        raise R.SelfTestFailure(msg)
+check = checker(R.SelfTestFailure)
 
 
 def _result_for(worktree: str, file_arg: str) -> dict:

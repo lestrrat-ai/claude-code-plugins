@@ -123,6 +123,7 @@ jobs:
             plugins/gauntlet/skills/campaign/scripts/run-id-test.py
             plugins/gauntlet/skills/campaign/scripts/fixtures/pyright/marked_stub.pyi
             plugins/gauntlet/skills/campaign/scripts/script-table-test.py
+            plugins/gauntlet/skills/campaign/scripts/self-test-runner-test.py
             plugins/gauntlet/skills/campaign/scripts/base-preflight.py
             plugins/gauntlet/skills/campaign/scripts/base-preflight-test.py
             plugins/gauntlet/skills/campaign/scripts/worker-prompt.py
@@ -447,3 +448,12 @@ jobs:
       # nothing at all (the section anchor or the directory moved) each fail the build.
       - name: Script-table contract (SKILL.md inventory matches scripts/)
         run: python3 plugins/gauntlet/skills/campaign/scripts/script-table-test.py
+
+      # Most `self-test` steps above now get their exit code from ONE shared runner
+      # (`_gauntlet/testing.py`). That concentration is the point of it — and the hazard: a runner that
+      # swallowed a failing fixture, miscounted, or returned 0 over an empty case table would turn every
+      # one of those steps green at once, and every one of them would still LOOK green, so their output
+      # cannot be the evidence. This step is the evidence. It drives the runner into every way of not
+      # passing that the runner guards, and fails if any of those came back zero or unreported.
+      - name: Shared fixture runner refuses every way of not passing
+        run: python3 plugins/gauntlet/skills/campaign/scripts/self-test-runner-test.py

@@ -57,7 +57,7 @@ from pathlib import Path
 from typing import NoReturn
 
 from _gauntlet.modules import load_module_from_path
-from _gauntlet.testing import capture_cli
+from _gauntlet.testing import capture_cli, run_sibling_suite
 
 DESCRIPTION = "Build and bind the reassessment pass for a PR that has stopped converging."
 
@@ -1174,57 +1174,14 @@ def run(argv: "list[str]") -> "tuple[int, str, str]":
     return capture_cli(main, argv)
 
 
-def sibling_cases() -> list:
-    """Load the sibling's fixtures — and FAIL LOUDLY if they are not there.
-
-    A self-test that passes because it found nothing to check is worse than no self-test: it reports health
-    while checking nothing. A reviewer proved exactly that on this repo's own follow-up ledger, where
-    `self_test()` went green with an empty case list. Missing, unloadable, or exporting no cases: all hard
-    errors, never an empty list quietly appended to nothing.
-    """
-    if not SIBLING.exists():
-        raise SelfTestFailure(
-            f"the fixture file {SIBLING} IS MISSING — this suite has no fixtures to run and CANNOT report "
-            f"health. Every rule this file enforces is now unpinned."
-        )
-    mod = load_module_from_path("repair_pass_test", SIBLING, register=True)
-    if mod is None:
-        raise SelfTestFailure(f"{SIBLING} exists but cannot be loaded as a module")
-    cases = getattr(mod, "CASES", None)
-    if not cases:
-        raise SelfTestFailure(f"{SIBLING} exports no CASES — every rule in this file is unpinned while the "
-                              f"suite still exits 0")
-    return list(cases)
-
-
 def self_test() -> int:
-    failures = 0
-    try:
-        cases = sibling_cases()
-    except SelfTestFailure as exc:
-        print(f"FAIL     {'sibling-fixtures':22} -> the fixtures in {SIBLING.name} must be RUNNABLE\n         {exc}")
-        print("\n1 check(s) FAILED — the repair pass's contract is broken.")
-        return 1
-    with tempfile.TemporaryDirectory() as tmpdir:
-        for name, rule, fn in cases:
-            work = Path(tmpdir) / name
-            work.mkdir()
-            try:
-                fn(work)
-            except SelfTestFailure as exc:
-                print(f"FAIL     {name:22} -> {rule}\n         {exc}")
-                failures += 1
-            except Exception as exc:  # noqa: BLE001 — a fixture that CRASHES has not passed
-                print(f"FAIL     {name:22} -> {rule}\n         raised {type(exc).__name__}: {exc}")
-                failures += 1
-            else:
-                print(f"ok       {name:22} -> {rule}")
-    print()
-    if failures:
-        print(f"{failures} check(s) FAILED — the repair pass's contract is broken.")
-        return 1
-    print(f"all {len(cases)} fixtures hold — the repair pass's contract is intact.")
-    return 0
+    """Run every fixture in the sibling suite on the shared runner (`_gauntlet/testing.py`).
+
+    Each fixture is handed its own empty working directory: these fixtures build run directories and
+    ledgers on disk, so one sharing a directory with the next would be reading the previous one's state.
+    """
+    return run_sibling_suite(SIBLING, "repair_pass_test", failure=SelfTestFailure,
+                             subject="the repair pass's contract", width=22, per_case_dir=True)
 
 
 # --- cli ----------------------------------------------------------------------

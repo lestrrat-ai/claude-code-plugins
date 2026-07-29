@@ -43,7 +43,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from _gauntlet.modules import load_module_from_path, load_sibling
+from _gauntlet.modules import load_sibling
+from _gauntlet.testing import run_sibling_suite
 
 _HERE = Path(__file__).resolve().parent
 SIBLING = _HERE / "merge-check-test.py"     # the fixture suite — this tool's executable contract
@@ -324,48 +325,10 @@ class SelfTestFailure(AssertionError):
     """A rule this file claims to enforce does not hold."""
 
 
-def _sibling_cases() -> list:
-    if not SIBLING.exists():
-        raise SelfTestFailure(
-            f"the fixture suite is NOT AT {SIBLING} — `self-test` has NO SUBJECT, and a check that cannot "
-            f"find the thing it tests must FAIL, never pass.")
-    mod = load_module_from_path("merge_check_test", SIBLING, register=True)
-    if mod is None:
-        raise SelfTestFailure(f"{SIBLING} exists but cannot be loaded as a module")
-    cases = getattr(mod, "CASES", None)
-    if not cases:
-        raise SelfTestFailure(f"{SIBLING} exports no CASES — every rule in this file is unpinned while the "
-                              f"suite still exits 0")
-    return list(cases)
-
-
 def self_test() -> int:
-    """Run the sibling suite over every fixture. Non-zero on any failure."""
-    failures = 0
-    try:
-        cases = _sibling_cases()
-    except SelfTestFailure as exc:
-        print(f"FAIL     {'sibling-fixtures':30} -> the fixtures in {SIBLING.name} must be RUNNABLE\n"
-              f"         {exc}")
-        print("\n1 check(s) FAILED — the merge-readiness decider's contract is broken.")
-        return 1
-    for name, rule, fn in cases:
-        try:
-            fn()
-        except SelfTestFailure as exc:
-            print(f"FAIL     {name:30} -> {rule}\n         {exc}")
-            failures += 1
-        except Exception as exc:  # noqa: BLE001
-            print(f"FAIL     {name:30} -> {rule}\n         raised {type(exc).__name__}: {exc}")
-            failures += 1
-        else:
-            print(f"ok       {name:30} -> {rule}")
-    print()
-    if failures:
-        print(f"{failures} fixture(s) failed — the merge-readiness decider's contract is broken.")
-        return 1
-    print(f"all {len(cases)} fixtures hold — the decider's contract is intact.")
-    return 0
+    """Run every fixture in the sibling suite on the shared runner (`_gauntlet/testing.py`)."""
+    return run_sibling_suite(SIBLING, "merge_check_test", failure=SelfTestFailure,
+                             subject="the merge-readiness decider's contract")
 
 
 def main(argv: "list[str] | None" = None) -> int:

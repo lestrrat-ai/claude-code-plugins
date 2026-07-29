@@ -19,25 +19,17 @@ from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 
-from _gauntlet.modules import load_module_from_path
+from _gauntlet.modules import load_sibling
+from _gauntlet.testing import checker
 
 OWNER = Path(__file__).resolve().parent / "label-mirror.py"
 
 
-def _load_owner():
-    mod = load_module_from_path("label_mirror_owner", OWNER)
-    if mod is None:
-        raise RuntimeError(f"cannot load the label-mirror at {OWNER}")
-    return mod
-
-
-M = _load_owner()
+M = load_sibling("label_mirror_owner", OWNER.parent, OWNER.name)
 L = M.L
 
 
-def check(cond: bool, msg: str) -> None:
-    if not cond:
-        raise M.SelfTestFailure(msg)
+check = checker(M.SelfTestFailure)
 
 
 class FakeGh:
