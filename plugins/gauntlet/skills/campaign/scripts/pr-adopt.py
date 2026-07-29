@@ -344,6 +344,11 @@ def cmd_adopt(args) -> int:
     # `ledger run_id is unresolved` — at the very last step, after every review had been spent. An unset
     # header takes this run's id; a header naming a DIFFERENT run refuses here, where the mix-up is cheap
     # to fix, rather than at the merge.
+    #
+    # This run-ownership check and its untouched-on-refusal promise apply when the lease-confirmed single
+    # campaign driver serializes adoption, which is how the campaign runs. Two adoptions hand-started
+    # against ONE ledger at the same moment can both read an unset header; the later write wins. That is an
+    # accepted residual under this repository's single-user calibration, outside this guard's promise.
     recorded_run = header.get("run_id", "-")
     if recorded_run and recorded_run != "-" and recorded_run != args.run_id:
         return _refuse(f"ledger {args.file} belongs to run {recorded_run}, not {args.run_id}")
