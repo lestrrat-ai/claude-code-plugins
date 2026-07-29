@@ -41,12 +41,12 @@ import re
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import NoReturn
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _gauntlet.atomic import replace_text  # noqa: E402
+from _gauntlet.clock import now_iso  # noqa: E402
 from _gauntlet.jsonl import JsonlError, object_lines  # noqa: E402
 from _gauntlet.testing import run_sibling_suite  # noqa: E402
 from _gauntlet.table import config_lines, grid_lines, hidden_notice  # noqa: E402
@@ -239,10 +239,6 @@ TABLE_RULE = "DRIVER-CONSULTED, never injected into a review pass. Promotion bey
 def fail(msg: str) -> NoReturn:
     print(f"review-learnings: {msg}", file=sys.stderr)
     raise SystemExit(1)
-
-
-def now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def is_blank(value: str) -> bool:

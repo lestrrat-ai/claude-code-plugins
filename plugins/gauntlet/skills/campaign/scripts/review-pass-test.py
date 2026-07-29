@@ -2472,6 +2472,11 @@ def run_status_cases(mod: types.ModuleType, T: Tables, tmp: Path) -> int:
             else:
                 path.write_text("".join(line + "\n" for line in content), encoding="utf-8")
         for fname, ts in case.get("mtimes", {}).items():
+            # Spelled out rather than taken from `_gauntlet.clock.TS_FORMAT` ON PURPOSE. The fixtures above
+            # write their `mtimes` keys as literal strings, so reading them back through the constant the
+            # tool itself uses would make a wrong edit to that constant agree with itself and pass. This
+            # copy is the independent pin; it is the one place the literal is allowed to live outside its
+            # owner.
             epoch = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
             os.utime(d / fname, (epoch, epoch))
         argv = ["status", "--run", str(d), "--now", case["now"], *case.get("flags", [])]

@@ -79,7 +79,6 @@ import re
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import NoReturn
 from urllib.parse import unquote, urlsplit
@@ -87,6 +86,7 @@ from urllib.parse import unquote, urlsplit
 # The grid is NOT reimplemented here. The private campaign package owns escaping, layout, and omission
 # notices; this file owns only the follow-up schema, lifecycle, and store lifetime.
 from _gauntlet.atomic import replace_text
+from _gauntlet.clock import now_iso
 from _gauntlet.jsonl import JsonlError, object_lines
 from _gauntlet.table import config_lines, grid_lines, hidden_notice
 from _gauntlet.testing import run_sibling_suite
@@ -452,10 +452,6 @@ ID_RE = re.compile(r"^fu[1-9][0-9]*$")
 def fail(msg: str) -> NoReturn:
     print(f"followups: {msg}", file=sys.stderr)
     raise SystemExit(1)
-
-
-def now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 # --- parse / serialize --------------------------------------------------------

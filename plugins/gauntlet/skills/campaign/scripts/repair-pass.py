@@ -52,10 +52,10 @@ import re
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import NoReturn
 
+from _gauntlet.clock import now_iso
 from _gauntlet.modules import load_module_from_path
 from _gauntlet.testing import capture_cli, run_sibling_suite
 
@@ -187,10 +187,6 @@ def decision_projection(row: dict) -> "dict[str, str]":
 def fail(msg: str) -> NoReturn:
     print(f"repair-pass: {msg}", file=sys.stderr)
     raise SystemExit(1)
-
-
-def now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def permitted_for(row: dict) -> "tuple[str, ...]":
@@ -1111,7 +1107,7 @@ def cmd_decide(path: Path, args) -> int:
              f"would let the ledger say one thing while the record says another.")
 
     row["repair_count"] = str(L.counter(row, "repair_count") + 1)
-    row["repair_decision"] = f"{args.decision}@{now()}"
+    row["repair_decision"] = f"{args.decision}@{now_iso()}"
     if args.decision == "abort":
         # Terminal. The driver still runs the abort PROCEDURE (leave the PR OPEN, drop this run's labels,
         # write abort-<id>.md) — `bailout-and-final-report.md` owns it, and this does not replace it.
