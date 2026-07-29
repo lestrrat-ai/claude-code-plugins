@@ -47,12 +47,6 @@ check = checker(M.SelfTestFailure)
 _GIT = GitFixture(M.SelfTestFailure)
 git = _GIT.run
 head = _GIT.head
-_cfg = _GIT.configure_identity
-
-
-def _run(argv, cwd=None):
-    # Only for the two commands that run OUTSIDE any repository: creating the bare remote and cloning it.
-    return subprocess.run(argv, capture_output=True, text=True, cwd=cwd)  # noqa: S603
 
 
 def _ledger(*args) -> int:
@@ -94,9 +88,8 @@ class Scenario:
         self.orig_head = ""
 
     def build(self, *, status="in_review", reviews_ok=2, repair_decision="-"):
-        _run(["git", "init", "--bare", "-b", "main", str(self.remote)])
-        _run(["git", "clone", str(self.remote), str(self.seed)])
-        _cfg(self.seed)
+        _GIT.init_bare(self.remote)
+        _GIT.clone(self.remote, self.seed)
         # base commit on main
         (self.seed / "f").write_text(_numbered({}), encoding="utf-8")
         git(self.seed, "add", "f")
@@ -118,8 +111,7 @@ class Scenario:
         git(self.seed, "push", "origin", PR_BRANCH)
         self.orig_head = head(self.seed)
         # the PR-head worktree — a fresh clone with the PR branch checked out
-        _run(["git", "clone", str(self.remote), str(self.wt)])
-        _cfg(self.wt)
+        _GIT.clone(self.remote, self.wt)
         git(self.wt, "checkout", PR_BRANCH)
         check(head(self.wt) == self.orig_head, "precondition: the worktree is at the PR head")
         # ledger: header + row, with reviews_ok earned by real verdicts at the PR head
@@ -594,9 +586,7 @@ def t_absent_remote_refused():
         tmp = Path(tmp)
         # a standalone repo with a commit but NO remote configured
         wt = tmp / "solo"
-        wt.mkdir()
-        _run(["git", "init", "-b", "pr", str(wt)])
-        _cfg(wt)
+        _GIT.init_repo(wt, branch="pr")
         (wt / "f").write_text("x\n", encoding="utf-8")
         git(wt, "add", "f")
         git(wt, "commit", "-m", "only")
