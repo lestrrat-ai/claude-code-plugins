@@ -64,8 +64,11 @@ rules keep their own wording; these are illustrations of them, not a second copy
    makes the answer depend on where the heartbeat was launched, and a driver working in a worktree would
    find no store there at all. That one path carries **both** durable reads: the standing-notes file is
    its sibling in the same directory, so there is no second flag to pass and no second path to get wrong.
-   A wrong or omitted `--followups` therefore loses both — and the output SAYS so for each, rather than
-   reporting an empty queue and no notes.
+   What a bad `--followups` costs therefore depends on **which part** is wrong. Omit it, or point it at a
+   **directory** that is not there, and **both** reads are lost. Get the **directory** right and only the
+   **filename** wrong and the notes still arrive — they ride on the directory, not on the whole path —
+   while the store is lost. Either way the output **SAYS** which read did not happen, rather than
+   reporting an empty queue or no notes.
 
    Once bound and confirmed owner, decide on **liveness of THIS run**, not on whether some `state.jsonl`
    exists — and scope **every** git/gh scan to this run's `gauntlet-run-<run-id>` label so another run's

@@ -208,7 +208,9 @@ def t_unread_followup_store_is_disclosed():
 # --- standing notes -----------------------------------------------------------
 # `<project_root>/.gauntlet/nudges.md` — hand-written standing lessons, delivered verbatim after every
 # computed reminder. Its path is DERIVED from `--followups`, never a flag, so these fixtures pin the
-# derivation as hard as the content rules: a wrong path reads the wrong file, or none, and says nothing.
+# derivation as hard as the content rules: a wrong path reads the wrong file, or none. The notes ride on
+# the DIRECTORY, so which part of `--followups` is wrong decides what is lost, and only a directory that
+# is genuinely there and holds no notes file is allowed to say nothing.
 
 HEADER_ONLY = '{"type": "header", "run_id": "g1", "required_set": "none"}\n'
 
@@ -250,9 +252,10 @@ def t_notes_path_is_derived_from_the_followups_path():
 
 
 def t_absent_notes_file_says_nothing():
-    """A missing notes file is the NORMAL state — the file is optional, hand-written user data — so the
-    look that finds nothing is SILENT. This is the one place the notes deliberately split from the
-    follow-up store, whose typed path treats "not there" as not-read.
+    """A missing notes file IN A DIRECTORY THAT IS THERE is the NORMAL state — the file is optional,
+    hand-written user data — so the look that finds nothing is SILENT. This is the one place the notes
+    deliberately split from the follow-up store, whose typed path treats "not there" as not-read. The
+    exemption is the FILE's alone; an unusable directory discloses (`notes-missing-dir-disclosed`).
 
     Teeth: write one line at the same derived path and the SAME invocation must speak. A fixture that
     only checked the silence would pass against a printer that never reads the file at all.
@@ -267,6 +270,47 @@ def t_absent_notes_file_says_nothing():
         check("standing note: keep the ledger honest" in loud,
               "the same invocation must deliver the note once the file exists — the silence was a real "
               "read, not an unread file")
+
+
+def t_missing_notes_directory_is_disclosed():
+    """The silence belongs to the FILE, never to the DIRECTORY. A `.gauntlet/` that is there and holds no
+    `nudges.md` is a look that happened and found nothing, so it says nothing. A `.gauntlet/` that is NOT
+    a directory is a look that never happened, so it is DISCLOSED like every other unusable path — the
+    same class as the dangling symlink and the FIFO. `errno` cannot tell the two apart: both raise
+    `FileNotFoundError` with `ENOENT`, and only the parent's type separates them.
+
+    This is a live state, not a construction. `loop-control.md` names it: a heartbeat that resolves the
+    project root to a worktree passes a `--followups` under a directory that does not exist there, and a
+    deleted `.gauntlet/` (`files-and-ledger.md` warns against it) is the second route.
+
+    Teeth on BOTH halves, because the whole point is that they must not collapse into one behavior: the
+    missing directory must SPEAK and the present one must STAY SILENT, in the same fixture.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        led, store, notes = _laid_out(d)
+        gone = Path(d) / "no-such-dir" / "followups.jsonl"
+        check(not gone.parent.exists(), "the fixture's missing directory must actually be missing")
+        out = _run_main(["--file", str(led), "--followups", str(gone)])
+        check(f"standing notes NOT READ ({gone.parent} is not a directory, so the notes file could not "
+              f"be looked for)" in out,
+              "a missing containing directory must be DISCLOSED, naming it — a look that never happened "
+              "is not an absent file")
+        check("standing notes are UNKNOWN, not absent." in out,
+              "the missing-directory disclosure must join the note family's UNKNOWN wording")
+        # The other half, unchanged and load-bearing: the directory IS there and holds no notes file.
+        check(store.parent.is_dir() and not notes.exists(),
+              "the fixture's present directory must exist and hold no notes file")
+        quiet = _run_main(["--file", str(led), "--followups", str(store)])
+        check("standing note" not in quiet,
+              "a present directory with no notes file must stay SILENT — the genuine-absence design must "
+              "not collapse into the new disclosure")
+        # A regular file where the directory belongs is the same class and must also speak.
+        blocker = Path(d) / "a-file"
+        blocker.write_text("not a directory\n", encoding="utf-8")
+        out = _run_main(["--file", str(led), "--followups", str(blocker / "followups.jsonl")])
+        check("standing notes NOT READ" in out,
+              "a containing path that is a regular file must be DISCLOSED too — 'not a directory' covers "
+              "missing and occupied alike")
 
 
 def t_unread_notes_are_disclosed():
@@ -678,8 +722,10 @@ CASES = [
      t_unread_followup_store_is_disclosed),
     ("notes-path-derived", "the notes file is --followups's sibling nudges.md and nothing else",
      t_notes_path_is_derived_from_the_followups_path),
-    ("notes-absent-silent", "a missing notes file is the normal case and says nothing",
+    ("notes-absent-silent", "a notes file missing from a directory that IS there is the normal case and says nothing",
      t_absent_notes_file_says_nothing),
+    ("notes-missing-dir-disclosed", "a missing notes DIRECTORY discloses; a present one with no file stays silent",
+     t_missing_notes_directory_is_disclosed),
     ("notes-unread-disclosed", "notes that cannot be read SAY so, naming why — never silence",
      t_unread_notes_are_disclosed),
     ("notes-dangling-symlink", "a dangling notes symlink is disclosed, never reported absent",

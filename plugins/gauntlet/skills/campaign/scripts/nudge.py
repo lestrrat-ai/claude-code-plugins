@@ -210,9 +210,11 @@ def read_notes(path: "Path | None") -> "tuple[list, str | None]":
     It splits from that precedent on ONE case, deliberately. `open_followups` treats a `--followups` path
     that is not there as NOT READ, because that path is TYPED and a typo is the likely explanation. This
     path is DERIVED and cannot be mistyped, and the notes file is optional user data whose ABSENCE IS THE
-    NORMAL STATE — so a missing file here is a completed look that found nothing, and it stays SILENT. A
-    disclosure every heartbeat of a run whose user never wrote a note is a false alarm, and a disclosure
-    line that is usually noise is one the driver learns to skip past.
+    NORMAL STATE — so a missing file IN A DIRECTORY THAT IS THERE is a completed look that found nothing,
+    and it stays SILENT. A disclosure every heartbeat of a run whose user never wrote a note is a false
+    alarm, and a disclosure line that is usually noise is one the driver learns to skip past. That
+    exemption is the FILE's alone: an unusable containing directory is not an absent file, it is a look
+    that never happened, and it discloses with everything else in (1) below.
 
     It NEVER raises AND IT NEVER BLOCKS. A permissions error, invalid UTF-8, or a file too large to hold
     all degrade to a named reason — the printer must always exit 0. What is at the path is CLASSIFIED
@@ -223,7 +225,12 @@ def read_notes(path: "Path | None") -> "tuple[list, str | None]":
     whether the entry could be LOOKED AT, never on whether a file was FOUND:
 
     1. `lstat` first, so the link itself is examined rather than what it points at. `FileNotFoundError`
-       here means there is genuinely NO ENTRY — the normal, silent case above.
+       here splits on THE CONTAINING DIRECTORY, because the silent case is only ever "a look happened and
+       found no file". A directory that IS there and holds no `nudges.md` is that look — the normal,
+       silent case above. A containing directory that is NOT a directory (missing, or something else
+       entirely) means the look never happened at all, so it is DISCLOSED like every other unusable path.
+       `errno` cannot draw this line: a missing file inside an existing directory and a missing directory
+       both raise `FileNotFoundError` with `ENOENT`. One extra stat on the parent draws it exactly.
     2. An entry that IS a symlink is resolved with `stat`. A missing target is a found entry that cannot
        be read, so it is DISCLOSED — never reported as the absence in (1), which is how a moved shared
        notes file would drop out of every heartbeat with nothing saying so.
@@ -240,7 +247,13 @@ def read_notes(path: "Path | None") -> "tuple[list, str | None]":
     try:
         info = path.lstat()
     except FileNotFoundError:
-        return [], None  # the look SUCCEEDED and found no entry — the normal case, and it says nothing
+        if path.parent.is_dir():
+            return [], None  # the look SUCCEEDED and found no file — the normal case, and it says nothing
+        # The directory the notes live in is not a directory, so nothing was ever looked at. This is a
+        # correctly invoked campaign's impossible state — the run directory itself lives under it — which
+        # is exactly why it is worth saying: it fires only for a wrong project root or a deleted
+        # `.gauntlet/`, never for the user who simply keeps no notes.
+        return [], f"{path.parent} is not a directory, so the notes file could not be looked for"
     except OSError as exc:
         return [], f"{path} could not be checked ({type(exc).__name__})"
     if stat.S_ISLNK(info.st_mode):
@@ -260,7 +273,9 @@ def read_notes(path: "Path | None") -> "tuple[list, str | None]":
         # disclosed rather than silently mangled by an `errors=` fallback.
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        return [], None  # raced away between the stat and the read; still just an absent file
+        # Raced away between the stat and the read; still just an absent file. No parent check here: the
+        # `lstat` above already found an entry at this path, so the containing directory WAS a directory.
+        return [], None
     except (OSError, ValueError) as exc:
         return [], f"{path} could not be read ({type(exc).__name__})"
     return parse_notes(text), None
@@ -269,7 +284,7 @@ def read_notes(path: "Path | None") -> "tuple[list, str | None]":
 def notes_lines(notes: list, notes_unread: "str | None", path: "Path | None") -> list:
     """The note-family reminder lines: the notes themselves, or the DISCLOSURE of why there are none.
 
-    Silence means one thing only — the file was read and held no usable line. Every other outcome speaks:
+    Silence means one thing only — the look COMPLETED and found no usable line. Every other outcome speaks:
     an unread store says so and names why, and a file over `NOTES_CAP` says how many lines it is hiding.
     """
     if notes_unread is not None:
@@ -460,8 +475,10 @@ def main(argv: "list[str] | None" = None) -> int:
                                             "pass an absolute one. Omitted, or not found, the reminder SAYS "
                                             "the store was not read; it never reports zero. It ALSO locates "
                                             "the standing-notes file, its sibling <dir>/" + NOTES_NAME + ", "
-                                            "whose lines are appended to the reminders; omitted, those are "
-                                            "reported not read too")
+                                            "whose lines are appended to the reminders. Those ride on the "
+                                            "DIRECTORY, so a wrong filename still delivers them; omitted, "
+                                            "or a <dir> that is not a directory, and they are reported not "
+                                            "read too")
     parser.add_argument("--rundir", help="the run directory, for intent/CI/progress file checks "
                                          "(default: the directory holding --file)")
     parser.add_argument("--self-test", action="store_true", help="run every fixture and assert the rules "
