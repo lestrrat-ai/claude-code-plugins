@@ -150,12 +150,19 @@ def _labels(view: dict) -> "tuple[list[str], str | None]":
     `None` when nothing is. ONE walk serves both callers: `_view_problem` reads the problem and refuses,
     and the label gate reads the names on a view that already passed. Returning the problem instead of
     raising it is what lets every view malformation reach the CLI through one wrapper."""
-    raw = view.get("labels")
+    if "labels" not in view:
+        return [], "missing field 'labels'"
+    raw = view["labels"]
     if not isinstance(raw, list):
         return [], f"field 'labels' must be a list, got {type(raw).__name__}"
     names: list[str] = []
     for item in raw:
-        name = item.get("name") if isinstance(item, dict) else item
+        if isinstance(item, dict):
+            if "name" not in item:
+                return names, "field 'labels' contains an object without a 'name'"
+            name = item["name"]
+        else:
+            name = item
         if not isinstance(name, str):
             return names, f"field 'labels' must hold string names, got {type(name).__name__}"
         names.append(name)

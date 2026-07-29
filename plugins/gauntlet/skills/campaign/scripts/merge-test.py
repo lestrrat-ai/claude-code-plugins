@@ -533,8 +533,12 @@ def t_malformed_view_messages_match_the_other_deciders():
         # direction that needs the fixture: the reverse (True passing an isinstance str check) cannot happen.
         ("bool-field-wrong-type", lambda v: {**v, "isDraft": "false"},
          "malformed live PR view: field 'isDraft' must be a bool, got str"),
+        ("labels-missing", lambda v: {k: x for k, x in v.items() if k != "labels"},
+         "malformed live PR view: missing field 'labels'"),
         ("labels-not-a-list", lambda v: {**v, "labels": {"name": "x"}},
          "malformed live PR view: field 'labels' must be a list, got dict"),
+        ("label-object-name-missing", lambda v: {**v, "labels": [{}]},
+         "malformed live PR view: field 'labels' contains an object without a 'name'"),
         ("label-name-not-a-string", lambda v: {**v, "labels": [{"name": 7}]},
          "malformed live PR view: field 'labels' must hold string names, got int"),
     )
