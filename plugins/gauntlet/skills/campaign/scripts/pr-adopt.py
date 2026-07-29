@@ -45,6 +45,7 @@ from pathlib import Path
 
 from _gauntlet.atomic import replace_text
 from _gauntlet.modules import load_sibling
+from _gauntlet.repository import repo_problem
 from _gauntlet.testing import run_sibling_suite
 
 DESCRIPTION = next(iter((__doc__ or "").splitlines()), "")
@@ -304,6 +305,12 @@ def cmd_intent_sync(args) -> int:
 
 def cmd_adopt(args) -> int:
     pr = str(args.pr)
+    # An explicit --repo is interpolated into every `gh` argv this tool builds, so it is checked before
+    # anything runs. `_gauntlet/repository.py` owns the check and its wording.
+    if args.repo:
+        problem = repo_problem(args.repo)
+        if problem is not None:
+            return _refuse(problem)
     run_label = f"{RUN_LABEL_PREFIX}{args.run_id}"
     # gh resolves its target repo from the CWD when `--repo` is absent, but git and the ledger run in
     # `--project-root`. Left in the invoking checkout, gh would label a DIFFERENT repo than the one the

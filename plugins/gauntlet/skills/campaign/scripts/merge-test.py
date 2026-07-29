@@ -1796,7 +1796,30 @@ def t_realgit_main_stderr_preserves_raw_git_byte():
               f"the JSON-quoted tailored path must render as one intact ASCII, line-safe item: {err!r}")
 
 
+def t_malformed_repo_refuses_before_any_phase():
+    """A malformed `--repo` is refused before the merge runner does anything at all.
+
+    `merge.py` performs the irreversible act in this repository. It had NO validation of `--repo`, so the
+    value went into a `gh pr merge` argv unchecked. The guard runs before `execute`, which is why no fake
+    process boundary is needed here: nothing gets far enough to call one.
+    """
+    with tempfile.TemporaryDirectory() as dd:
+        d = Path(dd)
+        led = d / "state.jsonl"
+        led.write_text('{"type": "header", "run_id": "g1", "required_set": "none"}\n', encoding="utf-8")
+        # A SUBPROCESS, because merge's refusal writes to `sys.stderr.buffer` for byte-exactness and an
+        # in-process StringIO has no `.buffer`. Its existing raw-byte fixture drives main the same way.
+        done = subprocess.run(  # noqa: S603 - this suite drives its sibling command
+            [sys.executable, str(OWNER), "run", "--ledger", str(led), "--pr", "9",
+             "--project-root", str(d), "--repo", "not-a-repo"],
+            capture_output=True, text=True, check=False)
+        check(done.returncode != 0, "a malformed --repo must be refused")
+        check("REFUSED" in done.stderr and "'not-a-repo'" in done.stderr,
+              f"the refusal must use merge's own door and quote the value, got {done.stderr!r}")
+
+
 CASES = [
+    ("malformed-repo-refused", "a malformed --repo is refused through merge's own door before any phase runs", t_malformed_repo_refuses_before_any_phase),
     ("happy-owned", "exact merge argv, owned cleanup, terminal write", t_happy_owned_cleanup_and_command),
     ("repo-identity", "a --repo that does not name the checkout's own repository is refused before any live view (case-insensitive match)", t_repo_identity_mismatch_refused_before_view),
     ("merged-live-row", "MERGED with live ledger resumes without another merge", t_merge_landed_ledger_live_resumes),

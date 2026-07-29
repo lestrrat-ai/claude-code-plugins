@@ -156,6 +156,7 @@ from typing import Callable, NamedTuple, NoReturn, cast
 from urllib.parse import quote
 
 from _gauntlet.modules import load_module_from_path
+from _gauntlet.repository import repo_problem
 
 HERE = Path(__file__).resolve().parent
 SNAPSHOT_PY = HERE / "ci-snapshot.py"
@@ -173,13 +174,6 @@ FIXTURES = HERE / "fixtures" / "ci-status"
 # ERROR (exit 2), never a verdict.
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
-# GitHub repository coordinates are ASCII identifiers. Owners use alphanumerics and single, non-edge
-# hyphens; repository names add `.`, `_`, and unrestricted hyphens. GitHub owns both length limits; the
-# named constants below are this tool's defining sites for them.
-OWNER_RE = re.compile(r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*")
-REPOSITORY_RE = re.compile(r"[A-Za-z0-9._-]+")
-OWNER_MAX_LENGTH = 39
-REPOSITORY_MAX_LENGTH = 100
 
 # "this source's response carried no commit oid" — the artifact's word for it, never a sha we made up.
 NO_OID = "-"
@@ -389,14 +383,12 @@ def check_rundir(rundir: Path) -> Path:
 
 
 def check_repo(repo: str) -> str:
-    """An explicit repository is a caller input, not a GitHub read result."""
-    parts = repo.split("/")
-    if (len(parts) != 2
-            or not 1 <= len(parts[0]) <= OWNER_MAX_LENGTH
-            or not 1 <= len(parts[1]) <= REPOSITORY_MAX_LENGTH
-            or OWNER_RE.fullmatch(parts[0]) is None
-            or REPOSITORY_RE.fullmatch(parts[1]) is None):
-        fail(f"--repo {repo!r} is not a valid GitHub owner/name")
+    """An explicit repository is a caller input, not a GitHub read result.
+
+    `_gauntlet/repository.py` owns the check and its wording; this exits through THIS tool's door."""
+    problem = repo_problem(repo)
+    if problem is not None:
+        fail(problem)
     return repo
 
 

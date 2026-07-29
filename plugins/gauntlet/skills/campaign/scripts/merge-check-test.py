@@ -662,7 +662,24 @@ def t_shared_field_problem_semantics():
           "reordering the request must reorder the report")
 
 
+def t_malformed_repo_is_not_yet_before_any_fetch():
+    """A malformed `--repo` fails closed to `not-yet` at the CLI boundary, before any `gh` runs.
+
+    This tool had NO validation at all. It decides whether a PR may MERGE, so an unvalidated value here
+    reached a `gh` argv on the path to the most irreversible act the campaign performs."""
+    code, out, _err = capture_cli(M.main, ["check", "--pr", "9", "--file", "/nonexistent/state.jsonl",
+                                           "--repo", "not-a-repo"])
+    check(code != 0, "a malformed --repo must exit non-zero")
+    result = json.loads(out)
+    check(result["verdict"] == "not-yet", f"a malformed --repo must fail closed to not-yet, got {result!r}")
+    check("'not-a-repo'" in result["reason"], f"the reason must quote the value, got {result!r}")
+    # The repo check runs BEFORE the ledger is opened: the deliberately absent --file never surfaces.
+    check("state.jsonl" not in result["reason"],
+          f"the repo guard must fire before the ledger read, got {result!r}")
+
+
 CASES = [
+    ("malformed-repo-not-yet", "a malformed --repo fails closed to not-yet at the CLI boundary, before the ledger read", t_malformed_repo_is_not_yet_before_any_fetch),
     ("shared-field-problem", "the shared view validator's own semantics: order, empty request, and every missing/wrong-type message", t_shared_field_problem_semantics),
     ("clean-all-met", "CLEAN + every precondition met -> merge", t_clean_and_all_met),
     ("has-hooks", "HAS_HOOKS -> merge", t_has_hooks_merges),

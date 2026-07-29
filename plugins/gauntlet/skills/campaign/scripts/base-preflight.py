@@ -50,6 +50,7 @@ from _gauntlet.argv import bind_separate_option_value
 from _gauntlet.gh import pr_view_json
 from _gauntlet.git_refs import select_base_fetch_refs
 from _gauntlet.modules import load_module_from_path, load_sibling
+from _gauntlet.repository import repo_problem
 from _gauntlet.testing import run_sibling_suite
 from _gauntlet.view import field_problem
 
@@ -395,6 +396,13 @@ def main(argv: "list[str] | None" = None) -> int:
 
     if args.cmd == "self-test":
         return self_test()
+    # An explicit --repo is interpolated into every `gh` argv this tool builds, so it is checked at
+    # the CLI boundary before anything runs. `_gauntlet/repository.py` owns the check and its wording.
+    if args.repo:
+        problem = repo_problem(args.repo)
+        if problem is not None:
+            print(json.dumps(_verdict(RECHECK, problem)))
+            return 1
     return check(args.pr, args.repo, args.view_json, args.project_root,
                  args.worktree, args.base, args.remote, args.file)
 
