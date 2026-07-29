@@ -18,20 +18,13 @@ import sys
 import tempfile
 from pathlib import Path
 
-from _gauntlet.modules import load_module_from_path
-from _gauntlet.testing import capture_cli
+from _gauntlet.modules import load_sibling
+from _gauntlet.testing import capture_cli, checker
 
 OWNER = Path(__file__).resolve().parent / "base-preflight.py"
 
 
-def _load_owner():
-    mod = load_module_from_path("base_preflight_owner", OWNER)
-    if mod is None:
-        raise RuntimeError(f"cannot load the base-currency decider at {OWNER}")
-    return mod
-
-
-M = _load_owner()
+M = load_sibling("base_preflight_owner", OWNER.parent, OWNER.name)
 
 
 def view(*, mergeable="MERGEABLE", mergeStateStatus="CLEAN", baseRefName="main") -> dict:
@@ -40,9 +33,7 @@ def view(*, mergeable="MERGEABLE", mergeStateStatus="CLEAN", baseRefName="main")
     return {"mergeable": mergeable, "mergeStateStatus": mergeStateStatus, "baseRefName": baseRefName}
 
 
-def check(cond: bool, msg: str) -> None:
-    if not cond:
-        raise M.SelfTestFailure(msg)
+check = checker(M.SelfTestFailure)
 
 
 def expect(v: dict, verdict: str, reason: "str | None" = None) -> None:

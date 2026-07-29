@@ -17,19 +17,13 @@ from contextlib import redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from _gauntlet.modules import load_module_from_path
+from _gauntlet.modules import load_sibling
+from _gauntlet.testing import checker
 
 OWNER = Path(__file__).resolve().parent / "nudge.py"
 
 
-def _load_owner():
-    mod = load_module_from_path("nudge_owner", OWNER)
-    if mod is None:
-        raise RuntimeError(f"cannot load the nudge printer at {OWNER}")
-    return mod
-
-
-N = _load_owner()
+N = load_sibling("nudge_owner", OWNER.parent, OWNER.name)
 L = N.L
 
 
@@ -63,9 +57,7 @@ def has(lines, substr) -> bool:
     return any(substr in line for line in lines)
 
 
-def check(cond, msg):
-    if not cond:
-        raise N.SelfTestFailure(msg)
+check = checker(N.SelfTestFailure)
 
 
 # --- always-fire floor --------------------------------------------------------

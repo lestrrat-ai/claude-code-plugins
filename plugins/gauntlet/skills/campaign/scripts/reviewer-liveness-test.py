@@ -16,25 +16,17 @@ import os
 import tempfile
 from pathlib import Path
 
-from _gauntlet.modules import load_module_from_path
+from _gauntlet.modules import load_sibling
+from _gauntlet.testing import checker
 
 OWNER = Path(__file__).resolve().parent / "reviewer-liveness.py"
 
 
-def _load_owner():
-    mod = load_module_from_path("reviewer_liveness_owner", OWNER)
-    if mod is None:
-        raise RuntimeError(f"cannot load the reviewer-liveness probe at {OWNER}")
-    return mod
-
-
-R = _load_owner()
+R = load_sibling("reviewer_liveness_owner", OWNER.parent, OWNER.name)
 WINDOW = R.DEFAULT_QUIET_WINDOW_SECONDS
 
 
-def check(cond, msg):
-    if not cond:
-        raise R.SelfTestFailure(msg)
+check = checker(R.SelfTestFailure)
 
 
 def classify(*, exists, size, mtime_epoch, now_epoch, quiet_window=WINDOW):

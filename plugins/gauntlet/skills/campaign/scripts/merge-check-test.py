@@ -18,20 +18,13 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from _gauntlet.modules import load_module_from_path
-from _gauntlet.testing import capture_cli
+from _gauntlet.modules import load_sibling
+from _gauntlet.testing import capture_cli, checker
 
 OWNER = Path(__file__).resolve().parent / "merge-check.py"
 
 
-def _load_owner():
-    mod = load_module_from_path("merge_check_owner", OWNER)
-    if mod is None:
-        raise RuntimeError(f"cannot load the merge-readiness decider at {OWNER}")
-    return mod
-
-
-M = _load_owner()
+M = load_sibling("merge_check_owner", OWNER.parent, OWNER.name)
 L = M.L
 
 SHA_A = "a" * 40   # the reviewed head
@@ -62,9 +55,7 @@ def decide(r: dict, v: dict) -> dict:
     return M.decide(r, v, required=M.REQUIRED, effective_base=L.effective_base(_HEADER, r))
 
 
-def check(cond: bool, msg: str) -> None:
-    if not cond:
-        raise M.SelfTestFailure(msg)
+check = checker(M.SelfTestFailure)
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:

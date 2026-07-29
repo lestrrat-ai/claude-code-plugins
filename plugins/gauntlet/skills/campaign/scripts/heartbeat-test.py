@@ -16,25 +16,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from _gauntlet.modules import load_module_from_path
-from _gauntlet.testing import capture_cli
+from _gauntlet.modules import load_sibling
+from _gauntlet.testing import capture_cli, checker
 
 OWNER = Path(__file__).resolve().parent / "heartbeat.py"
 
 
-def _load_owner():
-    mod = load_module_from_path("heartbeat_owner", OWNER)
-    if mod is None:
-        raise RuntimeError(f"cannot load the heartbeat wake-prompt emitter at {OWNER}")
-    return mod
+H = load_sibling("heartbeat_owner", OWNER.parent, OWNER.name)
 
 
-H = _load_owner()
-
-
-def check(cond, msg):
-    if not cond:
-        raise H.SelfTestFailure(msg)
+check = checker(H.SelfTestFailure)
 
 
 RUN, TOK = "g260704-0915-a3f29c1b", "aabbccdd"

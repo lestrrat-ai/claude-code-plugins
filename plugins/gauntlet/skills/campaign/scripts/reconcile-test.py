@@ -24,20 +24,13 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from _gauntlet.modules import load_module_from_path
-from _gauntlet.testing import capture_cli
+from _gauntlet.modules import load_sibling
+from _gauntlet.testing import capture_cli, checker
 
 OWNER = Path(__file__).resolve().parent / "reconcile.py"
 
 
-def _load_owner():
-    mod = load_module_from_path("reconcile_owner", OWNER)
-    if mod is None:
-        raise RuntimeError(f"cannot load the reconcile detector at {OWNER}")
-    return mod
-
-
-M = _load_owner()
+M = load_sibling("reconcile_owner", OWNER.parent, OWNER.name)
 LED = M.L                                   # the ledger schema owner reconcile reuses
 
 RUN_ID = "grec-0001"
@@ -50,9 +43,7 @@ SHA_B = "b" * 40
 _UNSET = object()
 
 
-def check(cond: bool, msg: str) -> None:
-    if not cond:
-        raise M.SelfTestFailure(msg)
+check = checker(M.SelfTestFailure)
 
 
 # --- fixture builders ---------------------------------------------------------

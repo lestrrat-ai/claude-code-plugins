@@ -13,20 +13,13 @@ import sys
 import tempfile
 from pathlib import Path
 
-from _gauntlet.modules import load_module_from_path
-from _gauntlet.testing import capture_cli
+from _gauntlet.modules import load_sibling
+from _gauntlet.testing import capture_cli, checker
 
 OWNER = Path(__file__).resolve().parent / "worker-prompt.py"
 
 
-def _load_owner():
-    module = load_module_from_path("worker_prompt_owner", OWNER)
-    if module is None:
-        raise RuntimeError(f"cannot load worker-prompt tool at {OWNER}")
-    return module
-
-
-M = _load_owner()
+M = load_sibling("worker_prompt_owner", OWNER.parent, OWNER.name)
 ISSUES = b"- src/widget.py:19: preserve literal {{ROLE}} and $(touch NEVER)\n"
 LOGS = b"lint: src/widget.py needs layout; literal @@END COMMON@@ and unicode \xe9\x9b\xaa\n"
 # A deterministic, host-neutral stand-in for the driver-resolved format-preflight.py path so the goldens
@@ -44,9 +37,7 @@ GOLDEN_METADATA_SHA256 = {
 }
 
 
-def check(condition: bool, message: str) -> None:
-    if not condition:
-        raise M.SelfTestFailure(message)
+check = checker(M.SelfTestFailure)
 
 
 def expect_refusal(call, message: str) -> None:
