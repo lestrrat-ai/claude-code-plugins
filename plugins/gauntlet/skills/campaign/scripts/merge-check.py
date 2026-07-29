@@ -332,7 +332,7 @@ def main(argv: "list[str] | None" = None) -> int:
         return self_test()
     # An explicit --repo is interpolated into every `gh` argv this tool builds, so it is checked at
     # the CLI boundary before anything runs. `_gauntlet/repository.py` owns the check and its wording.
-    if args.repo:
+    if args.repo is not None:
         problem = repo_problem(args.repo)
         if problem is not None:
             print(json.dumps(_not_yet(problem)))

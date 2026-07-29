@@ -984,6 +984,43 @@ def t_malformed_repo_rechecks_before_any_fetch():
     check("'not-a-repo'" in result["reason"], f"the reason must quote the value, got {result!r}")
 
 
+def t_empty_repo_rechecks_before_view_and_absent_still_fetches():
+    """An explicit empty `--repo` refuses before the view read, while an omitted flag still fetches.
+
+    The guard must distinguish the two argparse values: `""` means the caller supplied an invalid repository;
+    `None` means the optional flag was absent and permits the current-checkout fetch path.
+    """
+    calls = []
+
+    def fetch(pr, *, fields, repo=None, cwd=None, view_json=None):
+        calls.append((pr, fields, repo, cwd, view_json))
+        return view(mergeStateStatus="DIRTY"), None
+
+    old = M.pr_view_json
+    setattr(M, "pr_view_json", fetch)
+    try:
+        empty = capture_cli(M.main, ["check", "--pr", "9", "--repo", ""])
+        empty_calls = list(calls)
+        absent = capture_cli(M.main, ["check", "--pr", "9"])
+    finally:
+        setattr(M, "pr_view_json", old)
+
+    code, out, _err = empty
+    check(code != 0, "an empty --repo must exit non-zero")
+    result = json.loads(out)
+    check(result["verdict"] == "recheck", f"an empty --repo must fail closed to recheck, got {result!r}")
+    check(repr("") in result["reason"], f"the refusal must quote the empty value, got {result!r}")
+    check(empty_calls == [], f"an empty --repo must refuse before the view read, got {empty_calls!r}")
+
+    code, out, _err = absent
+    check(code != 0, "an omitted --repo may reach its normal non-proceed result")
+    result = json.loads(out)
+    check(result["verdict"] == "rebase-first",
+          f"an omitted --repo must retain the current-checkout fetch path, got {result!r}")
+    check(calls == [("9", M.VIEW_FIELDS, None, None, None)],
+          f"an omitted --repo must fetch with repo=None, got {calls!r}")
+
+
 def t_shared_repo_validator_semantics():
     """`_gauntlet/repository.py`'s OWN contract, exercised directly rather than through a caller.
 
@@ -1025,6 +1062,7 @@ def t_shared_repo_validator_semantics():
 
 CASES = [
     ("malformed-repo-rechecks", "a malformed --repo fails closed to recheck at the CLI boundary, before any gh call", t_malformed_repo_rechecks_before_any_fetch),
+    ("empty-repo-rechecks", "an empty --repo refuses before the view read; an omitted --repo still fetches", t_empty_repo_rechecks_before_view_and_absent_still_fetches),
     ("shared-repo-validator", "the shared --repo validator's own semantics: what it accepts, what it refuses, and that it quotes the value", t_shared_repo_validator_semantics),
     ("shared-remote-clone", "the shared bare-remote and clone primitives: bare on the named branch, a usable identity, and a raise on failure", t_shared_remote_and_clone_primitives),
     ("clean-proceeds", "CLEAN passes the enum screen", t_clean_proceeds),

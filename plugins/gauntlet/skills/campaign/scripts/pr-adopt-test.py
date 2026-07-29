@@ -1292,8 +1292,40 @@ def t_malformed_repo_is_refused_before_any_gh_call():
         check(M.L.find_row(rows, "9") is None, "a refused adoption must register no row")
 
 
+def t_empty_repo_is_refused_before_any_gh_call_and_absent_still_adopts():
+    """An explicit empty `--repo` refuses before `gh`, while an omitted flag retains adoption."""
+    with tempfile.TemporaryDirectory() as dd:
+        d = Path(dd)
+        ledger = d / "state.jsonl"
+        _init_ledger(ledger)
+        rec = Recorder(view=view())
+        old = M._run
+        setattr(M, "_run", rec)
+        try:
+            empty = capture_cli(M.main, [
+                "adopt", "--pr", "9", "--run-id", "g1", "--file", str(ledger), "--tier", "HIGH",
+                "--worktrees-root", str(d / "wt"), "--project-root", str(d), "--repo", ""])
+        finally:
+            setattr(M, "_run", old)
+        check(rec.calls == [], f"an empty --repo must refuse before ANY gh or git call, got {rec.calls!r}")
+        code, _out, err = empty
+        check(code != 0, "an empty --repo must be refused")
+        check(repr("") in err, f"the refusal must quote the empty value, got {err!r}")
+        _, rows = M.L.load(ledger)
+        check(M.L.find_row(rows, "9") is None, "an empty --repo must register no row")
+
+        code, _out, err, absent = _adopt(d, ledger, view(), wroot=d / "wt")
+        check(code == 0, f"an omitted --repo must retain adoption, got {code}: {err}")
+        first_view = absent.one("gh", "pr", "view")
+        check(first_view is not None, "an omitted --repo must still read the PR")
+        assert first_view is not None
+        check("--repo" not in first_view,
+              f"an omitted --repo must use the current-checkout gh path, got {first_view!r}")
+
+
 CASES = [
     ("malformed-repo-refused", "a malformed --repo is refused before any gh call and registers no row", t_malformed_repo_is_refused_before_any_gh_call),
+    ("empty-repo-refused", "an empty --repo refuses before gh; an omitted --repo still adopts", t_empty_repo_is_refused_before_any_gh_call_and_absent_still_adopts),
     ("adopt_records_run_id", "adoption writes the ledger run_id header and refuses another run's ledger (fu121)", t_adopt_records_the_run_id_in_the_header),
     ("foreign_ledger_base_mismatch", "a foreign run cannot park an owning row through a base mismatch", t_foreign_ledger_base_mismatch_refuses_without_mutation),
     ("mixed_base_end_to_end", "one mixed-base run walks adopt -> grouped required-set -> merge door -> "

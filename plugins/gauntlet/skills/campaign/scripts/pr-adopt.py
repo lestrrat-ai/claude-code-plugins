@@ -307,7 +307,7 @@ def cmd_adopt(args) -> int:
     pr = str(args.pr)
     # An explicit --repo is interpolated into every `gh` argv this tool builds, so it is checked before
     # anything runs. `_gauntlet/repository.py` owns the check and its wording.
-    if args.repo:
+    if args.repo is not None:
         problem = repo_problem(args.repo)
         if problem is not None:
             return _refuse(problem)
