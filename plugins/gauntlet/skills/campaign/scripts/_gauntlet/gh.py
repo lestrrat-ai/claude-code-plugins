@@ -8,6 +8,18 @@ import subprocess
 from pathlib import Path
 
 
+def _detail(exc: Exception) -> str:
+    """One failure, described so the message is never EMPTY and always names what went wrong.
+
+    The catches below are total, so they see exceptions raised with NO message at all — `MemoryError` is one
+    the parses can genuinely produce — and a reason line reading `could not read ...:` with nothing after the
+    colon tells a reader nothing. The type name is always there, so it always leads; the message, when there
+    is one, follows it.
+    """
+    text = str(exc).strip()
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+
+
 def pr_view_json(pr: str, *, fields: str, repo: "str | None" = None, cwd: "str | None" = None,
                  view_json: "str | None" = None) -> "tuple[object, str | None]":
     """One PR's `--json` view, as `(view, error)` — exactly one of the pair is meaningful.
@@ -22,23 +34,22 @@ def pr_view_json(pr: str, *, fields: str, repo: "str | None" = None, cwd: "str |
     caller while making the failure branch impossible to skip: there is no path here that hands back a view
     the fetch did not produce.
 
-    EVERY failure path yields an error. A SPAWN failure raises `OSError` from `subprocess.run` itself,
-    BEFORE any returncode exists — `gh` absent or not executable, or `cwd` not a usable directory. Uncaught,
-    that prints a traceback and never fails closed, so it is caught here and joins the non-zero-exit and
-    non-JSON branches, as does an unreadable or unparseable `view_json` file.
+    THE GUARANTEE IS TOTAL, AND IT IS DELIBERATELY NOT A LIST: NO `Exception` ESCAPES THIS FUNCTION. Reading
+    the recorded file, spawning `gh`, and parsing either response are each wrapped whole, so however the read,
+    the spawn or the parse fails, the failure leaves as an error string. DO NOT REPLACE THAT WITH THE TYPES
+    THAT HAPPEN TO REACH IT TODAY. Naming them is what this function did for three rounds, and each round
+    shipped exactly the one type the round had seen: the parse alone can raise a decode error, a recursion
+    error and a plain integer-limit `ValueError`, and the next input nobody has thought of raises something
+    else again. An enumeration cannot terminate; the wrapper can.
 
-    UNDECODABLE BYTES ARE A FAILURE PATH, NOT A CRASH, and they raise from a place that looks like neither a
-    read nor a parse. `UnicodeDecodeError` subclasses `ValueError`, so an `except OSError` never sees it and
-    an `except json.JSONDecodeError` catches only the parse. It arrives from TWO spots: `read_text` on a
-    recorded file whose bytes are not UTF-8, and — because `text=True` decodes inside `communicate()` —
-    `subprocess.run` ITSELF when `gh`'s stdout or stderr is not UTF-8, i.e. from the very call the `OSError`
-    clause guards. Both are caught, so invalid bytes from either source come back as an error value.
-
-    DEEP NESTING IS A FAILURE PATH TOO, and it escapes BOTH clauses above. `json.loads` recurses per
-    nesting level, so a response of enough open brackets raises `RecursionError` — whose bases are
-    `RuntimeError` and `Exception`, so it is NOT a `ValueError`: neither `json.JSONDecodeError` nor
-    `UnicodeDecodeError` can see it, and it is not an `OSError` either. Uncaught it is a traceback with no
-    verdict, from the one call every caller relies on to fail closed. Both parses catch it.
+    OVER-CATCHING IS THE CHEAP MISTAKE HERE AND UNDER-CATCHING IS THE EXPENSIVE ONE — that asymmetry, not
+    tidiness, is why the catch is wide. Each `try` body is tiny and fixed (a read plus a parse, a single
+    call, a single parse), so there is almost no room for a programming error to hide in one; if one did, it
+    becomes a value, the caller wraps it in its own error type, and the run still ends in a structured
+    verdict. Under-catching ends it in a traceback with NO verdict, from the one call every caller relies on
+    to fail closed. `Exception` is also the widest catch that is SAFE: `KeyboardInterrupt`, `SystemExit` and
+    `GeneratorExit` derive from `BaseException` alone, so an operator's Ctrl-C and a caller's exit still
+    propagate. NEVER widen this to `BaseException`.
 
     BRANCH ON `error is not None`, NEVER ON `view is None`. `null` is valid JSON, so a recorded `null` is a
     SUCCESSFUL read of a view that is malformed — a different thing from a fetch that failed, and not this
@@ -48,10 +59,8 @@ def pr_view_json(pr: str, *, fields: str, repo: "str | None" = None, cwd: "str |
     if view_json is not None:
         try:
             return json.loads(Path(view_json).read_text(encoding="utf-8")), None
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
-            return None, str(exc)
-        except RecursionError as exc:
-            return None, f"{view_json} is nested too deeply to parse ({exc})"
+        except Exception as exc:  # noqa: BLE001 — the total guarantee above
+            return None, f"could not read the recorded view {view_json}: {_detail(exc)}"
     argv = ["gh", "pr", "view", str(pr)]
     if repo:
         argv += ["--repo", repo]
@@ -59,15 +68,11 @@ def pr_view_json(pr: str, *, fields: str, repo: "str | None" = None, cwd: "str |
     try:
         proc = subprocess.run(  # noqa: S603
             argv, capture_output=True, text=True, check=False, cwd=cwd)
-    except OSError as exc:
-        return None, f"could not run `gh pr view {pr}`: {exc}"
-    except UnicodeDecodeError as exc:
-        return None, f"`gh pr view {pr}` output is not valid UTF-8: {exc}"
+    except Exception as exc:  # noqa: BLE001 — the total guarantee above
+        return None, f"could not run `gh pr view {pr}`: {_detail(exc)}"
     if proc.returncode != 0:
         return None, f"`gh pr view {pr}` exited {proc.returncode}: {proc.stderr.strip()}"
     try:
         return json.loads(proc.stdout), None
-    except json.JSONDecodeError as exc:
-        return None, f"gh response is not JSON ({exc})"
-    except RecursionError as exc:
-        return None, f"gh response is nested too deeply to parse ({exc})"
+    except Exception as exc:  # noqa: BLE001 — the total guarantee above
+        return None, f"could not read the `gh pr view {pr}` response: {_detail(exc)}"

@@ -20,7 +20,8 @@ from pathlib import Path
 from _gauntlet import gh as GH
 from _gauntlet.gitfixture import GitFixture
 from _gauntlet.modules import load_sibling
-from _gauntlet.testing import capture_cli, checker, deeply_nested_json, gh_writing
+from _gauntlet.testing import (capture_cli, checker, deeply_nested_json, gh_writing,
+                               hostile_json_responses)
 
 OWNER = Path(__file__).resolve().parent / "merge-check.py"
 
@@ -420,11 +421,11 @@ def t_cli_gh_spawn_failure():
 
 
 def t_cli_undecodable_view_json():
-    # A recorded --view-json whose BYTES are not UTF-8. The decode raises UnicodeDecodeError, which
-    # subclasses ValueError and is therefore invisible to an `except OSError` and to an
-    # `except json.JSONDecodeError` — the read never reaches the parse. It must still fail CLOSED through
-    # the one `except ViewError`: a structured not-yet on stdout, a NON-ZERO exit, and NO traceback.
-    # capture_cli only catches SystemExit, so an uncaught decode error would ESCAPE here — that is the teeth.
+    # A recorded --view-json whose BYTES are not UTF-8, so the failure comes from the DECODE and the read
+    # never reaches the parse. It must fail CLOSED through the one `except ViewError`: a structured not-yet
+    # on stdout, a NON-ZERO exit, and NO traceback. capture_cli only catches SystemExit, so an uncaught
+    # decode error would ESCAPE here — that is the teeth. This row pins the MESSAGE for this input; that no
+    # input at all can escape is the hostile-table fixture's job, not this one's.
     with tempfile.TemporaryDirectory() as d:
         led = Path(d) / "state.jsonl"
         L.dump(led, dict(L.HEADER_DEFAULTS, run_id="g1"), [row()])
@@ -442,8 +443,8 @@ def t_cli_undecodable_view_json():
 
 def t_cli_undecodable_gh_stdout():
     # The same invalid bytes, but from a REAL `gh` resolved through PATH. With text=True the decode happens
-    # inside communicate(), so UnicodeDecodeError comes out of the subprocess.run CALL — exactly where the
-    # OSError clause sits, and a ValueError subclass that clause cannot see. Drive the real CLI with NO
+    # inside communicate(), so the failure surfaces from the subprocess.run CALL rather than from the parse
+    # after it — a SPAWN-site failure that looks like neither a read nor a parse. Drive the real CLI with NO
     # --view-json so load_view takes the gh path.
     with tempfile.TemporaryDirectory() as d:
         led = Path(d) / "state.jsonl"
@@ -460,11 +461,11 @@ def t_cli_undecodable_gh_stdout():
 
 def t_cli_deep_view_json():
     # A recorded --view-json nested far past the parse's recursion limit. `json.loads` recurses per nesting
-    # level, so it raises RecursionError — a RuntimeError, NOT a ValueError, so neither the JSONDecodeError
-    # clause nor the UnicodeDecodeError one beside it can see it, and it is not an OSError either. It must
-    # still fail CLOSED through the one `except ViewError`: a structured not-yet on stdout, a NON-ZERO exit,
-    # and NO traceback. capture_cli only catches SystemExit, so an uncaught RecursionError would ESCAPE
-    # here — that is the teeth.
+    # level, so it raises RecursionError — a RuntimeError, in a different branch of the exception tree from
+    # every other input here. It must fail CLOSED through the one `except ViewError`: a structured not-yet on
+    # stdout, a NON-ZERO exit, and NO traceback. capture_cli only catches SystemExit, so an uncaught
+    # RecursionError would ESCAPE here — that is the teeth. This row pins the MESSAGE for this input; the
+    # hostile-table fixture is what pins that no input escapes.
     with tempfile.TemporaryDirectory() as d:
         led = Path(d) / "state.jsonl"
         L.dump(led, dict(L.HEADER_DEFAULTS, run_id="g1"), [row()])
@@ -484,7 +485,8 @@ def t_cli_deep_view_json():
 def t_cli_deep_gh_stdout():
     # The same too-deep response, but from a REAL `gh` resolved through PATH, so the RecursionError comes
     # out of the SECOND parse — the live-fetch one, a separate `try` from the recorded-file parse above and
-    # therefore a separate escape. No --view-json, so load_view takes the gh path.
+    # therefore a separate escape. Every guarantee `_gauntlet/gh.py` makes has to hold at BOTH parse sites,
+    # and only a fixture on each proves it. No --view-json, so load_view takes the gh path.
     with tempfile.TemporaryDirectory() as d:
         led = Path(d) / "state.jsonl"
         L.dump(led, dict(L.HEADER_DEFAULTS, run_id="g1"), [row()])
@@ -497,6 +499,48 @@ def t_cli_deep_gh_stdout():
           f"too-deep gh output must decide not-yet, never merge, got {result!r}")
     check(result["reason"].startswith("could not fetch PR view:"),
           f"the reason must name the failed view fetch, got {result['reason']!r}")
+
+
+def t_cli_hostile_responses_never_escape():
+    """THE GUARANTEE, not a member list: for EVERY hostile response in the shared table, and at BOTH of the
+    fetch's parse sites, the CLI prints a structured verdict and prints no traceback.
+
+    The per-input fixtures above cannot make this claim. Each was written around an exception type that was
+    already known, so a family member discovered tomorrow leaves all of them green — which is how a plain
+    `ValueError` from an oversized integer literal reached a released decider past clauses that already named
+    a decode error and a recursion error. This fixture is driven by DATA: a row added to
+    `hostile_json_responses` fails here until the fetch survives it.
+
+    Both sites, every row. The recorded-file parse and the live-fetch parse are separate `try` blocks, so a
+    guarantee proved at one says nothing about the other.
+    """
+    for name, payload in hostile_json_responses():
+        with tempfile.TemporaryDirectory() as d:
+            led = Path(d) / "state.jsonl"
+            L.dump(led, dict(L.HEADER_DEFAULTS, run_id="g1"), [row()])
+            vjson = Path(d) / "view.json"
+            vjson.write_bytes(payload)
+            recorded = capture_cli(
+                M.main, ["check", "--pr", "9", "--file", str(led), "--view-json", str(vjson)])
+            with gh_writing(payload):
+                live = capture_cli(M.main, ["check", "--pr", "9", "--file", str(led), "--repo", "o/n"])
+        for site, (code, out, err) in (("--view-json", recorded), ("gh stdout", live)):
+            label = f"[{name} via {site}]"
+            # capture_cli only catches SystemExit, so anything else escaping the fetch lands HERE as a raised
+            # exception and the runner reports this fixture as a crash — the teeth.
+            check(err == "", f"{label} must NOT print a traceback, got stderr {err!r}")
+            check(code != 0, f"{label} must exit non-zero (fail closed), got {code}")
+            try:
+                result = json.loads(out)
+            except json.JSONDecodeError as exc:
+                raise M.SelfTestFailure(
+                    f"{label} must print a structured verdict on stdout, got {out!r} ({exc})") from exc
+            check(result.get("verdict") == "not-yet",
+                  f"{label} must decide not-yet, never merge, got {result!r}")
+            check(str(result.get("reason", "")).startswith("could not fetch PR view:"),
+                  f"{label} must name the failed view fetch, got {result!r}")
+            check(result["reason"].strip() != "could not fetch PR view:",
+                  f"{label} must say WHAT failed, not an empty detail, got {result['reason']!r}")
 
 
 def t_cli_unresolved_base_never_merges():
@@ -593,4 +637,6 @@ CASES = [
      t_cli_deep_view_json),
     ("cli-deep-gh-stdout", "gh stdout too deeply nested to parse fails closed to not-yet",
      t_cli_deep_gh_stdout),
+    ("cli-hostile-responses", "every hostile response in the shared table fails closed at BOTH parse sites",
+     t_cli_hostile_responses_never_escape),
 ]

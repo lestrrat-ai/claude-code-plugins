@@ -43,9 +43,9 @@ _NESTING_DEPTH = 100_000
 def deeply_nested_json() -> bytes:
     """A well-formed JSON array nested far past any parse's recursion limit, as the RAW BYTES of a response.
 
-    This is the input that makes `json.loads` raise `RecursionError` — whose bases are `RuntimeError` and
-    `Exception`, so it is NOT a `ValueError`: an `except json.JSONDecodeError` cannot see it, and neither
-    can the `UnicodeDecodeError` clause that sits beside it in the same reader.
+    This is the input that makes `json.loads` raise `RecursionError`, which is a `RuntimeError` and NOT a
+    `ValueError` — so it lands in a DIFFERENT branch of the exception tree from a syntax error or a decode
+    error, and any reader that catches by naming types will miss it unless it named this one too.
 
     It is the shared input for the suites that drive `_gauntlet/gh.py`'s two parses, which want a WHOLE
     response. It is deliberately NOT the tree's only deep-JSON fixture: the JSONL readers pin the same
@@ -53,6 +53,46 @@ def deeply_nested_json() -> bytes:
     of different shapes for different parsers rather than removing a duplicate.
     """
     return b"[" * _NESTING_DEPTH + b"]" * _NESTING_DEPTH
+
+
+# Python 3.11 and later refuse to convert an integer STRING longer than this many digits, so a JSON document
+# holding a longer integer literal is well-formed and still unparseable. The limit is CPython's documented
+# `sys.get_int_max_str_digits()` default; the payload below clears it by a wide margin rather than sitting on
+# it, so this fixture does not become a test of one interpreter's threshold.
+_OVERSIZED_INT_DIGITS = 5000
+
+
+def oversized_int_json() -> bytes:
+    """A well-formed JSON object whose integer literal is too long for CPython to convert, as RAW BYTES.
+
+    This is the input that makes `json.loads` raise a PLAIN `ValueError` — not a `json.JSONDecodeError`, not
+    a `UnicodeDecodeError`, but their shared BASE. A reader that catches the two subclasses by name lets this
+    one straight through, which is exactly how it was found.
+    """
+    return b'{"n": ' + b"9" * _OVERSIZED_INT_DIGITS + b"}"
+
+
+def hostile_json_responses() -> "list[tuple[str, bytes]]":
+    """Every `(name, raw bytes)` row a `gh pr view` reader must survive, as a TABLE rather than a member list.
+
+    THIS IS THE CHECK THAT CAN FAIL FOR AN INPUT NOBODY NAMED. The per-exception fixtures beside it pin which
+    input produces which message, and that is worth having — but each one is written around an exception type
+    that was already known, so a family member discovered tomorrow cannot make any of them go red. A caller
+    drives this whole table through its real CLI and asserts the same property for every row: a structured
+    verdict on stdout, no traceback on stderr. ADD A ROW HERE when a new hostile input turns up; that is the
+    one edit that makes every suite using the table cover it at once.
+
+    The rows are deliberately spread across the exception tree — a syntax error, a decode failure before the
+    parse is even reached, a conversion limit inside a well-formed document, and a recursion limit — so that
+    a reader narrowed back to catching a single branch fails at least one row.
+    """
+    return [
+        ("bad-syntax", b"{not json at all"),
+        ("truncated", b'{"mergeable": "MERGEA'),
+        ("undecodable-bytes", b'{"mergeable": "MERGEABLE", "x": "\xff"}'),
+        ("oversized-int", oversized_int_json()),
+        ("deep-nesting", deeply_nested_json()),
+    ]
 
 
 @contextmanager
