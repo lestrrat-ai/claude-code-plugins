@@ -89,6 +89,27 @@ jobs:
           fi
           printf 'type-checking %s\n' "${files[@]}"
 
+          # STUB COVERAGE, CHECKED INDEPENDENTLY OF DISCOVERY. The filesAnalyzed assertion below compares
+          # pyright's count against the DISCOVERED count, so it cannot notice a discovery that stopped
+          # looking for something: drop `*.pyi` from the pathspec above and both numbers fall together and
+          # the step still passes. This asks a separate question with its own pathspec — are the tracked
+          # stubs in the input set? — which is the only way the two can disagree.
+          mapfile -d '' -t stubs < <(git ls-files -z -- '*.pyi')
+          if ((${#stubs[@]} == 0)); then
+            echo "::error::no tracked .pyi stub was found; this repository keeps one so stub coverage stays checked"
+            exit 1
+          fi
+          for stub in "${stubs[@]}"; do
+            found=0
+            for file in "${files[@]}"; do
+              if [ "${file}" = "${stub}" ]; then found=1; break; fi
+            done
+            if ((found == 0)); then
+              echo "::error::tracked stub ${stub} is not in the type-check input set — discovery dropped stub files"
+              exit 1
+            fi
+          done
+
           npx --yes pyright@1.1.410 --outputjson "${files[@]/#/./}" | tee pyright.json
           analyzed=$(jq '.summary.filesAnalyzed' pyright.json)
           expected=${#files[@]}
