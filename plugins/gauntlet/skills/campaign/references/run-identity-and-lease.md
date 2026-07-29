@@ -58,14 +58,17 @@ Invoke it through `runtime-adapter.md`'s `create_run_directory(repository)`, whi
 host-specific `repository.scratch_root` and owns that invocation. The atomic create and the collision
 retry live in `run-id.py`; the caller no longer mints an id or retries. Do not unpack that operation here.
 
-Record it in the ledger header field `run_id` (`ledger.py --file <state.jsonl> header set run_id
-<run-id>`) and re-read it every heartbeat (`ledger.py … header get run_id`, like `reviewer`); never trust
+The ledger header field `run_id` records it, and **adoption writes that field itself** — `pr-adopt.py
+adopt` sets it when the header has none and REFUSES a ledger that already names a different run. The
+driver does not set it by hand: it used to, and a driver that forgot left the field unset until
+`merge.py` refused a fully-gated PR with `ledger run_id is unresolved`, after every review had been
+spent. Re-read it every heartbeat (`ledger.py … header get run_id`, like `reviewer`); never trust
 in-context memory for it — a heartbeat may be a fresh agent instance. It flows into:
 
 | Owned by the run | Namespaced form |
 |------------------|-----------------|
 | tmp working dir  | `<rundir>` from the runtime adapter's run-directory operation (all state/pr/review/ci/abort/lease files) |
-| ledger header    | the `run_id` header field (set/read via `ledger.py … header set/get run_id`) |
+| ledger header    | the `run_id` header field (written by `pr-adopt.py adopt`; read via `ledger.py … header get run_id`) |
 | PR owner label   | `gauntlet-run-<run-id>` — the **authoritative "mine" marker**. Every adopted PR is tagged with it; it, not any branch name, is what makes a PR this run's. |
 | branch           | the **adopted PR's own `headRefName`** — campaign reuses the PR's existing branch and does NOT mint a `fix-<run-id>-...` branch, so ownership can't be read off the branch name (that's the label's job). |
 | worktree         | the ledger-recorded `worktree` path resolved by the repository-context-aware adoption operation; only a campaign-created worktree (`worktree_owned = yes`) is ever removed (see "PR adoption" / Stage 3) |

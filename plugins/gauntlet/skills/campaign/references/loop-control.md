@@ -191,7 +191,7 @@ rules keep their own wording; these are illustrations of them, not a second copy
      returned directory's final path component; **then** take the run per `run-identity-and-lease.md`,
      "Take a run" (which, BEFORE arming, records `pending_adoption` = this set's PR list; then token,
      heartbeat arming, `lease.py acquire` — in that order),
-     and write the `state.jsonl` header with `run_id` set. **The header `base_branch` stays its `-`
+     — the `state.jsonl` header's `run_id` is written by adoption below, not here. **The header `base_branch` stays its `-`
      default** — the base is per-row now, recorded on each row at adoption from that PR's live
      `baseRefName`, never a run-wide header value (`files-and-ledger.md`, the row `base_branch` field).
      Then **adopt** each PR
