@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import inspect
+import os
+import sys
 import tempfile
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from io import StringIO
@@ -29,6 +31,36 @@ def capture_cli(main: "Callable[[list[str]], int]", argv: "list[str]") -> "tuple
     except SystemExit as exc:
         code = exc.code if isinstance(exc.code, int) else 1
     return code, out.getvalue(), err.getvalue()
+
+
+@contextmanager
+def gh_writing(stdout: bytes, *, exit_code: int = 0) -> "Generator[None, None, None]":
+    """Put a fake ``gh`` FIRST on ``PATH`` that writes exactly ``stdout`` as RAW BYTES, then exits.
+
+    A str-typed stub over ``subprocess.run`` cannot reproduce what an operator's ``gh`` can actually do,
+    because bytes that are not valid UTF-8 never survive being written as a Python ``str``. Only a real
+    child process writing to its raw stdout buffer gets them onto the pipe — and that is the whole point
+    for a decider that spawns with ``text=True``, where the decode happens inside ``communicate()`` and
+    any failure therefore surfaces from the ``subprocess.run`` CALL rather than from the parse after it.
+
+    ``PATH`` is restored on the way out, so the real ``gh`` answers again for every later fixture.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fake = Path(tmpdir) / "gh"
+        fake.write_text(
+            f"#!{sys.executable}\n"
+            "import sys\n"
+            f"sys.stdout.buffer.write({stdout!r})\n"
+            "sys.stdout.buffer.flush()\n"
+            f"raise SystemExit({exit_code})\n",
+            encoding="utf-8")
+        fake.chmod(0o755)
+        before = os.environ.get("PATH", "")
+        os.environ["PATH"] = f"{tmpdir}{os.pathsep}{before}"
+        try:
+            yield
+        finally:
+            os.environ["PATH"] = before
 
 
 # --- the shared fixture runner ------------------------------------------------

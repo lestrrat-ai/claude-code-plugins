@@ -237,10 +237,13 @@ def validate_view(view: object) -> "str | None":
 
 def load_view(pr: str, repo: "str | None", view_json: "str | None") -> dict:
     """The PR's live view — from a recorded `gh pr view` JSON (`--view-json`, testable without gh) or from
-    `gh pr view` itself, both through `_gauntlet/gh.py`, the ONE owner of that fetch. It reports a failure
-    as a MESSAGE — the spawn failure that raises before any returncode exists (gh absent or not executable)
-    included — and every one of them becomes a `ViewError` here, so every gh-path failure fails CLOSED via
-    the one `except ViewError` and never an uncaught traceback with no verdict on stdout.
+    `gh pr view` itself, both through `_gauntlet/gh.py` — the ONE owner of that fetch AND of the set of
+    failures it hands back as a MESSAGE rather than raising. Every one of those messages becomes a
+    `ViewError` here, so every gh-path failure fails CLOSED via the one `except ViewError` and never an
+    uncaught traceback with no verdict on stdout.
+
+    Do NOT restate that set here. It has already grown once (undecodable bytes joined the spawn failure),
+    and an unpacked copy in this docstring is exactly the gloss that would have gone stale when it did.
     """
     view, error = pr_view_json(pr, fields=VIEW_FIELDS, repo=repo, view_json=view_json)
     if error is not None:

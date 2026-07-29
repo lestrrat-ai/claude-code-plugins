@@ -20,7 +20,7 @@ from pathlib import Path
 
 from _gauntlet.gitfixture import GitFixture
 from _gauntlet.modules import load_sibling
-from _gauntlet.testing import capture_cli, checker
+from _gauntlet.testing import capture_cli, checker, gh_writing
 
 OWNER = Path(__file__).resolve().parent / "base-preflight.py"
 
@@ -198,6 +198,41 @@ def t_cli_bad_project_root_fails_closed():
     result = json.loads(out)
     check(result["verdict"] == "recheck",
           f"a bad --project-root must decide recheck, never proceed, got {result!r}")
+    check(result["reason"].startswith("could not fetch PR view:"),
+          f"the reason must name the fetch failure, got {result['reason']!r}")
+
+
+def t_cli_undecodable_view_json_fails_closed():
+    # A recorded --view-json whose BYTES are not UTF-8. The decode raises UnicodeDecodeError, which
+    # subclasses ValueError and is therefore invisible to an `except OSError` and to an
+    # `except json.JSONDecodeError` — the read never reaches the parse. It must still fail CLOSED: a
+    # structured recheck on stdout, a NON-ZERO exit, and NO traceback. capture_cli only catches SystemExit,
+    # so an uncaught decode error would ESCAPE here and fail this fixture — that is the teeth.
+    with tempfile.TemporaryDirectory() as d:
+        vjson = Path(d) / "view.json"
+        vjson.write_bytes(b'{"mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "x": "\xff"}')
+        code, out, err = capture_cli(M.main, ["check", "--pr", "9", "--view-json", str(vjson)])
+    check(code != 0, f"an undecodable --view-json must exit non-zero (fail closed), got {code} (stderr: {err})")
+    check(err == "", f"an undecodable --view-json must NOT print a traceback, got stderr {err!r}")
+    result = json.loads(out)
+    check(result["verdict"] == "recheck",
+          f"an undecodable --view-json must decide recheck, never proceed, got {result!r}")
+    check(result["reason"].startswith("could not fetch PR view:"),
+          f"the reason must name the fetch failure, got {result['reason']!r}")
+
+
+def t_cli_undecodable_gh_stdout_fails_closed():
+    # The same invalid bytes, but from a REAL `gh` resolved through PATH. With text=True the decode happens
+    # inside communicate(), so UnicodeDecodeError comes out of the subprocess.run CALL — exactly where the
+    # OSError clause sits, and a ValueError subclass that clause cannot see. No --view-json, so load_view
+    # takes the gh path. Fail CLOSED: a structured recheck on stdout, NON-ZERO exit, NO traceback.
+    with gh_writing(b'{"mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "x": "\xff"}'):
+        code, out, err = capture_cli(M.main, ["check", "--pr", "9"])
+    check(code != 0, f"undecodable gh output must exit non-zero (fail closed), got {code} (stderr: {err})")
+    check(err == "", f"undecodable gh output must NOT print a traceback, got stderr {err!r}")
+    result = json.loads(out)
+    check(result["verdict"] == "recheck",
+          f"undecodable gh output must decide recheck, never proceed, got {result!r}")
     check(result["reason"].startswith("could not fetch PR view:"),
           f"the reason must name the fetch failure, got {result['reason']!r}")
 
@@ -848,6 +883,10 @@ CASES = [
     ("cli-malformed", "a view missing a field fails closed to recheck, never KeyError", t_cli_malformed),
     ("cli-bad-project-root", "an invalid --project-root fails closed to recheck, no traceback",
      t_cli_bad_project_root_fails_closed),
+    ("cli-undecodable-view-json", "a --view-json that is not UTF-8 fails closed to recheck, no traceback",
+     t_cli_undecodable_view_json_fails_closed),
+    ("cli-undecodable-gh-stdout", "gh stdout that is not UTF-8 fails closed to recheck, no traceback",
+     t_cli_undecodable_gh_stdout_fails_closed),
     ("clean-view-stale-base", "a CLEAN second candidate behind a merged sibling rebases",
      t_clean_view_with_stale_base_rebases),
     ("clean-view-current-base", "a CLEAN candidate containing fetched base proceeds",

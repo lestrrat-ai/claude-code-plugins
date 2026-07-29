@@ -20,7 +20,7 @@ from pathlib import Path
 from _gauntlet import gh as GH
 from _gauntlet.gitfixture import GitFixture
 from _gauntlet.modules import load_sibling
-from _gauntlet.testing import capture_cli, checker
+from _gauntlet.testing import capture_cli, checker, gh_writing
 
 OWNER = Path(__file__).resolve().parent / "merge-check.py"
 
@@ -419,6 +419,45 @@ def t_cli_gh_spawn_failure():
           f"the reason must name the failed view fetch, got {result['reason']!r}")
 
 
+def t_cli_undecodable_view_json():
+    # A recorded --view-json whose BYTES are not UTF-8. The decode raises UnicodeDecodeError, which
+    # subclasses ValueError and is therefore invisible to an `except OSError` and to an
+    # `except json.JSONDecodeError` — the read never reaches the parse. It must still fail CLOSED through
+    # the one `except ViewError`: a structured not-yet on stdout, a NON-ZERO exit, and NO traceback.
+    # capture_cli only catches SystemExit, so an uncaught decode error would ESCAPE here — that is the teeth.
+    with tempfile.TemporaryDirectory() as d:
+        led = Path(d) / "state.jsonl"
+        L.dump(led, dict(L.HEADER_DEFAULTS, run_id="g1"), [row()])
+        vjson = Path(d) / "view.json"
+        vjson.write_bytes(b'{"state": "OPEN", "x": "\xff"}')
+        code, out, err = capture_cli(
+            M.main, ["check", "--pr", "9", "--file", str(led), "--view-json", str(vjson)])
+    check(code != 0, f"an undecodable --view-json must exit non-zero (fail closed), got {code} (stderr: {err})")
+    result = json.loads(out)
+    check(result["verdict"] == "not-yet",
+          f"an undecodable --view-json must decide not-yet, never merge, got {result!r}")
+    check(result["reason"].startswith("could not fetch PR view:"),
+          f"the reason must name the failed view fetch, got {result['reason']!r}")
+
+
+def t_cli_undecodable_gh_stdout():
+    # The same invalid bytes, but from a REAL `gh` resolved through PATH. With text=True the decode happens
+    # inside communicate(), so UnicodeDecodeError comes out of the subprocess.run CALL — exactly where the
+    # OSError clause sits, and a ValueError subclass that clause cannot see. Drive the real CLI with NO
+    # --view-json so load_view takes the gh path.
+    with tempfile.TemporaryDirectory() as d:
+        led = Path(d) / "state.jsonl"
+        L.dump(led, dict(L.HEADER_DEFAULTS, run_id="g1"), [row()])
+        with gh_writing(b'{"state": "OPEN", "x": "\xff"}'):
+            code, out, err = capture_cli(M.main, ["check", "--pr", "9", "--file", str(led), "--repo", "o/n"])
+    check(code != 0, f"undecodable gh output must exit non-zero (fail closed), got {code} (stderr: {err})")
+    result = json.loads(out)
+    check(result["verdict"] == "not-yet",
+          f"undecodable gh output must decide not-yet, never merge, got {result!r}")
+    check(result["reason"].startswith("could not fetch PR view:"),
+          f"the reason must name the failed view fetch, got {result['reason']!r}")
+
+
 def t_cli_unresolved_base_never_merges():
     """THE FINDING #2 REGRESSION TEST: a both-`-` ledger (header AND row base_branch='-', so effective_base
     resolves to '-') with a CLEAN/MERGEABLE/OPEN view whose baseRefName='-' must NEVER merge — even when the
@@ -505,4 +544,8 @@ CASES = [
     ("cli-view-missing-field", "a view missing a field fails closed, never KeyError", t_cli_view_missing_field),
     ("cli-view-wrong-type", "a view field of the wrong JSON type fails closed", t_cli_view_wrong_type_field),
     ("cli-gh-spawn-failure", "a gh-spawn failure fails closed, no traceback", t_cli_gh_spawn_failure),
+    ("cli-undecodable-view-json", "a --view-json that is not UTF-8 fails closed to not-yet",
+     t_cli_undecodable_view_json),
+    ("cli-undecodable-gh-stdout", "gh stdout that is not UTF-8 fails closed to not-yet",
+     t_cli_undecodable_gh_stdout),
 ]
