@@ -39,10 +39,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import sys
 from pathlib import Path
+from typing import cast
 
+from _gauntlet.gh import pr_view_json
 from _gauntlet.modules import load_sibling
 from _gauntlet.testing import run_sibling_suite
 
@@ -236,31 +237,18 @@ def validate_view(view: object) -> "str | None":
 
 def load_view(pr: str, repo: "str | None", view_json: "str | None") -> dict:
     """The PR's live view — from a recorded `gh pr view` JSON (`--view-json`, testable without gh) or from
-    `gh pr view` itself. Any failure raises `ViewError`, which the caller turns into a fail-closed not-yet.
+    `gh pr view` itself, both through `_gauntlet/gh.py`, the ONE owner of that fetch. It reports a failure
+    as a MESSAGE — the spawn failure that raises before any returncode exists (gh absent or not executable)
+    included — and every one of them becomes a `ViewError` here, so every gh-path failure fails CLOSED via
+    the one `except ViewError` and never an uncaught traceback with no verdict on stdout.
     """
-    if view_json is not None:
-        try:
-            return json.loads(Path(view_json).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ViewError(str(exc)) from exc
-    argv = ["gh", "pr", "view", str(pr)]
-    if repo:
-        argv += ["--repo", repo]
-    argv += ["--json", VIEW_FIELDS]
-    # SPAWN failure (gh absent or not executable) raises OSError from subprocess.run itself, BEFORE any
-    # returncode exists. Route it through the same `ViewError` as the non-zero and non-JSON branches, so
-    # every gh-path failure fails CLOSED via the one `except ViewError` — never an uncaught traceback with
-    # no verdict on stdout.
-    try:
-        proc = subprocess.run(argv, capture_output=True, text=True, check=False)  # noqa: S603
-    except OSError as exc:
-        raise ViewError(f"could not run `gh pr view {pr}`: {exc}") from exc
-    if proc.returncode != 0:
-        raise ViewError(f"`gh pr view {pr}` exited {proc.returncode}: {proc.stderr.strip()}")
-    try:
-        return json.loads(proc.stdout)
-    except json.JSONDecodeError as exc:
-        raise ViewError(f"gh response is not JSON ({exc})") from exc
+    view, error = pr_view_json(pr, fields=VIEW_FIELDS, repo=repo, view_json=view_json)
+    if error is not None:
+        raise ViewError(error)
+    # The fetch hands back whatever JSON the response held, `null` and arrays included. `validate_view` is
+    # the boundary that refuses a non-object, exactly as before; the cast records that this annotation was
+    # always that boundary's promise rather than this function's.
+    return cast(dict, view)
 
 
 def check(pr: str, ledger_path: Path, repo: "str | None", view_json: "str | None") -> int:
