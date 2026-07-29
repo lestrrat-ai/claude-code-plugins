@@ -140,6 +140,17 @@ For each `#PR` to adopt:
    refreshing no evidence, rewriting no base, and applying no label. An already-held row keeps its open
    question. Only a matching (or brand-new) base proceeds to the refresh below.
 
+   ##### Base-gone recovery
+
+   A stack gate can make the recorded base branch disappear: merging the lower PR removes its branch and
+   GitHub retargets the upper PR. Retire the parked row and re-adopt the PR into a fresh run. The new row
+   records its live base at creation, and its gate restarts against that base.
+
+   No door repairs the row in place. `base_branch` is CREATE_ONLY, `ledger.py set` has no flag for it, and
+   `clean-rebase.py` asserts `--base` against the recorded value and refuses a different base. The shared
+   park reason deliberately does not identify a disappeared base: an absent ref cannot establish why it is
+   absent, and the recovery is identical either way.
+
    - `id` = `pr<N>`; `slug` = slugified PR title; `branch` = the PR's **own** `headRefName` (adopted PRs
      keep their branch — do NOT mint a `fix-<run-id>-...` branch); `worktree` = `-`,
      `worktree_owned` = `-`, and `branch_owned` = `-` until the head worktree is resolved in step 5
