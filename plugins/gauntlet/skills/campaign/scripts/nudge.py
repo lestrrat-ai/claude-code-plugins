@@ -15,12 +15,22 @@ those tools already exist and it only reminds the orchestrator to run them. It d
 whether a PR may merge; it is branch-owned, dogfoodable, and always exits 0. A reminder you can ignore is
 the point: its value is being DELIVERED at the heartbeat, computed and concrete, not forcing anything.
 
+**It also DELIVERS the durable notes file** `<project_root>/.gauntlet/nudges.md` — standing lessons the
+campaign has learned about its own process, which every computed rule above is by construction unable to
+hold: a rule is code, and a lesson is not shipped with the plugin. Each usable line becomes one reminder,
+appended AFTER the computed ones so live state stays where it is read first. Nothing here WRITES that
+file; the driver or the user appends to it by hand. Its path is DERIVED from `--followups` (its sibling
+in the same durable `.gauntlet/` tier, `references/files-and-ledger.md`), never a flag of its own — a
+flag is one more thing the canonical invocation can be missing, and a delivery channel that arrives
+unpassed is a channel that silently never fires.
+
 The design and the full obligation inventory it was trimmed from live in `.gauntlet/DESIGN-nudge-printer.md`.
 """
 
 from __future__ import annotations
 
 import argparse
+import stat
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -52,6 +62,47 @@ PARKED = tuple(s for s in HELD if s != REPAIRING)
 # How long a run may show NO ledger activity before the quiet-run sweep fires. Derived, not guessed: two
 # normal ~15-min heartbeat intervals (so a single slow heartbeat never trips it) plus ~5 min of slack.
 QUIET_AFTER = timedelta(minutes=35)
+
+# --- the durable notes file ---------------------------------------------------
+# `<project_root>/.gauntlet/nudges.md` — standing lessons, hand-appended, delivered verbatim. It sits in
+# the DURABLE tier next to `followups.jsonl` and `history/` (`references/files-and-ledger.md`), never
+# under `.gauntlet/tmp/**` which is wiped between runs: a lesson has to outlive the run that learned it.
+NOTES_NAME = "nudges.md"
+
+# Every rendered note line starts with this, so standing advice is never mistaken for a LIVE condition
+# computed off this run's ledger. The three note-family lines (a note, the not-read disclosure, the
+# truncation disclosure) all lead with it, which is also what makes them greppable as one family.
+NOTES_MARK = "standing note"
+
+# At most this many note lines are RENDERED. A file that grows without bound would drown the computed
+# reminders — the live state is the part that goes stale, so it is the part that must stay at the top and
+# stay findable. Ten is the order of magnitude of a small run's computed list, so the notes sit at parity
+# with live state rather than burying it. Over the cap the OMISSION IS DISCLOSED, never silent.
+NOTES_CAP = 10
+
+# The notes file is read WHOLE into memory, so its size is bounded before the read rather than after.
+# 64 KiB is far past any hand-written file and far short of anything that could hurt; over it the printer
+# DISCLOSES and reads nothing rather than risking a `MemoryError` in a tool that must always exit 0.
+NOTES_MAX_BYTES = 64 * 1024
+
+# A leading markdown bullet is STRIPPED so a file written as a bullet list and one written as plain lines
+# both read correctly. Exactly these two markers, each with its trailing space, so `-x` stays the word it
+# is; a line that is ONLY a marker is an empty bullet and carries no note, so it is dropped.
+NOTES_BULLETS = ("- ", "* ")
+
+# The non-regular entry types the classification NAMES when it refuses one. Naming the type is the whole
+# value of the disclosure: "not a regular file" tells the user nothing they can act on, "a FIFO" tells
+# them exactly what is sitting at the path. Order does not matter — the predicates are disjoint.
+NOTES_ENTRY_KINDS = ((stat.S_ISDIR, "a directory"), (stat.S_ISFIFO, "a FIFO"), (stat.S_ISSOCK, "a socket"),
+                     (stat.S_ISBLK, "a block device"), (stat.S_ISCHR, "a character device"))
+
+
+def entry_kind(mode: int) -> str:
+    """What the entry at the notes path IS, in words, for a disclosure that refuses to read it."""
+    for is_kind, name in NOTES_ENTRY_KINDS:
+        if is_kind(mode):
+            return name
+    return "of an unknown type"
 
 
 def _activity_age(last_activity: str, now: datetime) -> "timedelta | None":
@@ -104,6 +155,149 @@ def followups_line(n_followups: "int | None", followups_path: "Path | None") -> 
     return None
 
 
+def notes_path(followups_path: "Path | None") -> "Path | None":
+    """Where the standing-notes file IS — DERIVED from `--followups`, or `None` when that was not given.
+
+    `nudges.md` and `followups.jsonl` are SIBLINGS in the one durable `.gauntlet/` tier
+    (`references/files-and-ledger.md`), so the follow-up store's directory IS the notes file's directory.
+    That derivation is the whole reason there is no `--notes` flag: a flag would have to be added to the
+    canonical invocation (`loop-control.md`, Step 1), and a delivery channel whose flag is missing there
+    never fires at all — silently, forever, with nothing in the output to say so. A path that is already
+    passed cannot be forgotten.
+
+    There is NO fallback base directory. Without `--followups` the project root is genuinely unknown, and
+    guessing one (the cwd, the run directory) would read some OTHER file, or none, and report that as the
+    user's notes. The caller DISCLOSES the `None` instead (`read_notes`).
+    """
+    if followups_path is None:
+        return None
+    return followups_path.parent / NOTES_NAME
+
+
+def parse_notes(text: str) -> list:
+    """The usable note lines: one reminder per line, VERBATIM, minus the shapes that are not reminders.
+
+    Blank lines and `#` lines are skipped so the file can carry markdown headings and comments and still
+    read well to the human who maintains it; a leading `- `/`* ` bullet is stripped so a bullet list and a
+    plain list both work. Everything else is taken exactly as written — this file is the ONE place the
+    campaign's own words reach the heartbeat unedited, and a printer that reworded them would be a printer
+    the user cannot predict.
+    """
+    out: list = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        for marker in NOTES_BULLETS:
+            if line == marker.rstrip():  # an empty bullet — a marker and nothing else
+                line = ""
+                break
+            if line.startswith(marker):
+                line = line[len(marker):].strip()
+                break
+        if line:  # whatever emptied it — a blank, a comment, an empty bullet — is not a note
+            out.append(line)
+    return out
+
+
+def read_notes(path: "Path | None") -> "tuple[list, str | None]":
+    """`(note lines, why they were NOT READ)` — and the second is `None` exactly when they WERE read.
+
+    This keeps "not read" and "nothing there" apart, the same discipline `open_followups` /
+    `followups_line` enforce for the follow-up store: a store nobody opened, counted as empty, is
+    INDISTINGUISHABLE in the output from a real zero.
+
+    It splits from that precedent on ONE case, deliberately. `open_followups` treats a `--followups` path
+    that is not there as NOT READ, because that path is TYPED and a typo is the likely explanation. This
+    path is DERIVED and cannot be mistyped, and the notes file is optional user data whose ABSENCE IS THE
+    NORMAL STATE — so a missing file IN A DIRECTORY THAT IS THERE is a completed look that found nothing,
+    and it stays SILENT. A disclosure every heartbeat of a run whose user never wrote a note is a false
+    alarm, and a disclosure line that is usually noise is one the driver learns to skip past. That
+    exemption is the FILE's alone: an unusable containing directory is not an absent file, it is a look
+    that never happened, and it discloses with everything else in (1) below.
+
+    It NEVER raises AND IT NEVER BLOCKS. A permissions error, invalid UTF-8, or a file too large to hold
+    all degrade to a named reason — the printer must always exit 0. What is at the path is CLASSIFIED
+    before anything opens it, because `read_text` on a FIFO waits for a writer FOREVER, and a heartbeat
+    printer that never returns stalls the campaign loop rather than misreporting one line.
+
+    The classification is what keeps the "not read" / "nothing there" split honest, and it turns on
+    whether the entry could be LOOKED AT, never on whether a file was FOUND:
+
+    1. `lstat` first, so the link itself is examined rather than what it points at. `FileNotFoundError`
+       here splits on THE CONTAINING DIRECTORY, because the silent case is only ever "a look happened and
+       found no file". A directory that IS there and holds no `nudges.md` is that look — the normal,
+       silent case above. A containing directory that is NOT a directory (missing, or something else
+       entirely) means the look never happened at all, so it is DISCLOSED like every other unusable path.
+       `errno` cannot draw this line: a missing file inside an existing directory and a missing directory
+       both raise `FileNotFoundError` with `ENOENT`. One extra stat on the parent draws it exactly.
+    2. An entry that IS a symlink is resolved with `stat`. A missing target is a found entry that cannot
+       be read, so it is DISCLOSED — never reported as the absence in (1), which is how a moved shared
+       notes file would drop out of every heartbeat with nothing saying so.
+    3. Anything that is not a REGULAR FILE is refused by name before any read. That covers FIFOs (the
+       hang), sockets, devices and directories.
+
+    ACCEPTED RESIDUAL, deliberately not defended against: the entry can change type between the
+    classification and the read. Closing it would mean an `os.open` with `O_NONBLOCK` and an `fstat` type
+    check on the descriptor actually read; under this repository's single-user calibration a user
+    swapping a file for a FIFO underneath their own heartbeat is their own call.
+    """
+    if path is None:
+        return [], "no --followups given, so the .gauntlet/ directory is unknown"
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        if path.parent.is_dir():
+            return [], None  # the look SUCCEEDED and found no file — the normal case, and it says nothing
+        # The directory the notes live in is not a directory, so nothing was ever looked at. This is a
+        # correctly invoked campaign's impossible state — the run directory itself lives under it — which
+        # is exactly why it is worth saying: it fires only for a wrong project root or a deleted
+        # `.gauntlet/`, never for the user who simply keeps no notes.
+        return [], f"{path.parent} is not a directory, so the notes file could not be looked for"
+    except OSError as exc:
+        return [], f"{path} could not be checked ({type(exc).__name__})"
+    if stat.S_ISLNK(info.st_mode):
+        try:
+            info = path.stat()
+        except FileNotFoundError:
+            return [], f"{path} is a symlink whose target is missing — repoint it or remove it"
+        except OSError as exc:
+            return [], f"{path} could not be checked ({type(exc).__name__})"
+    if not stat.S_ISREG(info.st_mode):
+        return [], f"{path} is {entry_kind(info.st_mode)}, not a regular file — replace it with one"
+    size = info.st_size
+    if size > NOTES_MAX_BYTES:
+        return [], f"{path} is {size} bytes, over the {NOTES_MAX_BYTES}-byte cap — trim it"
+    try:
+        # UnicodeDecodeError is a ValueError, not an OSError; both are caught, so an undecodable file is
+        # disclosed rather than silently mangled by an `errors=` fallback.
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        # Raced away between the stat and the read; still just an absent file. No parent check here: the
+        # `lstat` above already found an entry at this path, so the containing directory WAS a directory.
+        return [], None
+    except (OSError, ValueError) as exc:
+        return [], f"{path} could not be read ({type(exc).__name__})"
+    return parse_notes(text), None
+
+
+def notes_lines(notes: list, notes_unread: "str | None", path: "Path | None") -> list:
+    """The note-family reminder lines: the notes themselves, or the DISCLOSURE of why there are none.
+
+    Silence means one thing only — the look COMPLETED and found no usable line. Every other outcome speaks:
+    an unread store says so and names why, and a file over `NOTES_CAP` says how many lines it is hiding.
+    """
+    if notes_unread is not None:
+        return [f"{NOTES_MARK}s NOT READ ({notes_unread}) — standing notes are UNKNOWN, not absent."]
+    out = [f"{NOTES_MARK}: {n}" for n in notes[:NOTES_CAP]]
+    hidden = len(notes) - NOTES_CAP
+    if hidden > 0:
+        # THE OMISSION IS NEVER SILENT — the count of what was dropped, and where to go read it.
+        out.append(f"{NOTES_MARK}s TRUNCATED — {hidden} of {len(notes)} line(s) in {path} not shown "
+                   f"(cap {NOTES_CAP}); trim the file.")
+    return out
+
+
 def rundir_has(rundir: "Path | None", name: str) -> bool:
     return rundir is not None and (rundir / name).exists()
 
@@ -123,14 +317,20 @@ def resolve_rundir(file_arg: str, rundir_arg: "str | None") -> Path:
 
 
 def reminders(header: dict, rows: list, n_followups: "int | None", rundir: "Path | None",
-              now: "datetime | None" = None, followups_path: "Path | None" = None) -> list:
+              now: "datetime | None" = None, followups_path: "Path | None" = None,
+              notes: "list | None" = None, notes_unread: "str | None" = None) -> list:
     """Compute the reminder lines. Pure: same inputs → same output. Returns a list of strings.
 
     `now` is the current UTC time, injectable so the quiet-run rule is testable; it defaults to
     `datetime.now(timezone.utc)` when a caller (main) does not pass one.
 
     `followups_path` is only what the follow-up store was LOOKED FOR at — it is never read here, and it
-    exists so an unread store can name the path it tried (`followups_line`).
+    exists so an unread store can name the path it tried (`followups_line`) and so the notes file's path
+    can be named in its own disclosures (`notes_path`).
+
+    `notes` / `notes_unread` are `read_notes`'s result, read by the caller (main) exactly as
+    `n_followups` is — the store reads stay in one place and this stays renderable from fixed inputs. The
+    default `([], None)` is "read, and there was nothing", which is silent.
     """
     if now is None:
         now = datetime.now(timezone.utc)
@@ -248,12 +448,19 @@ def reminders(header: dict, rows: list, n_followups: "int | None", rundir: "Path
         if status == "in_review" and ok >= need and ci == "green":
             out.append(f"PR {pr}: mergeable by counters — check merge-readiness.")
 
+    # --- standing notes --------------------------------------------------------
+    # LAST, always. Every line above is a LIVE condition computed from this run's durable state and is the
+    # part that goes stale, so it keeps the top of the list where it is read first; standing advice is the
+    # same at every heartbeat and can wait. The `NOTES_MARK` lead-in is what keeps the two apart on sight.
+    out.extend(notes_lines(notes or [], notes_unread, notes_path(followups_path)))
+
     return out
 
 
 def render(header: dict, rows: list, n_followups: "int | None", rundir: "Path | None",
-           now: "datetime | None" = None, followups_path: "Path | None" = None) -> str:
-    lines = reminders(header, rows, n_followups, rundir, now, followups_path)
+           now: "datetime | None" = None, followups_path: "Path | None" = None,
+           notes: "list | None" = None, notes_unread: "str | None" = None) -> str:
+    lines = reminders(header, rows, n_followups, rundir, now, followups_path, notes, notes_unread)
     run_id = header.get("run_id", "-")
     head = f"NUDGE (run {run_id}) — {len(lines)} reminder(s):"
     body = "\n".join(f"  - {line}" for line in lines)
@@ -266,7 +473,12 @@ def main(argv: "list[str] | None" = None) -> int:
     parser.add_argument("--followups", help="the follow-up store (<project_root>/.gauntlet/followups.jsonl). "
                                             "Used AS GIVEN — a relative path resolves against the CWD, so "
                                             "pass an absolute one. Omitted, or not found, the reminder SAYS "
-                                            "the store was not read; it never reports zero")
+                                            "the store was not read; it never reports zero. It ALSO locates "
+                                            "the standing-notes file, its sibling <dir>/" + NOTES_NAME + ", "
+                                            "whose lines are appended to the reminders. Those ride on the "
+                                            "DIRECTORY, so a wrong filename still delivers them; omitted, "
+                                            "or a <dir> that is not a directory, and they are reported not "
+                                            "read too")
     parser.add_argument("--rundir", help="the run directory, for intent/CI/progress file checks "
                                          "(default: the directory holding --file)")
     parser.add_argument("--self-test", action="store_true", help="run every fixture and assert the rules "
@@ -281,8 +493,10 @@ def main(argv: "list[str] | None" = None) -> int:
     header, rows = L.load(Path(args.file))
     followups_path = Path(args.followups) if args.followups else None
     n_followups = open_followups(followups_path)
+    notes, notes_unread = read_notes(notes_path(followups_path))
     rundir = resolve_rundir(args.file, args.rundir)
-    print(render(header, rows, n_followups, rundir, followups_path=followups_path))
+    print(render(header, rows, n_followups, rundir, followups_path=followups_path,
+                 notes=notes, notes_unread=notes_unread))
     return 0  # a nudge NEVER blocks — it only reminds
 
 
