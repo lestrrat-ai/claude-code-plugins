@@ -13,6 +13,7 @@ the mapping is pinned TOTALLY over the enum, plus unrecognised-value fixtures th
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -20,7 +21,7 @@ from pathlib import Path
 
 from _gauntlet.gitfixture import GitFixture
 from _gauntlet.modules import load_sibling
-from _gauntlet.testing import capture_cli, checker, gh_writing
+from _gauntlet.testing import capture_cli, checker, deeply_nested_json, gh_writing
 
 OWNER = Path(__file__).resolve().parent / "base-preflight.py"
 
@@ -235,6 +236,66 @@ def t_cli_undecodable_gh_stdout_fails_closed():
           f"undecodable gh output must decide recheck, never proceed, got {result!r}")
     check(result["reason"].startswith("could not fetch PR view:"),
           f"the reason must name the fetch failure, got {result['reason']!r}")
+
+
+def t_cli_deep_view_json_fails_closed():
+    # A recorded --view-json nested far past the parse's recursion limit. `json.loads` recurses per nesting
+    # level, so it raises RecursionError — a RuntimeError, NOT a ValueError, so neither the JSONDecodeError
+    # clause nor the UnicodeDecodeError one beside it can see it, and it is not an OSError either. It must
+    # still fail CLOSED: a structured recheck on stdout, a NON-ZERO exit, and NO traceback. capture_cli only
+    # catches SystemExit, so an uncaught RecursionError would ESCAPE here and fail this fixture — the teeth.
+    with tempfile.TemporaryDirectory() as d:
+        vjson = Path(d) / "view.json"
+        vjson.write_bytes(deeply_nested_json())
+        code, out, err = capture_cli(M.main, ["check", "--pr", "9", "--view-json", str(vjson)])
+    check(code != 0, f"a too-deep --view-json must exit non-zero (fail closed), got {code} (stderr: {err})")
+    check(err == "", f"a too-deep --view-json must NOT print a traceback, got stderr {err!r}")
+    result = json.loads(out)
+    check(result["verdict"] == "recheck",
+          f"a too-deep --view-json must decide recheck, never proceed, got {result!r}")
+    check(result["reason"].startswith("could not fetch PR view:"),
+          f"the reason must name the fetch failure, got {result['reason']!r}")
+
+
+def t_cli_deep_gh_stdout_fails_closed():
+    # The same too-deep response, but from a REAL `gh` resolved through PATH, so the RecursionError comes
+    # out of the SECOND parse — the live-fetch one, a separate `try` from the recorded-file parse above and
+    # therefore a separate escape. No --view-json, so load_view takes the gh path. Fail CLOSED: a structured
+    # recheck on stdout, NON-ZERO exit, NO traceback.
+    with gh_writing(deeply_nested_json()):
+        code, out, err = capture_cli(M.main, ["check", "--pr", "9"])
+    check(code != 0, f"too-deep gh output must exit non-zero (fail closed), got {code} (stderr: {err})")
+    check(err == "", f"too-deep gh output must NOT print a traceback, got stderr {err!r}")
+    result = json.loads(out)
+    check(result["verdict"] == "recheck",
+          f"too-deep gh output must decide recheck, never proceed, got {result!r}")
+    check(result["reason"].startswith("could not fetch PR view:"),
+          f"the reason must name the fetch failure, got {result['reason']!r}")
+
+
+def t_gh_writing_restores_an_absent_path():
+    # gh_writing's PATH restoration, pinned from the suite whose ORDER its failure mode breaks: the two
+    # fixtures above use gh_writing, and everything after them spawns git. An unset PATH and PATH="" are not
+    # the same thing to exec — with the variable gone execvp falls back to confstr(_CS_PATH) and a bare
+    # `git` still resolves, while PATH="" leaves nothing to search and the spawn raises FileNotFoundError.
+    # So a restoration that writes back a defaulted "" leaves the process in a state it was never in, and
+    # every later git-using fixture fails — but ONLY when the suite was launched with PATH already absent,
+    # which is exactly why running the suite the ordinary way never noticed. Reproduce that launch here.
+    outer = os.environ.pop("PATH", None)
+    try:
+        with gh_writing(b"{}"):
+            pass
+        check("PATH" not in os.environ,
+              f"gh_writing must restore an ABSENT PATH by DELETING it, got {os.environ.get('PATH')!r}")
+        # The consequence, not just the variable: a bare command name must still spawn afterwards.
+        proc = subprocess.run(["git", "--version"], capture_output=True, text=True, check=False)  # noqa: S603,S607
+        check(proc.returncode == 0,
+              f"a bare `git` must still spawn after restoration, got exit {proc.returncode}")
+    finally:
+        if outer is None:
+            os.environ.pop("PATH", None)
+        else:
+            os.environ["PATH"] = outer
 
 
 # The repository fixtures come from the shared owner, bound to THIS suite's failure type.
@@ -887,6 +948,12 @@ CASES = [
      t_cli_undecodable_view_json_fails_closed),
     ("cli-undecodable-gh-stdout", "gh stdout that is not UTF-8 fails closed to recheck, no traceback",
      t_cli_undecodable_gh_stdout_fails_closed),
+    ("cli-deep-view-json", "a --view-json too deeply nested to parse fails closed to recheck, no traceback",
+     t_cli_deep_view_json_fails_closed),
+    ("cli-deep-gh-stdout", "gh stdout too deeply nested to parse fails closed to recheck, no traceback",
+     t_cli_deep_gh_stdout_fails_closed),
+    ("gh-writing-restores-absent-path", "gh_writing restores an absent PATH by deleting it, never as ''",
+     t_gh_writing_restores_an_absent_path),
     ("clean-view-stale-base", "a CLEAN second candidate behind a merged sibling rebases",
      t_clean_view_with_stale_base_rebases),
     ("clean-view-current-base", "a CLEAN candidate containing fetched base proceeds",

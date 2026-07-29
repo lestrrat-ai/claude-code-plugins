@@ -34,6 +34,12 @@ def pr_view_json(pr: str, *, fields: str, repo: "str | None" = None, cwd: "str |
     `subprocess.run` ITSELF when `gh`'s stdout or stderr is not UTF-8, i.e. from the very call the `OSError`
     clause guards. Both are caught, so invalid bytes from either source come back as an error value.
 
+    DEEP NESTING IS A FAILURE PATH TOO, and it escapes BOTH clauses above. `json.loads` recurses per
+    nesting level, so a response of enough open brackets raises `RecursionError` — whose bases are
+    `RuntimeError` and `Exception`, so it is NOT a `ValueError`: neither `json.JSONDecodeError` nor
+    `UnicodeDecodeError` can see it, and it is not an `OSError` either. Uncaught it is a traceback with no
+    verdict, from the one call every caller relies on to fail closed. Both parses catch it.
+
     BRANCH ON `error is not None`, NEVER ON `view is None`. `null` is valid JSON, so a recorded `null` is a
     SUCCESSFUL read of a view that is malformed — a different thing from a fetch that failed, and not this
     function's call to make. Nothing here inspects the SHAPE of the response: the fields a view must carry
@@ -44,6 +50,8 @@ def pr_view_json(pr: str, *, fields: str, repo: "str | None" = None, cwd: "str |
             return json.loads(Path(view_json).read_text(encoding="utf-8")), None
         except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
             return None, str(exc)
+        except RecursionError as exc:
+            return None, f"{view_json} is nested too deeply to parse ({exc})"
     argv = ["gh", "pr", "view", str(pr)]
     if repo:
         argv += ["--repo", repo]
@@ -61,3 +69,5 @@ def pr_view_json(pr: str, *, fields: str, repo: "str | None" = None, cwd: "str |
         return json.loads(proc.stdout), None
     except json.JSONDecodeError as exc:
         return None, f"gh response is not JSON ({exc})"
+    except RecursionError as exc:
+        return None, f"gh response is nested too deeply to parse ({exc})"

@@ -20,7 +20,7 @@ from pathlib import Path
 from _gauntlet import gh as GH
 from _gauntlet.gitfixture import GitFixture
 from _gauntlet.modules import load_sibling
-from _gauntlet.testing import capture_cli, checker, gh_writing
+from _gauntlet.testing import capture_cli, checker, deeply_nested_json, gh_writing
 
 OWNER = Path(__file__).resolve().parent / "merge-check.py"
 
@@ -458,6 +458,47 @@ def t_cli_undecodable_gh_stdout():
           f"the reason must name the failed view fetch, got {result['reason']!r}")
 
 
+def t_cli_deep_view_json():
+    # A recorded --view-json nested far past the parse's recursion limit. `json.loads` recurses per nesting
+    # level, so it raises RecursionError — a RuntimeError, NOT a ValueError, so neither the JSONDecodeError
+    # clause nor the UnicodeDecodeError one beside it can see it, and it is not an OSError either. It must
+    # still fail CLOSED through the one `except ViewError`: a structured not-yet on stdout, a NON-ZERO exit,
+    # and NO traceback. capture_cli only catches SystemExit, so an uncaught RecursionError would ESCAPE
+    # here — that is the teeth.
+    with tempfile.TemporaryDirectory() as d:
+        led = Path(d) / "state.jsonl"
+        L.dump(led, dict(L.HEADER_DEFAULTS, run_id="g1"), [row()])
+        vjson = Path(d) / "view.json"
+        vjson.write_bytes(deeply_nested_json())
+        code, out, err = capture_cli(
+            M.main, ["check", "--pr", "9", "--file", str(led), "--view-json", str(vjson)])
+    check(code != 0, f"a too-deep --view-json must exit non-zero (fail closed), got {code} (stderr: {err})")
+    check(err == "", f"a too-deep --view-json must NOT print a traceback, got stderr {err!r}")
+    result = json.loads(out)
+    check(result["verdict"] == "not-yet",
+          f"a too-deep --view-json must decide not-yet, never merge, got {result!r}")
+    check(result["reason"].startswith("could not fetch PR view:"),
+          f"the reason must name the failed view fetch, got {result['reason']!r}")
+
+
+def t_cli_deep_gh_stdout():
+    # The same too-deep response, but from a REAL `gh` resolved through PATH, so the RecursionError comes
+    # out of the SECOND parse — the live-fetch one, a separate `try` from the recorded-file parse above and
+    # therefore a separate escape. No --view-json, so load_view takes the gh path.
+    with tempfile.TemporaryDirectory() as d:
+        led = Path(d) / "state.jsonl"
+        L.dump(led, dict(L.HEADER_DEFAULTS, run_id="g1"), [row()])
+        with gh_writing(deeply_nested_json()):
+            code, out, err = capture_cli(M.main, ["check", "--pr", "9", "--file", str(led), "--repo", "o/n"])
+    check(code != 0, f"too-deep gh output must exit non-zero (fail closed), got {code} (stderr: {err})")
+    check(err == "", f"too-deep gh output must NOT print a traceback, got stderr {err!r}")
+    result = json.loads(out)
+    check(result["verdict"] == "not-yet",
+          f"too-deep gh output must decide not-yet, never merge, got {result!r}")
+    check(result["reason"].startswith("could not fetch PR view:"),
+          f"the reason must name the failed view fetch, got {result['reason']!r}")
+
+
 def t_cli_unresolved_base_never_merges():
     """THE FINDING #2 REGRESSION TEST: a both-`-` ledger (header AND row base_branch='-', so effective_base
     resolves to '-') with a CLEAN/MERGEABLE/OPEN view whose baseRefName='-' must NEVER merge — even when the
@@ -548,4 +589,8 @@ CASES = [
      t_cli_undecodable_view_json),
     ("cli-undecodable-gh-stdout", "gh stdout that is not UTF-8 fails closed to not-yet",
      t_cli_undecodable_gh_stdout),
+    ("cli-deep-view-json", "a --view-json too deeply nested to parse fails closed to not-yet",
+     t_cli_deep_view_json),
+    ("cli-deep-gh-stdout", "gh stdout too deeply nested to parse fails closed to not-yet",
+     t_cli_deep_gh_stdout),
 ]

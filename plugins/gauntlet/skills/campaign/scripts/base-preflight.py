@@ -229,8 +229,8 @@ def load_view(pr: str, repo: "str | None", view_json: "str | None",
     instead of a verdict. Every one of those messages becomes a `ViewError` here, which the caller turns
     into a fail-closed `recheck`.
 
-    Do NOT restate that set here. It has already grown once (undecodable bytes joined the spawn failure),
-    and an unpacked copy in this docstring is exactly the gloss that would have gone stale when it did.
+    Do NOT restate that set here. It has grown MORE THAN ONCE since this docstring was written, and each
+    time, an unpacked copy here is the gloss that would have gone stale — which is why there is not one.
     """
     view, error = pr_view_json(pr, fields=VIEW_FIELDS, repo=repo, cwd=project_root,
                                view_json=view_json)

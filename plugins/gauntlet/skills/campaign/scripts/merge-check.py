@@ -242,8 +242,8 @@ def load_view(pr: str, repo: "str | None", view_json: "str | None") -> dict:
     `ViewError` here, so every gh-path failure fails CLOSED via the one `except ViewError` and never an
     uncaught traceback with no verdict on stdout.
 
-    Do NOT restate that set here. It has already grown once (undecodable bytes joined the spawn failure),
-    and an unpacked copy in this docstring is exactly the gloss that would have gone stale when it did.
+    Do NOT restate that set here. It has grown MORE THAN ONCE since this docstring was written, and each
+    time, an unpacked copy here is the gloss that would have gone stale — which is why there is not one.
     """
     view, error = pr_view_json(pr, fields=VIEW_FIELDS, repo=repo, view_json=view_json)
     if error is not None:
