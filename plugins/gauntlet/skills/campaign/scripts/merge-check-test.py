@@ -21,7 +21,7 @@ from _gauntlet import gh as GH
 from _gauntlet.gitfixture import GitFixture
 from _gauntlet.modules import load_sibling
 from _gauntlet.testing import (capture_cli, checker, deeply_nested_json, gh_writing,
-                               hostile_json_responses)
+                               hostile_json_responses, legacy_view_error_cases)
 
 OWNER = Path(__file__).resolve().parent / "merge-check.py"
 
@@ -543,6 +543,35 @@ def t_cli_hostile_responses_never_escape():
                   f"{label} must say WHAT failed, not an empty detail, got {result['reason']!r}")
 
 
+def t_cli_legacy_view_errors_keep_their_exact_wording():
+    """THE WHOLE REASON STRING, for every failure that had one before `_gauntlet/gh.py` owned the fetch.
+
+    Extracting the fetch into a shared owner was meant to leave each caller's message BYTE FOR BYTE intact.
+    Every fixture above asserts only the `could not fetch PR view: ` PREFIX, so a rewrite of the tail behind
+    it — the part a reader actually reads — cannot fail any of them, and one went unnoticed for six rounds of
+    review. This row is the assertion that can catch it: the shared table owns the exact tail, and equality
+    is the check. It runs the SAME table `base-preflight-test.py` runs, because the two callers are meant to
+    print the same thing.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        led = Path(d) / "state.jsonl"
+        L.dump(led, dict(L.HEADER_DEFAULTS, run_id="g1"), [row()])
+        for name, extra, context, tail in legacy_view_error_cases(Path(d)):
+            with context():
+                code, out, err = capture_cli(
+                    M.main, ["check", "--pr", "9", "--file", str(led)] + extra)
+            label = f"[{name}]"
+            check(err == "", f"{label} must NOT print a traceback, got stderr {err!r}")
+            check(code != 0, f"{label} must exit non-zero (fail closed), got {code}")
+            result = json.loads(out)
+            check(result["verdict"] == "not-yet",
+                  f"{label} must decide not-yet, never merge, got {result!r}")
+            expected = f"could not fetch PR view: {tail}"
+            check(result["reason"] == expected,
+                  f"{label} must print the reason UNCHANGED from before the fetch was shared.\n"
+                  f"           expected {expected!r}\n           got      {result['reason']!r}")
+
+
 def t_cli_unresolved_base_never_merges():
     """THE FINDING #2 REGRESSION TEST: a both-`-` ledger (header AND row base_branch='-', so effective_base
     resolves to '-') with a CLEAN/MERGEABLE/OPEN view whose baseRefName='-' must NEVER merge — even when the
@@ -639,4 +668,6 @@ CASES = [
      t_cli_deep_gh_stdout),
     ("cli-hostile-responses", "every hostile response in the shared table fails closed at BOTH parse sites",
      t_cli_hostile_responses_never_escape),
+    ("cli-legacy-view-messages", "every pre-existing view-fetch failure keeps its EXACT reason string",
+     t_cli_legacy_view_errors_keep_their_exact_wording),
 ]

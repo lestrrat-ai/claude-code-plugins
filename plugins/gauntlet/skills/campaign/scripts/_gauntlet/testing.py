@@ -7,10 +7,10 @@ import inspect
 import os
 import sys
 import tempfile
-from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from contextlib import contextmanager, nullcontext, redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
-from typing import Callable, Generator, Sequence
+from typing import Callable, ContextManager, Generator, Sequence
 
 from _gauntlet.modules import load_module_from_path
 
@@ -96,8 +96,9 @@ def hostile_json_responses() -> "list[tuple[str, bytes]]":
 
 
 @contextmanager
-def gh_writing(stdout: bytes, *, exit_code: int = 0) -> "Generator[None, None, None]":
-    """Put a fake ``gh`` FIRST on ``PATH`` that writes exactly ``stdout`` as RAW BYTES, then exits.
+def gh_writing(stdout: bytes, *, stderr: bytes = b"", exit_code: int = 0) -> "Generator[None, None, None]":
+    """Put a fake ``gh`` FIRST on ``PATH`` that writes exactly ``stdout`` (and ``stderr``) as RAW BYTES,
+    then exits.
 
     A str-typed stub over ``subprocess.run`` cannot reproduce what an operator's ``gh`` can actually do,
     because bytes that are not valid UTF-8 never survive being written as a Python ``str``. Only a real
@@ -120,6 +121,8 @@ def gh_writing(stdout: bytes, *, exit_code: int = 0) -> "Generator[None, None, N
             "import sys\n"
             f"sys.stdout.buffer.write({stdout!r})\n"
             "sys.stdout.buffer.flush()\n"
+            f"sys.stderr.buffer.write({stderr!r})\n"
+            "sys.stderr.buffer.flush()\n"
             f"raise SystemExit({exit_code})\n",
             encoding="utf-8")
         fake.chmod(0o755)
@@ -132,6 +135,71 @@ def gh_writing(stdout: bytes, *, exit_code: int = 0) -> "Generator[None, None, N
                 os.environ.pop("PATH", None)
             else:
                 os.environ["PATH"] = before
+
+
+@contextmanager
+def gh_spawn_failing() -> "Generator[None, None, None]":
+    """Make the fetch's SPAWN raise the exact ``OSError`` an absent ``gh`` raises, then restore it.
+
+    ``subprocess.run`` is patched in ``_gauntlet/gh.py`` — the module that OWNS the spawn — because patching
+    anywhere else leaves the real ``gh`` to answer and the fixture passes on a fetch it never broke. The
+    exception is built exactly as ``execvp`` builds it, so the message a caller prints is the one an operator
+    without ``gh`` sees; emptying ``PATH`` instead would make the fixture depend on the machine's ``gh``.
+    """
+    def boom(*_args: object, **_kwargs: object) -> object:
+        raise FileNotFoundError(2, "No such file or directory", "gh")
+    from _gauntlet import gh as _gh
+    real_run = _gh.subprocess.run
+    setattr(_gh.subprocess, "run", boom)
+    try:
+        yield
+    finally:
+        setattr(_gh.subprocess, "run", real_run)
+
+
+# One legacy view-fetch failure: a short name, the extra CLI args that provoke it, a factory for the context
+# it needs, and the EXACT message tail the caller must print after its own `could not fetch PR view: ` prefix.
+LegacyViewCase = tuple[str, "list[str]", "Callable[[], ContextManager[None]]", str]
+
+
+def legacy_view_error_cases(work: Path, *, pr: str = "9") -> "list[LegacyViewCase]":
+    """Every view-fetch failure that ALREADY HAD A MESSAGE before `_gauntlet/gh.py` owned the fetch, with the
+    exact wording each one must still produce. THE SET IS CLOSED: it is fixed by history, not by what the
+    fetch can raise, so nothing is ever added here. A failure absent from it had no prior message at all — it
+    ended in a traceback and no verdict — and its wording is owned by `gh.py` alone.
+
+    THE TAILS BELOW ARE LITERALS ON PURPOSE, and asserting the WHOLE reason is the entire point of this
+    table. Both callers already had fixtures asserting the shared `could not fetch PR view: ` PREFIX, and a
+    rewrite of every tail behind that prefix passed all of them, through six rounds of review, unnoticed. A
+    prefix assertion cannot fail for a reworded tail; only a full-string one can.
+
+    Both callers are checked against the SAME rows because both are meant to print the same thing: the two
+    `load_view` bodies this fetch replaced produced byte-identical messages, so a per-caller expectation here
+    would be a claim the code never made. Each suite supplies its own base argv and its own verdict name; the
+    reason tail is all that is shared, and it is shared completely.
+
+    `work` is a fixture's own empty directory; the recorded-view rows are materialized inside it.
+    """
+    empty = work / "empty-view.json"
+    empty.write_bytes(b"")
+    missing = work / "no-such-view.json"
+    a_dir = work / "view-is-a-directory"
+    a_dir.mkdir(exist_ok=True)
+    return [
+        ("recorded-view-not-json", ["--view-json", str(empty)], nullcontext,
+         "Expecting value: line 1 column 1 (char 0)"),
+        ("recorded-view-missing", ["--view-json", str(missing)], nullcontext,
+         f"[Errno 2] No such file or directory: '{missing}'"),
+        ("recorded-view-is-a-directory", ["--view-json", str(a_dir)], nullcontext,
+         f"[Errno 21] Is a directory: '{a_dir}'"),
+        ("gh-spawn-failed", ["--repo", "o/n"], gh_spawn_failing,
+         f"could not run `gh pr view {pr}`: [Errno 2] No such file or directory: 'gh'"),
+        ("gh-response-not-json", ["--repo", "o/n"], lambda: gh_writing(b"not json at all"),
+         "gh response is not JSON (Expecting value: line 1 column 1 (char 0))"),
+        ("gh-exited-non-zero", ["--repo", "o/n"],
+         lambda: gh_writing(b"", stderr=b"boom from gh", exit_code=3),
+         f"`gh pr view {pr}` exited 3: boom from gh"),
+    ]
 
 
 # --- the shared fixture runner ------------------------------------------------
