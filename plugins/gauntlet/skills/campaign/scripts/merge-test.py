@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any, cast
 
 from _gauntlet.modules import load_module_from_path, load_sibling
 from _gauntlet.testing import checker
@@ -508,6 +509,50 @@ def t_owner_label_and_uncertain_view_refused():
         check(code != 0 and "mergeStateStatus" in err, f"malformed GitHub state was not refused: {err}")
     finally:
         finish(td, real)
+
+
+def t_malformed_view_messages_match_the_other_deciders():
+    """Every malformation of the live view refuses with the SAME message body `base-preflight.py` and
+    `merge-check.py` produce, behind one `malformed live PR view: ` wrapper.
+
+    The point of the fixture is the EXACT string, not merely that it refused. Three tools validate a
+    `gh pr view` payload against the same three failures, and the drift that a prefix-only assertion misses
+    is precisely what this pins. Each case names the observed type, which is what tells a reader whether a
+    field was ABSENT or merely the wrong JSON type — a distinction the pre-change merge runner could not
+    make, because it read every field through `.get()`."""
+    cases = (
+        ("not-an-object", lambda v: ["a list"],
+         "malformed live PR view: view is not a JSON object (got list)"),
+        ("string-field-missing", lambda v: {k: x for k, x in v.items() if k != "state"},
+         "malformed live PR view: missing field 'state'"),
+        ("string-field-wrong-type", lambda v: {**v, "headRefOid": 40},
+         "malformed live PR view: field 'headRefOid' must be a string, got int"),
+        ("bool-field-missing", lambda v: {k: x for k, x in v.items() if k != "isDraft"},
+         "malformed live PR view: missing field 'isDraft'"),
+        # A JSON string is not a bool even when it reads like one. bool is a subclass of int, so this is the
+        # direction that needs the fixture: the reverse (True passing an isinstance str check) cannot happen.
+        ("bool-field-wrong-type", lambda v: {**v, "isDraft": "false"},
+         "malformed live PR view: field 'isDraft' must be a bool, got str"),
+        ("labels-not-a-list", lambda v: {**v, "labels": {"name": "x"}},
+         "malformed live PR view: field 'labels' must be a list, got dict"),
+        ("label-name-not-a-string", lambda v: {**v, "labels": [{"name": 7}]},
+         "malformed live PR view: field 'labels' must hold string names, got int"),
+    )
+    for name, mutate, expected in cases:
+        td, root, f, led, real = scenario()
+        original_view = f.view
+        try:
+            # `Fake.view` is typed as returning a dict because every OTHER fixture hands back a
+            # well-formed payload. A malformed one is the subject here, and the not-an-object case
+            # is a list on purpose, so the cast records that this fixture is deliberately outside
+            # that annotation rather than drifting from it.
+            f.view = cast(Any, lambda mutate=mutate: mutate(original_view()))
+            code, _, err = invoke(f, led, root)
+            check(code != 0, f"{name}: a malformed view was accepted")
+            check(err == expected, f"{name}: expected {expected!r}, got {err!r}")
+            check(f.merged_calls == 0, f"{name}: a malformed view reached the merge")
+        finally:
+            finish(td, real)
 
 
 def t_base_checked_out_and_absent():
@@ -1799,5 +1844,6 @@ CASES = [
     ("realgit-staged-equal-incoming", "REAL git: a path staged to exactly its incoming content does not block ff-only and is not named; only the true blocker is (finding 1)", t_realgit_staged_equal_incoming_not_named),
     ("realgit-ff-capture-non-utf8", "REAL git: _sync_base's checked-out-base ff capture survives a non-UTF-8 (0xff) blocking filename under core.quotePath=false — no crash, names the path, preserves git's original diagnostic (finding 2)", t_realgit_ff_capture_survives_non_utf8_filename),
     ("realgit-stale-index-lock-raw", "REAL git: a stale .git/index.lock makes the checked-out-base ff fail for an UNRELATED reason (no `overwritten by merge`); _sync_base does NOT fire the tailored path-list/stash refusal even though the probe still names an overlapping path — it falls back to git's raw lock error", t_realgit_stale_index_lock_falls_back_to_raw_error),
+    ("malformed-view-messages", "every live-view malformation refuses with the EXACT message body base-preflight.py and merge-check.py produce, and names the observed type so absent and wrong-type stay distinguishable", t_malformed_view_messages_match_the_other_deciders),
     ("realgit-main-stderr-raw-byte", "REAL git via a subprocess: main() writes the base-sync refusal to stderr BYTE-EXACT — git's raw 0xff diagnostic byte survives verbatim to the CLI boundary (not backslashreplaced to `\\udcff`), while the JSON-quoted tailored path stays ASCII/line-safe (finding 1)", t_realgit_main_stderr_preserves_raw_git_byte),
 ]
