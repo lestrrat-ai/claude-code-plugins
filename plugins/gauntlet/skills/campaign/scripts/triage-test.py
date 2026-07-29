@@ -22,6 +22,7 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
+from _gauntlet.gitfixture import GitFixture
 from _gauntlet.modules import load_sibling
 from _gauntlet.testing import capture_cli, checker, run_cases
 
@@ -35,12 +36,10 @@ M = load_sibling("campaign_triage_owner", OWNER.parent, OWNER.name, register=Tru
 check = checker(M.SelfTestFailure)
 
 
-def git(repo: Path, *args: str, check_result: bool = True) -> subprocess.CompletedProcess[bytes]:
-    proc = subprocess.run(["git", *args], cwd=repo, capture_output=True, check=False)  # noqa: S603
-    if check_result and proc.returncode != 0:
-        raise M.SelfTestFailure(
-            f"git {' '.join(args)} failed ({proc.returncode}): {os.fsdecode(proc.stderr)}")
-    return proc
+# The repository fixtures come from the shared owner, bound to THIS suite's failure type. `GIT.head` is
+# reached through the object, never aliased: several fixtures below bind a LOCAL `head`.
+GIT = GitFixture(M.SelfTestFailure)
+git = GIT.run
 
 
 def write(repo: Path, name: str, content: str = "content\n", mode: int = 0o644) -> Path:
@@ -63,16 +62,14 @@ def write_bytes_name(repo: Path, name: bytes, content: bytes = b"content\n") -> 
 def commit(repo: Path, message: str) -> str:
     git(repo, "add", "--all")
     git(repo, "commit", "-q", "-m", message)
-    return os.fsdecode(git(repo, "rev-parse", "HEAD").stdout).strip()
+    return GIT.head(repo)
 
 
 @contextmanager
 def repository(base_files: dict[str, tuple[str, int]] | None = None):
     with tempfile.TemporaryDirectory() as directory:
         repo = Path(directory)
-        git(repo, "init", "-q", "-b", "main")
-        git(repo, "config", "user.name", "Gauntlet Test")
-        git(repo, "config", "user.email", "gauntlet@example.invalid")
+        GIT.init_repo(repo)
         files = base_files or {"baseline.txt": ("base\n", 0o644)}
         for name, (content, mode) in files.items():
             write(repo, name, content, mode)
@@ -81,7 +78,7 @@ def repository(base_files: dict[str, tuple[str, int]] | None = None):
 
 
 def derive(repo: Path, base: str, *, tier: str | None = None) -> dict:
-    head = os.fsdecode(git(repo, "rev-parse", "HEAD").stdout).strip()
+    head = GIT.head(repo)
     return M.derive(worktree=str(repo), base=base, head_sha=head, tier=tier)
 
 
@@ -375,9 +372,7 @@ def t_gitlink_change_survives_gitmodules_ignore_all() -> None:
     Uses ``git update-index --cacheinfo`` (not ``git add --all``, which would drop an on-disk-absent gitlink)."""
     with tempfile.TemporaryDirectory() as directory:
         repo = Path(directory)
-        git(repo, "init", "-q", "-b", "main")
-        git(repo, "config", "user.name", "Gauntlet Test")
-        git(repo, "config", "user.email", "gauntlet@example.invalid")
+        GIT.init_repo(repo)
         write(repo, "docs/guide.md", "# Guide\n")
         git(repo, "update-index", "--add", "--cacheinfo",
             "160000,1111111111111111111111111111111111111111,vendor/sub")
@@ -385,13 +380,13 @@ def t_gitlink_change_survives_gitmodules_ignore_all() -> None:
               '[submodule "vendor/sub"]\n\tpath = vendor/sub\n\turl = ./sub.git\n\tignore = all\n')
         git(repo, "add", "docs/guide.md", ".gitmodules")
         git(repo, "commit", "-q", "-m", "base with ignore=all submodule")
-        base = os.fsdecode(git(repo, "rev-parse", "HEAD").stdout).strip()
+        base = GIT.head(repo)
         git(repo, "update-index", "--cacheinfo",
             "160000,2222222222222222222222222222222222222222,vendor/sub")
         write(repo, "docs/guide.md", "# Guide v2\n")
         git(repo, "add", "docs/guide.md")
         git(repo, "commit", "-q", "-m", "advance gitlink and edit prose")
-        head = os.fsdecode(git(repo, "rev-parse", "HEAD").stdout).strip()
+        head = GIT.head(repo)
         result = M.derive(worktree=str(repo), base=base, head_sha=head)
     by_path = {row["path"]: row for row in result["files"]}
     check("vendor/sub" in by_path,
@@ -577,7 +572,7 @@ def t_bad_inputs_and_git_failures_emit_no_partial_json() -> None:
     # The unresolvable-base case now comes from the ROW, not from `--base`: `--base` is only an assertion, so
     # an unresolvable ref is one the row's effective base names and no remote-tracking ref backs.
     with repository() as (repo, base):
-        head = os.fsdecode(git(repo, "rev-parse", "HEAD").stdout).strip()
+        head = GIT.head(repo)
         with tempfile.TemporaryDirectory() as directory:
             unbacked = _build_ledger(Path(directory), "31", "no-such-branch")
             with cli_base(repo, base) as ledger_args:
@@ -870,7 +865,7 @@ def t_ledger_base_assertion_passes() -> None:
 def t_ledger_base_assertion_refuses() -> None:
     # `--base` disagreeing with the row's effective base is refused BEFORE any analysis, and emits no JSON.
     with repository() as (repo, _base):
-        head = os.fsdecode(git(repo, "rev-parse", "HEAD").stdout).strip()
+        head = GIT.head(repo)
         with tempfile.TemporaryDirectory() as d:
             ledger = _build_ledger(Path(d), "31", "main")
             code, out, err = capture_cli(M.main, [
@@ -906,9 +901,7 @@ def t_ledger_variant_spelling_floors_canonically() -> None:
     # operational ref is taken from the raw `--base` instead of the row's effective base.
     with tempfile.TemporaryDirectory() as directory:
         repo = Path(directory)
-        git(repo, "init", "-q", "-b", "main")
-        git(repo, "config", "user.name", "Gauntlet Test")
-        git(repo, "config", "user.email", "gauntlet@example.invalid")
+        GIT.init_repo(repo)
         write(repo, "README.md", "readme\n")
         base0 = commit(repo, "base0")
         # ordinary sibling `rel`: adds the SENSITIVE script; its tracking ref becomes `origin/rel`.
@@ -944,7 +937,7 @@ def t_ledger_file_without_pr_refuses() -> None:
     # `--pr` is argparse-required now, so the refusal comes from the parser — the guarantee is unchanged and
     # this pins that the missing row key is still named, never defaulted.
     with repository() as (repo, _base):
-        head = os.fsdecode(git(repo, "rev-parse", "HEAD").stdout).strip()
+        head = GIT.head(repo)
         with tempfile.TemporaryDirectory() as d:
             ledger = _build_ledger(Path(d), "31", "main")
             code, out, err = capture_cli(M.main, [
@@ -956,7 +949,7 @@ def t_ledger_file_without_pr_refuses() -> None:
 
 def t_ledger_missing_row_refuses() -> None:
     with repository() as (repo, _base):
-        head = os.fsdecode(git(repo, "rev-parse", "HEAD").stdout).strip()
+        head = GIT.head(repo)
         with tempfile.TemporaryDirectory() as d:
             ledger = _build_ledger(Path(d), "31", "main")
             code, out, err = capture_cli(M.main, [
@@ -979,9 +972,7 @@ def t_derive_without_ledger_is_refused() -> None:
     `--file`/`--pr` and it fails, because the omitted-ledger invocation exits 0 instead of refusing."""
     with tempfile.TemporaryDirectory() as directory:
         repo = Path(directory)
-        git(repo, "init", "-q", "-b", "main")
-        git(repo, "config", "user.name", "Gauntlet Test")
-        git(repo, "config", "user.email", "gauntlet@example.invalid")
+        GIT.init_repo(repo)
         write(repo, "seed.txt", "seed\n")
         main_tip = commit(repo, "main: seed")
         git(repo, "checkout", "-q", "-b", "feat", main_tip)
