@@ -645,9 +645,11 @@ so a verdict earned under a since-changed scope is not counted ("Does this pass 
   not harden its own self-test against a developer editing it" is a *decision*, and re-litigating a decision
   is not review — it is the loop arguing with itself.
 - **EVERY FINDING MUST ANCHOR TO THE INTENT.** It names **either** the `## Purpose` line it defends (quoted
-  **verbatim**) **or** the `## Threat model` actor who can actually write the offending input. **A finding
-  that can anchor to neither is NON-GATING**: it does **not** produce `NOT SATISFIED`, **no fix is dispatched
-  for it**, it is recorded as a follow-up, and the review moves on.
+  **verbatim**) **or** the `## Threat model` actor who can actually write the offending input. Anchoring to
+  neither is **one** of the ways a finding ends up NON-GATING: it does **not** produce `NOT SATISFIED`,
+  **no fix is dispatched for it**, it is recorded as a follow-up, and the review moves on. It is not the
+  only way, and this bullet is not the rule — `review-pass.py`'s `gating()` owns it, and a finding also
+  answers a question this section does not cover (whether the PR's BASE already does the same thing).
 - **THE ADVERSARIAL SWEEP STAYS.** It found the real bugs and it is not narrowed — it is **BOUNDED**, by the
   threat model rather than by nothing. Hunt as hostilely as ever; then say who can reach what you found.
 

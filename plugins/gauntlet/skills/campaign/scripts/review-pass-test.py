@@ -1038,8 +1038,12 @@ class Tables:
              "**THE SPIRAL FINDING, RECORDED AND DISCHARGED.** It is WRITTEN — this is not censorship, and the reviewer is not told to stop looking. The tool tells it, on stdout, that the finding anchors to nothing and MUST NOT produce NOT SATISFIED. It becomes a follow-up"),
             (FINDINGS_FILE, [*FIND_OK[:6], "--purpose", "-", *FIND_OK[8:12],
                              "--base", R.PRE_EXISTING,
-                             "--base-repro", "checked out origin/main at 9efa22b and ran the same probe: "
-                                             "it printed `all 1 fixtures hold` and exited 0 there too"],
+                             # An INVENTED base sha and an INVENTED output line. Neither exists anywhere in
+                             # this tree, deliberately: a real sha rots into a meaningless string, and a
+                             # real output line turns this fixture into a false positive for the next
+                             # reader who greps for it and lands on the live site that prints it.
+                             "--base-repro", "checked out the base at 0000000 and ran the same probe: "
+                                             "it printed `all 1 probes agree` and exited 0 there too"],
              0, "NON-GATING",
              "**THE PR-207 FINDING, RECORDED AND DISCHARGED.** True, reproduced, `writer=repo-content` — "
              "and the BASE does exactly the same thing. Under the old two-question rule this GATED, and a "
@@ -1058,7 +1062,7 @@ class Tables:
              "the mirror: a base reproduction filed beside a claim that the base does NOT do this. The "
              "reader cannot tell which half to believe, so neither is accepted"),
             (FINDINGS_FILE, [*FIND_OK[:12], "--base", R.PRE_EXISTING,
-                             "--base-repro", "main prints the same thing at 9efa22b"],
+                             "--base-repro", "the base prints the same thing at 0000000"],
              0, "# GATING:",
              "**THE BOUND ON THE WHOLE RULE.** Pre-existing, measured, and it STILL gates — because this "
              "one anchors to a `## Purpose` line. A PR that promised to fix the thing cannot plead that "

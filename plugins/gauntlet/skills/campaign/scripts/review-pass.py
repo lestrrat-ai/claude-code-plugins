@@ -227,6 +227,20 @@ FINDING = "finding"
 
 # The EXACT key set, by the same rule every other record here obeys: every key it requires, and NOT ONE
 # more. `line` is a string like every other value in these artifacts.
+#
+# **ADDING A KEY HERE BREAKS EVERY FINDING ALREADY ON DISK, AND THAT IS A DISCLOSED RESIDUAL, NOT AN
+# OVERSIGHT.** Exactness cuts both ways: a record written before the new key is now MISSING a required one,
+# so it is refused. That refusal reaches further than the door that wrote it, because the two HISTORICAL
+# readers — `repair-pass.py`'s `load_historical_findings` and `finding-audit.py`'s `read_source_historical`
+# — run this same check over LANDED rounds. Both exist so that re-authoring an intent cannot wedge a PR;
+# neither can help with this, because the missing key is not an anchor they can hold historical.
+#
+# So a run whose early rounds landed under the previous key set cannot bundle its own history after the
+# plugin updates, and the PR wedges at the next cap. It is accepted because of what the artifact IS: the
+# run directory is local, git-ignored and driver-owned, one user drives it, and the recovery is to finish
+# the run before updating or to start a fresh one. There is deliberately no migration path and no
+# tolerant read — a findings artifact this tool cannot fully validate is one it must not reason from.
+# What is NOT acceptable is shipping the next key without saying so again here.
 FINDING_KEYS = {"type", "file", "line", "writer", "purpose", "base", "base_repro", "repro", "fix"}
 # The prose fields — checked for being a non-blank string, and nothing more. `file` and `line` are the
 # CITATION (a finding with no `file:line` is not a finding, it is an opinion); `repro` is what makes it a
@@ -295,6 +309,22 @@ NO_PURPOSE = "-"
 #     gates — the same direction `critical-rules.md` sends an unsure audit verdict.
 # What it never does is DISCARD the finding: a `pre-existing` finding is recorded as a follow-up, in the
 # durable store, for a human. `main` having a defect is a fact worth writing down; it is not this PR's bill.
+#
+# **AND NOW THE PART THAT IS NOT BOUNDED, STATED PLAINLY BECAUSE THE THREE ABOVE READ STRONGER THAN THEY
+# ARE.** The second bound is a FORMAT check, not a verification: this tool asks that `base_repro` be a
+# non-blank string, and nothing here or downstream re-runs the base to see whether that string describes
+# anything that happened. `repro` is trusted the same way — but the DIRECTION differs, and that is the
+# residual. An invented `repro` costs a wasted round and the audit is there to catch it; an invented
+# `base_repro` DISCHARGES the finding, and `finding-audit.py` audits GATING findings only, so a
+# `pre-existing` claim is the one claim in this record that NO independent context ever reads. The audit
+# asks "is it TRUE?" of everything except the answer that made asking unnecessary.
+#
+# That is accepted, not overlooked, and the reason is the same one the whole gate rests on: the reviewer is
+# already trusted for `repro`, `writer` and the verbatim `purpose` quote, and a tool that could check the
+# base claim mechanically would be a tool that could have judged the finding without a reviewer. The guard
+# is SOCIAL and it lives in the prompt: `review-prompt.txt` tells the reviewer not to go looking for
+# reasons to say `pre-existing`. If a run ever ends with a merged regression whose finding was discharged
+# this way, THIS is the paragraph that was wrong, and the fix is to make `pre-existing` reach the audit.
 INTRODUCED = "introduced"
 PRE_EXISTING = "pre-existing"
 BASE_STATUSES = (INTRODUCED, PRE_EXISTING)
@@ -2753,13 +2783,19 @@ def progress_tally(events: "list[dict]") -> "tuple[int, str]":
 
 def finding_counts(progress: Path) -> str:
     """`<gating>/<non-gating>` via the ONE `gating()` predicate. A record missing the keys `gating()` reads
-    is SKIPPED, not crashed on (advisory divergence from `verify`, which would reject it)."""
+    is SKIPPED, not crashed on (advisory divergence from `verify`, which would reject it).
+
+    The skip is enforced by the guard below and NOT by a list of key names. Naming them here would be a
+    copy of `gating()`'s field set that goes stale the next time it grows one — silently, because a record
+    missing the unnamed key would then reach `gating()` and be skipped by the `except` anyway, one field
+    later than intended. The `KeyError` a missing key raises IS the test.
+    """
     recs = read_lenient(findings_path(progress))
     if not recs:
         return "0/0"
     g = ng = 0
     for rec in recs:
-        if not isinstance(rec, dict) or "purpose" not in rec or "writer" not in rec:
+        if not isinstance(rec, dict):
             continue
         try:
             (g := g + 1) if gating(rec) else (ng := ng + 1)  # noqa: F841 - walrus updates the counters
