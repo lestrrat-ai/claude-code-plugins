@@ -144,7 +144,6 @@ defect, committed by this file.
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import os
 import re
@@ -155,6 +154,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, NamedTuple, NoReturn
 from urllib.parse import quote
+
+from _gauntlet.modules import load_module_from_path
 
 HERE = Path(__file__).resolve().parent
 SNAPSHOT_PY = HERE / "ci-snapshot.py"
@@ -192,11 +193,9 @@ def load_snapshot_module():
     it knows by CALLING that module. If this import is ever replaced by a local copy of its constants, the
     two will drift and the tool will be confidently wrong.
     """
-    spec = importlib.util.spec_from_file_location("ci_snapshot", SNAPSHOT_PY)
-    if spec is None or spec.loader is None:  # pragma: no cover - a broken checkout, not a verdict
+    mod = load_module_from_path("ci_snapshot", SNAPSHOT_PY)
+    if mod is None:  # pragma: no cover - a broken checkout, not a verdict
         fail(f"cannot load {SNAPSHOT_PY} — the verdict rules live there; refusing to guess them")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
     return mod
 
 
@@ -205,11 +204,9 @@ SNAP = load_snapshot_module()
 
 def load_ledger_module():
     """Import the schema-owning ledger accessor instead of copying its file format or write rules."""
-    spec = importlib.util.spec_from_file_location("campaign_ledger_for_ci", LEDGER_PY)
-    if spec is None or spec.loader is None:  # pragma: no cover - a broken checkout, not a verdict
+    mod = load_module_from_path("campaign_ledger_for_ci", LEDGER_PY)
+    if mod is None:  # pragma: no cover - a broken checkout, not a verdict
         fail(f"cannot load {LEDGER_PY} — required-set persistence belongs to that accessor")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
     return mod
 
 
@@ -2584,11 +2581,9 @@ def load_test_module():
             f"find the thing it tests must FAIL, never pass. Reporting success here would be a green derived "
             f"from zero evidence, which is the bug this script exists to prevent."
         )
-    spec = importlib.util.spec_from_file_location("ci_status_test", TEST_PY)
-    if spec is None or spec.loader is None:  # pragma: no cover - a broken checkout, not a verdict
+    mod = load_module_from_path("ci_status_test", TEST_PY)
+    if mod is None:  # pragma: no cover - a broken checkout, not a verdict
         fail(f"cannot load the fixture suite at {TEST_PY} — refusing to report a self-test that never ran")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
     return mod
 
 

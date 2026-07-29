@@ -13,7 +13,6 @@ skill.
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import os
 import re
@@ -25,6 +24,7 @@ from typing import NoReturn
 
 from _gauntlet.atomic import replace_text
 from _gauntlet.jsonl import JsonlError, object_lines
+from _gauntlet.modules import load_module_from_path
 from _gauntlet.table import config_lines, escape_cell as _shared_escape_cell, grid_lines
 # Re-exported WITHOUT a default, because no one-argument default can be right: the notice names the
 # statuses a render ACTUALLY dropped (`hidden_statuses()`), never the configured set, and
@@ -1872,11 +1872,9 @@ def load_test_module():
             f"find the thing it tests must FAIL, never pass. Reporting success here would be a green "
             f"derived from zero evidence, which is the bug this suite exists to prevent"
         )
-    spec = importlib.util.spec_from_file_location("ledger_test", TEST_PY)
-    if spec is None or spec.loader is None:  # pragma: no cover - a broken checkout, not a verdict
+    mod = load_module_from_path("ledger_test", TEST_PY)
+    if mod is None:  # pragma: no cover - a broken checkout, not a verdict
         fail(f"cannot load the fixture suite at {TEST_PY} — refusing to report a self-test that never ran")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
     return mod
 
 
