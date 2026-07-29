@@ -18,6 +18,7 @@ import tempfile
 from pathlib import Path
 
 from _gauntlet import gh as GH
+from _gauntlet import view as VIEW
 from _gauntlet.gitfixture import GitFixture
 from _gauntlet.modules import load_sibling
 from _gauntlet.testing import (capture_cli, checker, deeply_nested_json, gh_writing,
@@ -617,7 +618,53 @@ def t_base_advance_is_not_a_retarget():
     expect(row(base_branch="v3"), view(baseRefName="v3"), "merge", "")
 
 
+def t_shared_field_problem_semantics():
+    """`_gauntlet/view.py`'s OWN contract, exercised directly rather than through a caller.
+
+    Three deciders now read their refusal wording from this one helper, so its semantics need a fixture
+    that does not depend on any caller's field list. Two of them are properties the callers cannot show:
+    the ORDER guarantee (strings before bools, and each list in the order given), and that an empty
+    request still refuses a non-object.
+    """
+    fp = VIEW.field_problem
+    ok = {"a": "x", "b": "y", "flag": True}
+
+    check(fp(ok, strings=("a", "b"), bools=("flag",)) is None,
+          "a well-formed payload must produce no problem")
+    check(fp({}, strings=(), bools=()) is None, "an empty request over an object must pass")
+    # An empty request still refuses a NON-object: the caller asked for nothing, but "is this even a JSON
+    # object?" is the helper's own precondition, not one of the requested fields.
+    check(fp([], strings=(), bools=()) == "view is not a JSON object (got list)",
+          "an empty request must still refuse a non-object")
+    check(fp(None, strings=("a",)) == "view is not a JSON object (got NoneType)",
+          "a JSON null must be named by its own type")
+
+    check(fp({"b": "y"}, strings=("a", "b")) == "missing field 'a'",
+          "a missing string field must be named")
+    check(fp({"a": 1, "b": "y"}, strings=("a", "b")) == "field 'a' must be a string, got int",
+          "a wrong-typed string field must name the observed type")
+    check(fp({"a": "x"}, bools=("flag",)) == "missing field 'flag'",
+          "a missing bool field must be named")
+    check(fp({"flag": "false"}, bools=("flag",)) == "field 'flag' must be a bool, got str",
+          "a JSON string that reads like a bool is not a bool")
+    # bool IS a subclass of int, so this is the direction that could silently pass a bool as a string's
+    # sibling. It must not: a bool requested as a string is a wrong type like any other.
+    check(fp({"a": True}, strings=("a",)) == "field 'a' must be a string, got bool",
+          "a bool requested as a string must be refused")
+
+    # ORDER: strings are checked before bools, and each list in the order given. A caller relies on this to
+    # decide which malformation its user hears about first when a payload has several.
+    both_wrong = {"a": 1, "flag": "false"}
+    check(fp(both_wrong, strings=("a",), bools=("flag",)) == "field 'a' must be a string, got int",
+          "the string list must be checked before the bool list")
+    check(fp({}, strings=("a", "b")) == "missing field 'a'",
+          "the first requested field must be the one reported")
+    check(fp({}, strings=("b", "a")) == "missing field 'b'",
+          "reordering the request must reorder the report")
+
+
 CASES = [
+    ("shared-field-problem", "the shared view validator's own semantics: order, empty request, and every missing/wrong-type message", t_shared_field_problem_semantics),
     ("clean-all-met", "CLEAN + every precondition met -> merge", t_clean_and_all_met),
     ("has-hooks", "HAS_HOOKS -> merge", t_has_hooks_merges),
     ("base-retarget-parks", "a live base retarget parks with the shared reason", t_base_retarget_parks),

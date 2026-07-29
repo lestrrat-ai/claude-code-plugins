@@ -52,6 +52,7 @@ from _gauntlet.gh import pr_view_json
 from _gauntlet.git_refs import select_base_fetch_refs
 from _gauntlet.modules import load_module_from_path, load_sibling
 from _gauntlet.testing import run_sibling_suite
+from _gauntlet.view import field_problem
 
 _HERE = Path(__file__).resolve().parent
 SIBLING = _HERE / "base-preflight-test.py"     # the fixture suite — this tool's executable contract
@@ -209,16 +210,11 @@ def validate_view(view: object) -> "str | None":
     """`None` if `view` is a JSON object carrying `mergeable` and `mergeStateStatus` as strings; otherwise a
     short description of the FIRST thing wrong. PURE — no I/O. The CLI turns a non-`None` result into a
     fail-closed `recheck`, so `decide` is never reached with a malformed view (learned from a prior tool that
-    could KeyError past its boundary)."""
-    if not isinstance(view, dict):
-        return f"view is not a JSON object (got {type(view).__name__})"
-    for name in _VIEW_STR_FIELDS:
-        if name not in view:
-            return f"missing field {name!r}"
-        # bool is a subclass of int, not str, so a JSON string is the only thing that passes here.
-        if not isinstance(view[name], str):
-            return f"field {name!r} must be a string, got {type(view[name]).__name__}"
-    return None
+    could KeyError past its boundary).
+
+    `_gauntlet/view.py` owns the check and its wording; the field list stays here, because which fields this
+    tool needs is this tool's business and no other decider's."""
+    return field_problem(view, strings=_VIEW_STR_FIELDS)
 
 
 def load_view(pr: str, repo: "str | None", view_json: "str | None",

@@ -39,6 +39,7 @@ from typing import cast
 
 from _gauntlet.modules import load_sibling
 from _gauntlet.testing import run_sibling_suite
+from _gauntlet.view import field_problem
 
 HERE = Path(__file__).resolve().parent
 SIBLING = HERE / "merge-test.py"
@@ -173,23 +174,14 @@ def _view_problem(view: object) -> "str | None":
     """`None` if `view` is a JSON object carrying every field `execute` consumes at the right JSON type;
     otherwise a short description of the FIRST thing wrong. PURE — no I/O.
 
-    The message bodies match `base-preflight.py` and `merge-check.py` verbatim: all three validate a
-    `gh pr view` payload against the same three failures (not an object, a missing field, a field of the
-    wrong type), and a reader who has seen one tool's refusal must not have to learn a second dialect to
-    read another's. `_validate_view` wraps whatever this returns."""
-    if not isinstance(view, dict):
-        return f"view is not a JSON object (got {type(view).__name__})"
-    for field in _VIEW_STR_FIELDS:
-        if field not in view:
-            return f"missing field {field!r}"
-        # bool is a subclass of int, not str, so a JSON string is the only thing that passes here.
-        if not isinstance(view[field], str):
-            return f"field {field!r} must be a string, got {type(view[field]).__name__}"
-    if "isDraft" not in view:
-        return "missing field 'isDraft'"
-    if not isinstance(view["isDraft"], bool):
-        return f"field 'isDraft' must be a bool, got {type(view['isDraft']).__name__}"
-    return _labels(view)[1]
+    `_gauntlet/view.py` owns the field-shape check and its wording, shared with `base-preflight.py` and
+    `merge-check.py`. `labels` is checked here and not there: it is a list of objects rather than a scalar
+    field, and no other decider reads it. `_validate_view` wraps whatever this returns."""
+    problem = field_problem(view, strings=_VIEW_STR_FIELDS, bools=("isDraft",))
+    if problem is not None:
+        return problem
+    # `field_problem` returning None has already established that `view` is a dict.
+    return _labels(cast(dict, view))[1]
 
 
 def _validate_view(view: object) -> dict:
