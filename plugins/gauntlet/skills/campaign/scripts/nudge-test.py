@@ -12,6 +12,10 @@ that emits every line unconditionally — which is no printer at all.
 from __future__ import annotations
 
 import io
+import os
+import stat
+import subprocess
+import sys
 import tempfile
 from contextlib import redirect_stdout
 from datetime import datetime, timedelta, timezone
@@ -21,6 +25,11 @@ from _gauntlet.modules import load_sibling
 from _gauntlet.testing import checker
 
 OWNER = Path(__file__).resolve().parent / "nudge.py"
+
+# How long the non-regular-entry fixture waits on the printer before calling it HUNG. The refusal happens
+# before any read, so a correct printer returns in interpreter-start time; this only has to be far above
+# that and far below a suite anyone would sit through. A regression must fail the fixture, never hang it.
+NON_REGULAR_TIMEOUT = 20.0
 
 
 N = load_sibling("nudge_owner", OWNER.parent, OWNER.name)
@@ -275,10 +284,10 @@ def t_unread_notes_are_disclosed():
               "with no --followups the notes must be DISCLOSED unread, naming why — never reported absent")
         check("standing notes are UNKNOWN, not absent." in out,
               "the disclosure must say the notes are UNKNOWN, not that there are none")
-        # A DIRECTORY where the file belongs: it stats fine and fails on read.
+        # A DIRECTORY where the file belongs: refused by the type classification, before any read.
         notes.mkdir()
         out = _run_main(["--file", str(led), "--followups", str(store)])
-        check(f"standing notes NOT READ ({notes} could not be read (IsADirectoryError))" in out,
+        check(f"standing notes NOT READ ({notes} is a directory, not a regular file" in out,
               "an unreadable notes path must be DISCLOSED, naming the path and the failure — never raise")
         notes.rmdir()
         # Bytes that are not UTF-8 are disclosed, never silently mangled by a lenient decode.
@@ -294,6 +303,71 @@ def t_unread_notes_are_disclosed():
         check("standing note: fine" in out and "standing notes NOT READ" not in out,
               "a readable notes file must deliver its line and NO not-read disclosure — the disclosure "
               "must discriminate on whether the file was actually read")
+
+
+def t_dangling_notes_symlink_is_disclosed():
+    """A symlink whose target is GONE is an entry that was FOUND and cannot be read, so it is DISCLOSED —
+    never folded into the silent genuine-absence case. `os.path.exists` is False there while
+    `os.path.lexists` is True, and a plain `stat` raises the same `FileNotFoundError` a truly missing
+    entry does, which is exactly how a user whose shared notes file moved would lose their notes from
+    every heartbeat with nothing saying so.
+
+    Teeth: repoint the SAME link at a real file and the same invocation must deliver the note with no
+    disclosure, so the rule discriminates on the target and not on the path being a link.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        led, store, notes = _laid_out(d)
+        target = Path(d) / "shared-notes.md"
+        notes.symlink_to(target)
+        check(not notes.exists() and notes.is_symlink(),
+              "the fixture must actually be a DANGLING symlink — present as an entry, absent as a file")
+        out = _run_main(["--file", str(led), "--followups", str(store)])
+        check(f"standing notes NOT READ ({notes} is a symlink whose target is missing" in out,
+              "a dangling notes symlink must be DISCLOSED, naming the path and the reason — never "
+              "reported as the silent genuine-absence case")
+        target.write_text("the shared note\n", encoding="utf-8")
+        out = _run_main(["--file", str(led), "--followups", str(store)])
+        check("standing note: the shared note" in out and "standing notes NOT READ" not in out,
+              "a symlink to a real file must be READ through — the disclosure must turn on the missing "
+              "target, not on the entry being a symlink")
+
+
+def t_non_regular_notes_entry_is_refused_without_blocking():
+    """Anything that is not a REGULAR FILE is refused by name BEFORE any read. A FIFO is the case with
+    teeth: `stat` reports size 0 and passes the byte cap, so a printer that goes straight to `read_text`
+    blocks in `open()` waiting for a writer that never comes — forever, with no output and no exit. A
+    heartbeat printer that never returns stalls the campaign loop.
+
+    The FIFO is driven in a SUBPROCESS under a hard timeout, so a regression fails this fixture instead of
+    hanging the suite that is supposed to catch it. Teeth: a regular file at the same path is read.
+    """
+    if not hasattr(os, "mkfifo"):  # pragma: no cover - POSIX-only fixture
+        return
+    with tempfile.TemporaryDirectory() as d:
+        led, store, notes = _laid_out(d)
+        os.mkfifo(notes)
+        try:
+            check(stat.S_ISFIFO(notes.lstat().st_mode), "the fixture must actually create a FIFO")
+            try:
+                done = subprocess.run(  # noqa: S603 - this suite drives its sibling command
+                    [sys.executable, str(OWNER), "--file", str(led), "--followups", str(store)],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+                    timeout=NON_REGULAR_TIMEOUT,
+                )
+            except subprocess.TimeoutExpired:
+                raise AssertionError(
+                    f"a FIFO at the notes path HUNG the printer past {NON_REGULAR_TIMEOUT}s — a "
+                    "non-regular entry must be refused before any read, never waited on") from None
+            check(done.returncode == 0, "a FIFO at the notes path must still exit 0 — a nudge never blocks")
+            check(f"standing notes NOT READ ({notes} is a FIFO, not a regular file" in done.stdout,
+                  "a FIFO at the notes path must be DISCLOSED by name, never read and never waited on")
+        finally:
+            notes.unlink()
+        notes.write_text("a real file\n", encoding="utf-8")
+        out = _run_main(["--file", str(led), "--followups", str(store)])
+        check("standing note: a real file" in out and "standing notes NOT READ" not in out,
+              "a regular file at the same path must be read normally — the guard must refuse the TYPE, "
+              "not the path")
 
 
 def t_oversized_notes_file_is_disclosed():
@@ -608,6 +682,10 @@ CASES = [
      t_absent_notes_file_says_nothing),
     ("notes-unread-disclosed", "notes that cannot be read SAY so, naming why — never silence",
      t_unread_notes_are_disclosed),
+    ("notes-dangling-symlink", "a dangling notes symlink is disclosed, never reported absent",
+     t_dangling_notes_symlink_is_disclosed),
+    ("notes-non-regular-refused", "a non-regular notes entry is refused by name, never waited on",
+     t_non_regular_notes_entry_is_refused_without_blocking),
     ("notes-oversized-disclosed", "a notes file over the byte cap is disclosed unread, never a crash",
      t_oversized_notes_file_is_disclosed),
     ("notes-content-model", "blanks and # lines skip, a leading bullet strips, the rest is verbatim",

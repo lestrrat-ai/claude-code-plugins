@@ -30,6 +30,7 @@ The design and the full obligation inventory it was trimmed from live in `.gaunt
 from __future__ import annotations
 
 import argparse
+import stat
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -88,6 +89,20 @@ NOTES_MAX_BYTES = 64 * 1024
 # both read correctly. Exactly these two markers, each with its trailing space, so `-x` stays the word it
 # is; a line that is ONLY a marker is an empty bullet and carries no note, so it is dropped.
 NOTES_BULLETS = ("- ", "* ")
+
+# The non-regular entry types the classification NAMES when it refuses one. Naming the type is the whole
+# value of the disclosure: "not a regular file" tells the user nothing they can act on, "a FIFO" tells
+# them exactly what is sitting at the path. Order does not matter — the predicates are disjoint.
+NOTES_ENTRY_KINDS = ((stat.S_ISDIR, "a directory"), (stat.S_ISFIFO, "a FIFO"), (stat.S_ISSOCK, "a socket"),
+                     (stat.S_ISBLK, "a block device"), (stat.S_ISCHR, "a character device"))
+
+
+def entry_kind(mode: int) -> str:
+    """What the entry at the notes path IS, in words, for a disclosure that refuses to read it."""
+    for is_kind, name in NOTES_ENTRY_KINDS:
+        if is_kind(mode):
+            return name
+    return "of an unknown type"
 
 
 def _activity_age(last_activity: str, now: datetime) -> "timedelta | None":
@@ -199,17 +214,45 @@ def read_notes(path: "Path | None") -> "tuple[list, str | None]":
     disclosure every heartbeat of a run whose user never wrote a note is a false alarm, and a disclosure
     line that is usually noise is one the driver learns to skip past.
 
-    It NEVER raises. A permissions error, a directory in the file's place, invalid UTF-8, or a file too
-    large to hold all degrade to a named reason — the printer must always exit 0.
+    It NEVER raises AND IT NEVER BLOCKS. A permissions error, invalid UTF-8, or a file too large to hold
+    all degrade to a named reason — the printer must always exit 0. What is at the path is CLASSIFIED
+    before anything opens it, because `read_text` on a FIFO waits for a writer FOREVER, and a heartbeat
+    printer that never returns stalls the campaign loop rather than misreporting one line.
+
+    The classification is what keeps the "not read" / "nothing there" split honest, and it turns on
+    whether the entry could be LOOKED AT, never on whether a file was FOUND:
+
+    1. `lstat` first, so the link itself is examined rather than what it points at. `FileNotFoundError`
+       here means there is genuinely NO ENTRY — the normal, silent case above.
+    2. An entry that IS a symlink is resolved with `stat`. A missing target is a found entry that cannot
+       be read, so it is DISCLOSED — never reported as the absence in (1), which is how a moved shared
+       notes file would drop out of every heartbeat with nothing saying so.
+    3. Anything that is not a REGULAR FILE is refused by name before any read. That covers FIFOs (the
+       hang), sockets, devices and directories.
+
+    ACCEPTED RESIDUAL, deliberately not defended against: the entry can change type between the
+    classification and the read. Closing it would mean an `os.open` with `O_NONBLOCK` and an `fstat` type
+    check on the descriptor actually read; under this repository's single-user calibration a user
+    swapping a file for a FIFO underneath their own heartbeat is their own call.
     """
     if path is None:
         return [], "no --followups given, so the .gauntlet/ directory is unknown"
     try:
-        size = path.stat().st_size
+        info = path.lstat()
     except FileNotFoundError:
-        return [], None  # the look SUCCEEDED and found no file — the normal case, and it says nothing
+        return [], None  # the look SUCCEEDED and found no entry — the normal case, and it says nothing
     except OSError as exc:
         return [], f"{path} could not be checked ({type(exc).__name__})"
+    if stat.S_ISLNK(info.st_mode):
+        try:
+            info = path.stat()
+        except FileNotFoundError:
+            return [], f"{path} is a symlink whose target is missing — repoint it or remove it"
+        except OSError as exc:
+            return [], f"{path} could not be checked ({type(exc).__name__})"
+    if not stat.S_ISREG(info.st_mode):
+        return [], f"{path} is {entry_kind(info.st_mode)}, not a regular file — replace it with one"
+    size = info.st_size
     if size > NOTES_MAX_BYTES:
         return [], f"{path} is {size} bytes, over the {NOTES_MAX_BYTES}-byte cap — trim it"
     try:
