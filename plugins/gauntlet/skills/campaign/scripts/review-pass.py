@@ -121,6 +121,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple, NoReturn
 
+from _gauntlet.clock import TS_FORMAT
+
 # --- the contract (stage-2-review-gate.md) ------------------------------------------------------
 
 # Verdicts. `ok` is the ONLY one that lets a pass be counted — after this tool reads its report result.
@@ -509,11 +511,12 @@ def real_utc(value: str) -> bool:
     that matters — the deadline measured from an impossible time is a deadline whose arithmetic cannot be
     done, which is the very failure the shape check was written to stop. So after the shape holds, the
     value is PARSED, and what does not parse is refused: `strptime` is the arbiter of what a date is, not
-    ten digits in the right places. (`%Y-%m-%dT%H:%M:%SZ` — the `Z` is a literal, so this is UTC by
-    construction; a value carrying any other offset never reaches here, `TS_RE` having refused it.)
+    ten digits in the right places. (It parses against `TS_FORMAT`, whose trailing `Z` is a literal, so a
+    value that parses is UTC by construction; one carrying any other offset never reaches here, `TS_RE`
+    having refused it.)
     """
     try:
-        datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+        datetime.strptime(value, TS_FORMAT)
     except ValueError:
         return False
     return True
@@ -2287,7 +2290,7 @@ def cmd_amend(args) -> int:
     # name. `reason` reaches the same non-blank rule the read side already applies to it.
     rec: "dict[str, object]" = {
         "type": AMENDMENT,
-        "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "ts": datetime.now(timezone.utc).strftime(TS_FORMAT),
         "reason": args.reason,
         "proposed_unit": {
             "type": UNIT, "id": args.id, "kind": args.kind, "target": args.target,
@@ -2667,7 +2670,7 @@ def status_now(args) -> datetime:
     fixture can fix elapsed/health without the wall clock; absent both, it is the real now."""
     raw = getattr(args, "now", None) or os.environ.get(NOW_ENV)
     if raw:
-        return datetime.strptime(raw, "%Y-%m-%dT%H:%M:%SZ")
+        return datetime.strptime(raw, TS_FORMAT)
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
@@ -2923,7 +2926,7 @@ def status_row(progress: Path, now: datetime, want_verify: bool,
     elapsed_s: "float | None" = None
     if isinstance(ident, dict) and isinstance(ident.get("dispatched_at"), str):
         try:
-            elapsed_s = (now - datetime.strptime(ident["dispatched_at"], "%Y-%m-%dT%H:%M:%SZ")).total_seconds()
+            elapsed_s = (now - datetime.strptime(ident["dispatched_at"], TS_FORMAT)).total_seconds()
         except ValueError:
             elapsed_s = None
     try:
@@ -3032,7 +3035,7 @@ def cmd_status(args) -> int:
     if reviewer:
         segs.append(f"reviewer={reviewer}")
     segs.append(scope)
-    segs.append(f"as-of {now.strftime('%Y-%m-%dT%H:%M:%SZ')}")
+    segs.append(f"as-of {now.strftime(TS_FORMAT)}")
     header = "# " + "   ".join(segs)
 
     hidden_note = (f"# {hidden} terminal pass(es) hidden (done/gone) — --history to show them"
