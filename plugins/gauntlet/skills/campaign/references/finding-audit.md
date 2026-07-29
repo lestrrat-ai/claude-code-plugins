@@ -167,9 +167,9 @@ Two things the audit does about it — **a SIGNAL and a hand-off, never a discha
   (`pr-adoption.md`, "The run-default Non-goals MANAGED block", owns where a PR-specific bullet sits
   relative to the managed block). A genuinely **RUN-WIDE** class — the same residual attacking several
   of the run's PRs — is **NOT the driver's to declare**: the run header `default_non_goals` is
-  **OPERATOR-DECLARED, never auto-promoted** from the driver's own findings (`review-learnings.md`, "never
-  auto-promoted"; `files-and-ledger.md`, "the exclusions the operator declares"), because a store that folds
-  a Non-goal into **every** PR of the run is exactly the run-wide gate-blinding those authorities forbid.
+  **OPERATOR-DECLARED, never auto-promoted** from the driver's own findings (`files-and-ledger.md`, "the
+  exclusions the operator declares"), because folding a Non-goal into **every** PR of the run is exactly
+  the run-wide gate-blinding that authority forbids.
   Here the driver **only surfaces the recurring class to the operator as a non-blocking policy note**
   (driving the other PRs meanwhile); **ONLY after the operator explicitly declares it** (`ledger.py header
   set default_non_goals …`, `files-and-ledger.md`) is it folded into every PR by `pr-adopt.py intent-sync`,
@@ -189,43 +189,6 @@ public `gauntlet-accepted` / a stricter tier would be under-reviewed, or that ag
 INACCURATE, stays CONFIRMED and is fixed **regardless of any declared Non-goal** — these are the classes
 `AGENTS.md`/`CLAUDE.md` ("This does NOT lower the bar on REAL guarantees") holds above the single-user
 calibration. The signal above is for the residual class only; it can never reach one of these.
-
-**Durable-precedent SIGNAL — non-dispositional, and it NEVER discharges a finding.** When the audit judges
-a gating finding, it may **consult** the durable review-learnings store for an **active** learning whose
-anchor matches — a class this campaign already refuted, or that a legacy DEMOTE recorded as an accepted
-residual, with the justification and its falsifiability condition. Read the fields the consult needs —
-the `claim`/`anchor`
-that say WHICH learning is which, and the justification/falsifiability condition, are NOT in the default
-table columns — with
-`review-learnings.py table --fields id,state,claim,anchor,justification,falsifiability,provenance`, or
-`review-learnings.py get --id <rl>` for one entry (`review-learnings.md`). The table shows **active** and
-**stale** rows (revoked is hidden); **consult only rows whose `state` is `active`** — a stale learning is
-set aside pending re-evaluation. A match is **prior art the audit may CITE** in the
-audit record (`finding-audit.py record --evidence …`, `audit-<pr>-<n>.jsonl`); it is a **SIGNAL, not a
-verdict**. It does **not** make a REFUTED verdict (the mechanism must still be verified impossible,
-unchanged), and it does **not** subtract a CONFIRMED finding from the fix list — "unsure → CONFIRMED,
-never REFUTED" is untouched. Its only value is an **independent, durable read** the driver and user can act
-on. A learning is consulted here by the DRIVER only; it is **never** injected into a review pass to tell a
-reviewer to stand down.
-
-**The store is DRIVER-POPULATED — recording and staling are MANUAL driver actions, not auto-steps. This PR
-wires the CONSULTATION only; auto-wiring `record`/`stale` into the audit's REFUTED path is explicitly OUT
-OF SCOPE.** The audit does not record or stale anything on its own. The driver does, with the accessor
-(`review-learnings.md`):
-
-- **Recording a settled class (driver MAY).** When the audit REFUTES a gating finding whose refutation is a
-  **repo-class residual** — a KIND of finding that is an accepted residual for this repo, not a fact tied to
-  THIS PR's code (a PR-specific refutation stays the inline comment) — the driver MAY record that class:
-  `review-learnings.py record --claim … --justification … --anchor … --falsifiability … --provenance …`.
-  It is written only **after** the gate already settled the finding; recording **never discharges** one.
-  Existing learnings produced by a legacy DEMOTE remain readable; `repair-pass.md`, "Complete a legacy
-  DEMOTE", owns that compatibility path.
-- **Staling a precedent whose anchor moved (driver marks it BEFORE relying on it).** When a consulted
-  **active** learning's own `falsifiability` condition **is met by the diff in hand** — the anchored code
-  changed enough that the learning may no longer hold — the driver marks it
-  `review-learnings.py stale --id rlN --reason …` before relying on it, so a moved precedent is **re-judged,
-  not trusted**, and the finding is engaged as real. A fresh investigation returns it with
-  `reaffirm --id rlN --finding …`.
 
 ### The reachability test — CAN THE MECHANISM THE FINDING DESCRIBES ACTUALLY OCCUR?
 

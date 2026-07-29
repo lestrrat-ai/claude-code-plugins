@@ -177,8 +177,7 @@ Use this fail-closed procedure:
 or when the final-cap list cannot be recovered.** It already has a recorded `repair_decision`, so the
 unreconcilable-history park above is unavailable and `ledger.py park` correctly refuses it. Surface the
 blocker without editing the ledger or inferring missing findings from generic record prose, another round, or
-the current diff. Existing review-learning entries produced by the legacy decision remain valid data and stay
-readable through `review-learnings.py`.
+the current diff.
 
 The final report's **Repaired** entry names the legacy DEMOTE, links its `repair-<pr>-<k>.md`, and lists
 each true finding deliberately left unfixed (`bailout-and-final-report.md`).
