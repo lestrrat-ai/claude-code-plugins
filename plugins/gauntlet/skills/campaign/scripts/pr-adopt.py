@@ -337,6 +337,17 @@ def cmd_adopt(args) -> int:
 
     # Load the ledger ONCE for the re-adoption checks here and the row refresh in step 4.
     header, rows = L.load(Path(args.file))
+
+    # THE LEDGER RECORDS WHICH RUN IT BELONGS TO, and adoption is where that happens: it is the first thing
+    # to write the ledger, and the only writer that is handed the run-id. Before this, nothing wrote the
+    # header field at all, and the omission stayed invisible until `merge.py` refused a fully-gated PR with
+    # `ledger run_id is unresolved` — at the very last step, after every review had been spent. An unset
+    # header takes this run's id; a header naming a DIFFERENT run refuses here, where the mix-up is cheap
+    # to fix, rather than at the merge.
+    recorded_run = header.get("run_id", "-")
+    if recorded_run and recorded_run != "-" and recorded_run != args.run_id:
+        return _refuse(f"ledger {args.file} belongs to run {recorded_run}, not {args.run_id}")
+
     existing = L.find_row(rows, pr)
 
     # TERMINAL ROW GATE — runs before every label, ledger and worktree mutation. A terminal row records
@@ -384,15 +395,6 @@ def cmd_adopt(args) -> int:
     # `existing`/`rows` were loaded above (the re-adoption base gate needs them); nothing has written the
     # ledger since, so they are still current.
     #
-    # THE LEDGER RECORDS WHICH RUN IT BELONGS TO, and adoption is where that happens: it is the first thing
-    # to write the ledger, and the only writer that is handed the run-id. Before this, nothing wrote the
-    # header field at all, and the omission stayed invisible until `merge.py` refused a fully-gated PR with
-    # `ledger run_id is unresolved` — at the very last step, after every review had been spent. An unset
-    # header takes this run's id; a header naming a DIFFERENT run refuses here, where the mix-up is cheap
-    # to fix, rather than at the merge.
-    recorded_run = header.get("run_id", "-")
-    if recorded_run and recorded_run != "-" and recorded_run != args.run_id:
-        return _refuse(f"ledger {args.file} belongs to run {recorded_run}, not {args.run_id}")
     if not recorded_run or recorded_run == "-":
         proc = _run(["python3", str(LEDGER_PY), "--file", args.file, "header", "set",
                      "run_id", args.run_id], cwd=args.project_root)

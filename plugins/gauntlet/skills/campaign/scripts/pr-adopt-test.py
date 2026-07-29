@@ -1245,8 +1245,29 @@ def t_adopt_records_the_run_id_in_the_header():
         check(M.L.find_row(rows, "42") is None, "a refused adoption must not register its row")
 
 
+def t_foreign_ledger_base_mismatch_refuses_without_mutation():
+    """A foreign run cannot park the owning run's row through the base-change path."""
+    with tempfile.TemporaryDirectory() as dd:
+        d = Path(dd)
+        ledger = d / "state.jsonl"
+        _init_ledger(ledger, run_id="g-alpha", base_branch="main")
+        _add_row(ledger, 12, head_sha="a" * 40, base_branch="main", tier="HIGH", status="in_review")
+        header_before, _ = M.L.load(ledger)
+        status_before = _field(ledger, 12, "status")
+
+        code, _, err, _rec = _adopt(d, ledger, view(baseRefName="release"), wroot=d / "wt", run_id="g-beta")
+        check(code != 0, "a foreign ledger must refuse before the base-change parking path")
+        check("g-alpha" in err and "g-beta" in err,
+              f"the refusal must name both runs so the mix-up is obvious, got {err!r}")
+        header_after, _ = M.L.load(ledger)
+        check(header_after == header_before, "a foreign-run refusal must leave the ledger header unchanged")
+        check(_field(ledger, 12, "status") == status_before,
+              "a foreign-run refusal must not change the owning row's status")
+
+
 CASES = [
     ("adopt_records_run_id", "adoption writes the ledger run_id header and refuses another run's ledger (fu121)", t_adopt_records_the_run_id_in_the_header),
+    ("foreign_ledger_base_mismatch", "a foreign run cannot park an owning row through a base mismatch", t_foreign_ledger_base_mismatch_refuses_without_mutation),
     ("mixed_base_end_to_end", "one mixed-base run walks adopt -> grouped required-set -> merge door -> "
                               "reconcile park -> distill on ONE ledger", t_mixed_base_end_to_end),
     ("refuse_fork", "a fork PR is refused, fail closed", t_refuse_fork),
