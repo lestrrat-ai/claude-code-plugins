@@ -18,6 +18,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from _gauntlet.gitfixture import GitFixture
 from _gauntlet.modules import load_sibling
 from _gauntlet.testing import capture_cli, checker
 
@@ -201,16 +202,10 @@ def t_cli_bad_project_root_fails_closed():
           f"the reason must name the fetch failure, got {result['reason']!r}")
 
 
-def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
-    result = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, check=False)
-    check(result.returncode == 0,
-          f"git {' '.join(args)} failed in {cwd}: {result.stderr.strip()}")
-    return result
-
-
-def _configure_repo(path: Path) -> None:
-    _git(path, "config", "user.email", "fixture@example.invalid")
-    _git(path, "config", "user.name", "Fixture")
+# The repository fixtures come from the shared owner, bound to THIS suite's failure type.
+_GIT = GitFixture(M.SelfTestFailure)
+_git = _GIT.run
+_configure_repo = _GIT.configure_identity
 
 
 def t_clean_view_with_stale_base_rebases():

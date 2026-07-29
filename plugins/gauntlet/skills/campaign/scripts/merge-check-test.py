@@ -14,10 +14,10 @@ check outranks the enums.
 from __future__ import annotations
 
 import json
-import subprocess
 import tempfile
 from pathlib import Path
 
+from _gauntlet.gitfixture import GitFixture
 from _gauntlet.modules import load_sibling
 from _gauntlet.testing import capture_cli, checker
 
@@ -58,12 +58,9 @@ def decide(r: dict, v: dict) -> dict:
 check = checker(M.SelfTestFailure)
 
 
-def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
-    proc = subprocess.run(
-        ["git", "-C", str(cwd), *args], capture_output=True, text=True, check=False)
-    check(proc.returncode == 0,
-          f"git {' '.join(args)} failed in {cwd}: {proc.stderr.strip()}")
-    return proc
+# The repository fixtures come from the shared owner, bound to THIS suite's failure type.
+_GIT = GitFixture(M.SelfTestFailure)
+_git = _GIT.run
 
 
 def expect(r: dict, v: dict, verdict: str, reason: "str | None" = None) -> dict:
@@ -252,10 +249,7 @@ def t_cli_ancestry_uses_reviewed_sha_not_moved_worktree_head():
     try:
         with tempfile.TemporaryDirectory() as d:
             candidate = Path(d) / "candidate"
-            candidate.mkdir()
-            _git(candidate, "init", "-b", "main")
-            _git(candidate, "config", "user.email", "fixture@example.invalid")
-            _git(candidate, "config", "user.name", "Fixture")
+            _GIT.init_repo(candidate)
             (candidate / "f").write_text("reviewed\n", encoding="utf-8")
             _git(candidate, "add", "f")
             _git(candidate, "commit", "-m", "reviewed")

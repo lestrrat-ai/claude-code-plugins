@@ -17,6 +17,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from _gauntlet.gitfixture import GitFixture
 from _gauntlet.modules import load_module_from_path, load_sibling
 from _gauntlet.testing import capture_cli, checker
 
@@ -36,6 +37,11 @@ SHA = "c" * 40
 
 check = checker(R.SelfTestFailure)
 
+# The repository fixtures come from the shared owner, bound to THIS suite's failure type. `_GIT.head` is
+# reached through the object, never aliased: several fixtures below bind a LOCAL `head`.
+_GIT = GitFixture(R.SelfTestFailure)
+git = _GIT.run
+
 
 def ledger_cli(argv: "list[str]") -> "tuple[int, str, str]":
     """Drive the LEDGER's real CLI in-process — the guard and the row reads live there, not here."""
@@ -46,30 +52,14 @@ def decision_repo(tmp: Path) -> "tuple[Path, str]":
     """One clean Git worktree shared by a fixture's decision-door ledgers."""
     repo = tmp / "decision-worktree"
     if not repo.exists():
-        repo.mkdir()
-        commands = [
-            ["git", "-C", str(repo), "init", "-q", "-b", "main"],
-            ["git", "-C", str(repo), "config", "user.name", "Gauntlet Test"],
-            ["git", "-C", str(repo), "config", "user.email", "gauntlet@example.invalid"],
-        ]
-        for argv in commands:
-            result = subprocess.run(argv, capture_output=True, check=False)
-            if result.returncode != 0:
-                raise RuntimeError(result.stderr.decode(errors="replace"))
+        _GIT.init_repo(repo)
         (repo / "base.txt").write_text("base\n")
-        for argv in (["git", "-C", str(repo), "add", "base.txt"],
-                     ["git", "-C", str(repo), "commit", "-q", "-m", "base"],
-                     # decide re-resolves `origin/<base>` to verify the bundle's pinned base SHA (F2), so the
-                     # decision-door worktree must carry the remote-tracking ref, at the one commit it holds.
-                     ["git", "-C", str(repo), "update-ref", "refs/remotes/origin/main", "HEAD"]):
-            result = subprocess.run(argv, capture_output=True, check=False)
-            if result.returncode != 0:
-                raise RuntimeError(result.stderr.decode(errors="replace"))
-    result = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
-                            capture_output=True, check=False)
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.decode(errors="replace"))
-    return repo, result.stdout.decode().strip()
+        git(repo, "add", "base.txt")
+        git(repo, "commit", "-q", "-m", "base")
+        # decide re-resolves `origin/<base>` to verify the bundle's pinned base SHA (F2), so the
+        # decision-door worktree must carry the remote-tracking ref, at the one commit it holds.
+        git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    return repo, _GIT.head(repo)
 
 
 def setup(tmp: Path, name: str = "state.jsonl", *, decision: str = "repair-intent",
@@ -448,19 +438,9 @@ INTENT = """## Purpose
 """
 
 
-def git(repo: Path, *argv: str) -> subprocess.CompletedProcess:
-    result = subprocess.run(["git", "-C", str(repo), *argv], capture_output=True, check=False)
-    check(result.returncode == 0,
-          f"git {' '.join(argv)} failed: {result.stderr.decode(errors='replace')!r}")
-    return result
-
-
 def init_repo(parent: Path, name: str = "worktree") -> "tuple[Path, str]":
     repo = parent / name
-    repo.mkdir()
-    git(repo, "init", "-q", "-b", "main")
-    git(repo, "config", "user.name", "Gauntlet Test")
-    git(repo, "config", "user.email", "gauntlet@example.invalid")
+    _GIT.init_repo(repo)
     (repo / "feature.txt").write_text("base\n")
     git(repo, "add", "feature.txt")
     git(repo, "commit", "-q", "-m", "base")
@@ -469,7 +449,7 @@ def init_repo(parent: Path, name: str = "worktree") -> "tuple[Path, str]":
     (repo / "feature.txt").write_text("base\nfeature\n")
     git(repo, "add", "feature.txt")
     git(repo, "commit", "-q", "-m", "feature change")
-    return repo, git(repo, "rev-parse", "HEAD").stdout.decode().strip()
+    return repo, _GIT.head(repo)
 
 
 def write_review_attempt(rundir: Path, round_no: int, attempt: int, head_sha: str,
@@ -1174,7 +1154,7 @@ def t_bundle_pins_base_sha_against_a_racing_fetch(tmp: Path) -> None:
     """
     case = bundle_setup(tmp, rounds=1, origin="external")
     repo, head = case["repo"], case["head_sha"]
-    base_before = git(repo, "rev-parse", "origin/main").stdout.decode().strip()
+    base_before = _GIT.head(repo, "origin/main")
     real_git = R._run_git
     advanced = False
 
@@ -1195,7 +1175,7 @@ def t_bundle_pins_base_sha_against_a_racing_fetch(tmp: Path) -> None:
         setattr(R, "_run_git", real_git)
 
     check(advanced, "the fixture never advanced origin/main mid-build — the race was not exercised")
-    base_after = git(repo, "rev-parse", "origin/main").stdout.decode().strip()
+    base_after = _GIT.head(repo, "origin/main")
     check(base_after == head and base_after != base_before,
           "the fixture did not actually move origin/main between reads")
     check(code == 0, f"bundle refused a build whose base was pinned before any read: {err!r}")

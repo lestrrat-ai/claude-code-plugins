@@ -26,6 +26,7 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+from _gauntlet.gitfixture import GitFixture
 from _gauntlet.modules import load_sibling
 from _gauntlet.testing import capture_cli, checker
 
@@ -41,24 +42,17 @@ check = checker(M.SelfTestFailure)
 
 # --- git / ledger helpers -----------------------------------------------------
 
+# The repository fixtures come from the shared owner, bound to THIS suite's failure type so a broken setup
+# step still reports as this suite's own message.
+_GIT = GitFixture(M.SelfTestFailure)
+git = _GIT.run
+head = _GIT.head
+_cfg = _GIT.configure_identity
+
+
 def _run(argv, cwd=None):
+    # Only for the two commands that run OUTSIDE any repository: creating the bare remote and cloning it.
     return subprocess.run(argv, capture_output=True, text=True, cwd=cwd)  # noqa: S603
-
-
-def git(cwd, *args, allow_fail=False):
-    r = _run(["git", "-C", str(cwd), *args])
-    if not allow_fail and r.returncode != 0:
-        raise M.SelfTestFailure(f"git {' '.join(args)} failed in {cwd}: {r.stderr.strip()}")
-    return r
-
-
-def _cfg(repo):
-    git(repo, "config", "user.email", "t@example.com")
-    git(repo, "config", "user.name", "Tester")
-
-
-def head(cwd, ref="HEAD") -> str:
-    return git(cwd, "rev-parse", ref).stdout.strip()
 
 
 def _ledger(*args) -> int:
