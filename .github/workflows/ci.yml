@@ -88,6 +88,7 @@ jobs:
             plugins/gauntlet/skills/campaign/scripts/_gauntlet/argv.py
             plugins/gauntlet/skills/campaign/scripts/_gauntlet/atomic.py
             plugins/gauntlet/skills/campaign/scripts/_gauntlet/clock.py
+            plugins/gauntlet/skills/campaign/scripts/_gauntlet/gh.py
             plugins/gauntlet/skills/campaign/scripts/_gauntlet/gitfixture.py
             plugins/gauntlet/skills/campaign/scripts/_gauntlet/modules.py
             plugins/gauntlet/skills/campaign/scripts/_gauntlet/jsonl.py
