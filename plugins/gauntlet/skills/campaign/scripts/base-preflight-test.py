@@ -19,7 +19,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from _gauntlet.gitfixture import GitFixture
+from _gauntlet.gitfixture import FIXTURE_EMAIL, GitFixture
 from _gauntlet.modules import load_sibling
 from _gauntlet.testing import (capture_cli, checker, deeply_nested_json, gh_writing,
                                hostile_json_responses, legacy_view_error_cases)
@@ -368,7 +368,6 @@ def t_gh_writing_restores_an_absent_path():
 # The repository fixtures come from the shared owner, bound to THIS suite's failure type.
 _GIT = GitFixture(M.SelfTestFailure)
 _git = _GIT.run
-_configure_repo = _GIT.configure_identity
 
 
 def t_clean_view_with_stale_base_rebases():
@@ -379,13 +378,8 @@ def t_clean_view_with_stale_base_rebases():
         seed = root / "seed"
         candidate = root / "candidate"
 
-        result = subprocess.run(["git", "init", "--bare", "-b", "main", str(remote)],
-                                capture_output=True, text=True, check=False)
-        check(result.returncode == 0, f"could not create fixture remote: {result.stderr.strip()}")
-        result = subprocess.run(["git", "clone", str(remote), str(seed)],
-                                capture_output=True, text=True, check=False)
-        check(result.returncode == 0, f"could not clone fixture seed: {result.stderr.strip()}")
-        _configure_repo(seed)
+        _GIT.init_bare(remote)
+        _GIT.clone(remote, seed)
 
         (seed / "f").write_text("base\n", encoding="utf-8")
         _git(seed, "add", "f")
@@ -405,10 +399,7 @@ def t_clean_view_with_stale_base_rebases():
         _git(seed, "commit", "-m", "second candidate")
         _git(seed, "push", "origin", "second")
 
-        result = subprocess.run(["git", "clone", str(remote), str(candidate)],
-                                capture_output=True, text=True, check=False)
-        check(result.returncode == 0, f"could not clone candidate worktree: {result.stderr.strip()}")
-        _configure_repo(candidate)
+        _GIT.clone(remote, candidate)
         _git(candidate, "checkout", "second")
 
         # Simulate the first serial campaign merge advancing main after the second PR was reviewed.
@@ -438,22 +429,14 @@ def t_clean_view_with_current_base_proceeds():
         seed = root / "seed"
         candidate = root / "candidate"
 
-        result = subprocess.run(["git", "init", "--bare", "-b", "main", str(remote)],
-                                capture_output=True, text=True, check=False)
-        check(result.returncode == 0, f"could not create fixture remote: {result.stderr.strip()}")
-        result = subprocess.run(["git", "clone", str(remote), str(seed)],
-                                capture_output=True, text=True, check=False)
-        check(result.returncode == 0, f"could not clone fixture seed: {result.stderr.strip()}")
-        _configure_repo(seed)
+        _GIT.init_bare(remote)
+        _GIT.clone(remote, seed)
         (seed / "f").write_text("base\n", encoding="utf-8")
         _git(seed, "add", "f")
         _git(seed, "commit", "-m", "base")
         _git(seed, "push", "origin", "main")
 
-        result = subprocess.run(["git", "clone", str(remote), str(candidate)],
-                                capture_output=True, text=True, check=False)
-        check(result.returncode == 0, f"could not clone candidate worktree: {result.stderr.strip()}")
-        _configure_repo(candidate)
+        _GIT.clone(remote, candidate)
 
         vjson = root / "clean-view.json"
         vjson.write_text(json.dumps(view()), encoding="utf-8")
@@ -475,21 +458,14 @@ def t_force_rewritten_base_refreshes_and_rebases():
         seed = root / "seed"
         candidate = root / "candidate"
 
-        result = subprocess.run(["git", "init", "--bare", "-b", "main", str(remote)],
-                                capture_output=True, text=True, check=False)
-        check(result.returncode == 0, f"could not create fixture remote: {result.stderr.strip()}")
-        result = subprocess.run(["git", "clone", str(remote), str(seed)],
-                                capture_output=True, text=True, check=False)
-        check(result.returncode == 0, f"could not clone fixture seed: {result.stderr.strip()}")
-        _configure_repo(seed)
+        _GIT.init_bare(remote)
+        _GIT.clone(remote, seed)
         (seed / "f").write_text("base\n", encoding="utf-8")
         _git(seed, "add", "f")
         _git(seed, "commit", "-m", "base")
         _git(seed, "push", "origin", "main")
 
-        result = subprocess.run(["git", "clone", str(remote), str(candidate)],
-                                capture_output=True, text=True, check=False)
-        check(result.returncode == 0, f"could not clone fixture candidate: {result.stderr.strip()}")
+        _GIT.clone(remote, candidate)
 
         (seed / "f").write_text("first advance\n", encoding="utf-8")
         _git(seed, "commit", "-am", "first advance")
@@ -520,13 +496,8 @@ def t_literal_head_base_does_not_follow_remote_head_symref():
         seed = root / "seed"
         candidate = root / "candidate"
 
-        result = subprocess.run(["git", "init", "--bare", "-b", "main", str(remote)],
-                                capture_output=True, text=True, check=False)
-        check(result.returncode == 0, f"could not create fixture remote: {result.stderr.strip()}")
-        result = subprocess.run(["git", "clone", str(remote), str(seed)],
-                                capture_output=True, text=True, check=False)
-        check(result.returncode == 0, f"could not clone fixture seed: {result.stderr.strip()}")
-        _configure_repo(seed)
+        _GIT.init_bare(remote)
+        _GIT.clone(remote, seed)
         (seed / "f").write_text("main\n", encoding="utf-8")
         _git(seed, "add", "f")
         _git(seed, "commit", "-m", "main base")
@@ -539,9 +510,7 @@ def t_literal_head_base_does_not_follow_remote_head_symref():
         _git(seed, "push", "origin", "HEAD:refs/heads/HEAD")
         check(main_head != literal_head, "fixture setup: main and the literal HEAD branch must differ")
 
-        result = subprocess.run(["git", "clone", str(remote), str(candidate)],
-                                capture_output=True, text=True, check=False)
-        check(result.returncode == 0, f"could not clone fixture candidate: {result.stderr.strip()}")
+        _GIT.clone(remote, candidate)
         symbolic = _git(candidate, "symbolic-ref", "refs/remotes/origin/HEAD")
         check(symbolic.returncode == 0
               and symbolic.stdout.strip() == "refs/remotes/origin/main",
@@ -574,13 +543,8 @@ DASH_BASE = "--upload-pack=/bin/false"
 def _dash_base_ancestry(root: Path, *, current: bool) -> "tuple[int, dict, str, str, str]":
     """Drive the documented CLI against a legal dash-leading base and a real bare remote."""
     remote, seed, candidate = root / "remote.git", root / "seed", root / "candidate"
-    result = subprocess.run(["git", "init", "--bare", "-b", "main", str(remote)],
-                            capture_output=True, text=True, check=False)
-    check(result.returncode == 0, f"could not create fixture remote: {result.stderr.strip()}")
-    result = subprocess.run(["git", "clone", str(remote), str(seed)],
-                            capture_output=True, text=True, check=False)
-    check(result.returncode == 0, f"could not clone fixture seed: {result.stderr.strip()}")
-    _configure_repo(seed)
+    _GIT.init_bare(remote)
+    _GIT.clone(remote, seed)
     (seed / "f").write_text("base\n", encoding="utf-8")
     _git(seed, "add", "f")
     _git(seed, "commit", "-m", "base")
@@ -590,10 +554,7 @@ def _dash_base_ancestry(root: Path, *, current: bool) -> "tuple[int, dict, str, 
     _git(seed, "update-ref", dash_head, "HEAD")
     _git(seed, "push", "origin", f"{dash_head}:{dash_head}")
 
-    result = subprocess.run(["git", "clone", str(remote), str(candidate)],
-                            capture_output=True, text=True, check=False)
-    check(result.returncode == 0, f"could not clone fixture candidate: {result.stderr.strip()}")
-    _configure_repo(candidate)
+    _GIT.clone(remote, candidate)
     old_base = _git(candidate, "rev-parse", tracking_ref).stdout.strip()
 
     (seed / "f").write_text("advanced base\n", encoding="utf-8")
@@ -649,22 +610,14 @@ def t_candidate_revision_is_checked_instead_of_moved_head():
         seed = root / "seed"
         candidate = root / "candidate"
 
-        result = subprocess.run(["git", "init", "--bare", "-b", "main", str(remote)],
-                                capture_output=True, text=True, check=False)
-        check(result.returncode == 0, f"could not create fixture remote: {result.stderr.strip()}")
-        result = subprocess.run(["git", "clone", str(remote), str(seed)],
-                                capture_output=True, text=True, check=False)
-        check(result.returncode == 0, f"could not clone fixture seed: {result.stderr.strip()}")
-        _configure_repo(seed)
+        _GIT.init_bare(remote)
+        _GIT.clone(remote, seed)
         (seed / "f").write_text("base\n", encoding="utf-8")
         _git(seed, "add", "f")
         _git(seed, "commit", "-m", "base")
         _git(seed, "push", "origin", "main")
 
-        result = subprocess.run(["git", "clone", str(remote), str(candidate)],
-                                capture_output=True, text=True, check=False)
-        check(result.returncode == 0, f"could not clone candidate worktree: {result.stderr.strip()}")
-        _configure_repo(candidate)
+        _GIT.clone(remote, candidate)
         _git(candidate, "checkout", "-b", "reviewed")
         (candidate / "reviewed").write_text("reviewed\n", encoding="utf-8")
         _git(candidate, "add", "reviewed")
@@ -776,19 +729,13 @@ def _current_base_worktree(root: Path) -> "tuple[Path, str]":
     """A candidate clone that CONTAINS fetched main (so base-preflight reaches `proceed`). Returns (worktree,
     HEAD sha)."""
     remote, seed, candidate = root / "remote.git", root / "seed", root / "candidate"
-    result = subprocess.run(["git", "init", "--bare", "-b", "main", str(remote)],
-                            capture_output=True, text=True, check=False)
-    check(result.returncode == 0, f"could not create fixture remote: {result.stderr.strip()}")
-    result = subprocess.run(["git", "clone", str(remote), str(seed)], capture_output=True, text=True, check=False)
-    check(result.returncode == 0, f"could not clone fixture seed: {result.stderr.strip()}")
-    _configure_repo(seed)
+    _GIT.init_bare(remote)
+    _GIT.clone(remote, seed)
     (seed / "f").write_text("base\n", encoding="utf-8")
     _git(seed, "add", "f")
     _git(seed, "commit", "-m", "base")
     _git(seed, "push", "origin", "main")
-    result = subprocess.run(["git", "clone", str(remote), str(candidate)], capture_output=True, text=True, check=False)
-    check(result.returncode == 0, f"could not clone candidate worktree: {result.stderr.strip()}")
-    _configure_repo(candidate)
+    _GIT.clone(remote, candidate)
     head = _git(candidate, "rev-parse", "HEAD").stdout.strip()
     return candidate, head
 
@@ -978,7 +925,53 @@ def t_cli_help_names_both_file_writes():
           f"`--file` help no longer names the no-write form: {help_text!r}")
 
 
+def t_shared_remote_and_clone_primitives():
+    """`GitFixture.init_bare` and `.clone`'s OWN contract, exercised directly rather than through a fixture.
+
+    Both are new shared primitives, so their semantics need a check that does not depend on any suite's
+    scenario. The load-bearing parts are that `init_bare` really produces a BARE repository on the named
+    branch (an ordinary one would accept a commit and break every push-based fixture in a way that only
+    shows up much later), that `clone` leaves a usable commit identity behind, and that BOTH raise the
+    bound failure type instead of returning a failed result — the inline blocks they replaced in this file
+    checked their own return codes, and the one in `clean-rebase-test.py` did NOT.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        remote = root / "remote.git"
+        clone = root / "clone"
+
+        _GIT.init_bare(remote, branch="trunk")
+        check((remote / "HEAD").exists() and not (remote / ".git").exists(),
+              "init_bare must produce a bare repository, not one with a working tree")
+        check(_git(remote, "symbolic-ref", "HEAD").stdout.strip() == "refs/heads/trunk",
+              "init_bare must honour the requested default branch")
+
+        _GIT.clone(remote, clone)
+        check(_git(clone, "config", "user.email").stdout.strip() == FIXTURE_EMAIL,
+              "clone must leave a commit identity behind, so the clone can commit")
+        # The identity is the point: a commit here would fail on a machine with no global git config.
+        (clone / "f").write_text("x\n", encoding="utf-8")
+        _git(clone, "add", "f")
+        _git(clone, "commit", "-m", "proves the identity works")
+
+        # Both RAISE rather than returning a failed result, which is the property the replaced inline
+        # blocks asserted by hand and the one in clean-rebase-test.py did not assert at all. The target
+        # is an existing regular FILE: `git init` happily creates missing parent directories, so a
+        # merely-absent path is not a failure at all and would prove nothing here.
+        blocker = root / "a-file"
+        blocker.write_text("not a directory\n", encoding="utf-8")
+        for label, call in (("init_bare", lambda: _GIT.init_bare(blocker)),
+                            ("clone", lambda: _GIT.clone(remote, blocker))):
+            try:
+                call()
+            except M.SelfTestFailure:
+                pass
+            else:
+                check(False, f"{label} must raise the bound failure type when git fails")
+
+
 CASES = [
+    ("shared-remote-clone", "the shared bare-remote and clone primitives: bare on the named branch, a usable identity, and a raise on failure", t_shared_remote_and_clone_primitives),
     ("clean-proceeds", "CLEAN passes the enum screen", t_clean_proceeds),
     ("has-hooks-proceeds", "HAS_HOOKS passes the enum screen", t_has_hooks_proceeds),
     ("unstable-proceeds", "UNSTABLE is a check signal and reaches the graph check", t_unstable_proceeds),
