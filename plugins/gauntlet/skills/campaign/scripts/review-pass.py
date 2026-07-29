@@ -108,7 +108,6 @@ from __future__ import annotations
 
 import argparse
 import errno
-import importlib.util
 import json
 import os
 import re
@@ -122,6 +121,7 @@ from pathlib import Path
 from typing import NamedTuple, NoReturn
 
 from _gauntlet.clock import TS_FORMAT
+from _gauntlet.modules import load_module_from_path
 
 # --- the contract (stage-2-review-gate.md) ------------------------------------------------------
 
@@ -2882,11 +2882,9 @@ def load_ledger_module() -> types.ModuleType:
     """The sibling ledger accessor, loaded by a `__file__`-relative path (never the cwd). `status` calls
     only its `load`/`find_row` READERS; it never writes the ledger."""
     path = Path(__file__).resolve().parent / "ledger.py"
-    spec = importlib.util.spec_from_file_location("ledger", path)
-    if spec is None or spec.loader is None:
+    mod = load_module_from_path("ledger", path)
+    if mod is None:
         raise Defect(f"cannot load the ledger accessor at {path}")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
     return mod
 
 
@@ -3090,11 +3088,9 @@ def load_test_module() -> types.ModuleType:
             f"derived from zero evidence, which is precisely the bug those fixtures exist to prevent",
             1,
         )
-    spec = importlib.util.spec_from_file_location("review_pass_test", TEST_PY)
-    if spec is None or spec.loader is None:  # pragma: no cover - a broken checkout, not a verdict
+    mod = load_module_from_path("review_pass_test", TEST_PY)
+    if mod is None:  # pragma: no cover - a broken checkout, not a verdict
         fail(f"cannot load the fixture suite at {TEST_PY} — refusing to report a self-test that never ran", 1)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
     return mod
 
 
