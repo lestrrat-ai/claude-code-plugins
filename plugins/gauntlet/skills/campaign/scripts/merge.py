@@ -35,6 +35,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import cast
 
 from _gauntlet.modules import load_sibling
 from _gauntlet.testing import run_sibling_suite
@@ -138,30 +139,64 @@ def resolve_project_root(checkout: Path) -> Path:
     return resolved
 
 
-def _labels(view: dict) -> list[str]:
-    raw = view.get("labels")
+# The string fields `execute` consumes off the live view. `isDraft` is a bool and `labels` a list, so each
+# is checked on its own below.
+_VIEW_STR_FIELDS = ("state", "headRefOid", "headRefName", "baseRefName", "mergeable",
+                    "mergeStateStatus")
+
+
+def _labels(view: dict) -> "tuple[list[str], str | None]":
+    """The live view's label names, paired with a short description of the FIRST thing wrong with them —
+    `None` when nothing is. ONE walk serves both callers: `_view_problem` reads the problem and refuses,
+    and the label gate reads the names on a view that already passed. Returning the problem instead of
+    raising it is what lets every view malformation reach the CLI through one wrapper."""
+    if "labels" not in view:
+        return [], "missing field 'labels'"
+    raw = view["labels"]
     if not isinstance(raw, list):
-        raise Refusal("live PR field 'labels' must be a list")
+        return [], f"field 'labels' must be a list, got {type(raw).__name__}"
     names: list[str] = []
     for item in raw:
-        name = item.get("name") if isinstance(item, dict) else item
+        if isinstance(item, dict):
+            if "name" not in item:
+                return names, "field 'labels' contains an object without a 'name'"
+            name = item["name"]
+        else:
+            name = item
         if not isinstance(name, str):
-            raise Refusal("live PR labels must contain string names")
+            return names, f"field 'labels' must hold string names, got {type(name).__name__}"
         names.append(name)
-    return names
+    return names, None
+
+
+def _view_problem(view: object) -> "str | None":
+    """`None` if `view` is a JSON object carrying every field `execute` consumes at the right JSON type;
+    otherwise a short description of the FIRST thing wrong. PURE — no I/O.
+
+    The message bodies match `base-preflight.py` and `merge-check.py` verbatim: all three validate a
+    `gh pr view` payload against the same three failures (not an object, a missing field, a field of the
+    wrong type), and a reader who has seen one tool's refusal must not have to learn a second dialect to
+    read another's. `_validate_view` wraps whatever this returns."""
+    if not isinstance(view, dict):
+        return f"view is not a JSON object (got {type(view).__name__})"
+    for field in _VIEW_STR_FIELDS:
+        if field not in view:
+            return f"missing field {field!r}"
+        # bool is a subclass of int, not str, so a JSON string is the only thing that passes here.
+        if not isinstance(view[field], str):
+            return f"field {field!r} must be a string, got {type(view[field]).__name__}"
+    if "isDraft" not in view:
+        return "missing field 'isDraft'"
+    if not isinstance(view["isDraft"], bool):
+        return f"field 'isDraft' must be a bool, got {type(view['isDraft']).__name__}"
+    return _labels(view)[1]
 
 
 def _validate_view(view: object) -> dict:
-    if not isinstance(view, dict):
-        raise Refusal("live PR view is not a JSON object")
-    for field in ("state", "headRefOid", "headRefName", "baseRefName", "mergeable",
-                  "mergeStateStatus"):
-        if not isinstance(view.get(field), str):
-            raise Refusal(f"live PR field {field!r} must be a string")
-    if not isinstance(view.get("isDraft"), bool):
-        raise Refusal("live PR field 'isDraft' must be a bool")
-    _labels(view)
-    return view
+    problem = _view_problem(view)
+    if problem is not None:
+        raise Refusal(f"malformed live PR view: {problem}")
+    return cast(dict, view)
 
 
 def _view(pr: str, repo: str, root: Path) -> dict:
@@ -253,7 +288,7 @@ def _validate_state(header: dict, row: dict, pr: str, root: Path, view: dict,
             # the SAME machine-blocker wording every other base door records (pr-adopt.py owns it, via
             # merge-check). A base that merely ADVANCED (same name) is handled by _base_is_current, not here.
             raise Refusal(MC.PA.BASE_CHANGE_PARK_REASON.format(recorded=base, live=view["baseRefName"]))
-    labels = _labels(view)
+    labels, _ = _labels(view)
     ours = f"{RUN_LABEL_PREFIX}{run_id}"
     run_labels = [name for name in labels if name.startswith(RUN_LABEL_PREFIX)]
     # The FOREIGN-label refusal comes FIRST and is never relaxed — it is the run-isolation guard, and must
