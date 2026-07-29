@@ -525,10 +525,12 @@ STATUSES = (LIVE_STATUS,) + HELD_STATUSES + TERMINAL_STATUSES
 def has_decided_repair(row: dict[str, str]) -> bool:
     """Whether this row may run work owned by its recorded reassessment decision.
 
-    `repair-pass.py decide` is the only writer of `repair_decision`; this accessor keeps every consumer on
-    the same narrow condition. This includes a legacy DEMOTE, whose documented completion is dispatchable
-    but does not take the clean-base-only-rebase exception. A decision does not unhold the row or permit
-    ordinary work.
+    `repair_decision` has exactly TWO writers: `repair-pass.py decide`, which RECORDS a decision and spends
+    `repair_count`, and `cmd_verdict`'s cap branch below, which CLEARS a stale one as the row re-enters
+    `repairing` so the repair budget still binds. Only the first ever sets a value; the second only resets
+    it to `-`. This accessor keeps every consumer on the same narrow condition, which includes a legacy
+    DEMOTE, whose documented completion is dispatchable but does not take the clean-base-only-rebase
+    exception. A decision does not unhold the row or permit ordinary work.
     """
     return row["status"] == REPAIR_STATUS and row["repair_decision"] != "-"
 
