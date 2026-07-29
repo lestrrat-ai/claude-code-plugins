@@ -33,6 +33,7 @@ from typing import Callable
 
 from _gauntlet.atomic import replace_text
 from _gauntlet.modules import load_module_from_path
+from _gauntlet.testing import run_sibling_suite
 
 DESCRIPTION = "Distill a run's terminal ledger into .gauntlet/history/<run-id>.md — exactly once."
 
@@ -295,46 +296,10 @@ def check(cond: bool, msg: str) -> None:
         raise SelfTestFailure(msg)
 
 
-def sibling_cases() -> list:
-    if not TEST_PY.exists():
-        raise SelfTestFailure(f"the fixture file {TEST_PY} IS MISSING — this suite has no fixtures to run "
-                              f"and CANNOT report health. Every rule this file enforces is now unpinned.")
-    mod = load_module_from_path("carryover_test", TEST_PY, register=True)
-    if mod is None:
-        raise SelfTestFailure(f"{TEST_PY} exists but cannot be loaded as a module")
-    cases = getattr(mod, "CASES", None)
-    if not cases:
-        raise SelfTestFailure(f"{TEST_PY} exports no CASES — every rule in this file is unpinned while the "
-                              f"suite still exits 0")
-    return list(cases)
-
-
 def self_test() -> int:
-    failures = 0
-    try:
-        cases = sibling_cases()
-    except SelfTestFailure as exc:
-        print(f"FAIL     {'sibling-fixtures':30} -> the fixtures in {TEST_PY.name} must be RUNNABLE\n"
-              f"         {exc}")
-        print("\n1 check(s) FAILED — the carryover distiller's contract is broken.")
-        return 1
-    for name, rule, fn in cases:
-        try:
-            fn()
-        except SelfTestFailure as exc:
-            print(f"FAIL     {name:30} -> {rule}\n         {exc}")
-            failures += 1
-        except Exception as exc:  # noqa: BLE001
-            print(f"FAIL     {name:30} -> {rule}\n         raised {type(exc).__name__}: {exc}")
-            failures += 1
-        else:
-            print(f"ok       {name:30} -> {rule}")
-    print()
-    if failures:
-        print(f"{failures} check(s) FAILED — the carryover distiller's contract is broken.")
-        return 1
-    print(f"all {len(cases)} fixtures hold — the carryover distiller's contract is intact.")
-    return 0
+    """Run every fixture in the sibling suite on the shared runner (`_gauntlet/testing.py`)."""
+    return run_sibling_suite(TEST_PY, "carryover_test", failure=SelfTestFailure,
+                             subject="the carryover distiller's contract")
 
 
 if __name__ == "__main__":

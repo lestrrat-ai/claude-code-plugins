@@ -48,6 +48,7 @@ from pathlib import Path, PurePosixPath
 from typing import Callable
 
 from _gauntlet.modules import load_module_from_path
+from _gauntlet.testing import run_sibling_suite
 
 _HERE = Path(__file__).resolve().parent
 SIBLING = _HERE / "triage-test.py"
@@ -653,28 +654,10 @@ def cmd_derive(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def sibling_cases() -> list:
-    if not SIBLING.is_file():
-        raise SelfTestFailure(
-            f"the fixture file {SIBLING} is missing — deterministic tier derivation is untested")
-    module = load_module_from_path("campaign_triage_test", SIBLING, register=True)
-    if module is None or not hasattr(module, "CASES") or not module.CASES:
-        raise SelfTestFailure("triage sibling suite has no CASES — an empty gate checks nothing")
-    return module.CASES
-
-
 def cmd_self_test(_args: argparse.Namespace) -> int:
-    failures = 0
-    cases = sibling_cases()
-    for name, description, fn in cases:
-        try:
-            fn()
-            print(f"PASS {name}: {description}")
-        except Exception as exc:  # noqa: BLE001 - report all independent fixtures
-            failures += 1
-            print(f"FAIL {name}: {description}: {exc}")
-    print(f"triage fixtures: {len(cases) - failures} passed, {failures} failed")
-    return 1 if failures else 0
+    """Run every fixture in the sibling suite on the shared runner (`_gauntlet/testing.py`)."""
+    return run_sibling_suite(SIBLING, "campaign_triage_test", failure=SelfTestFailure,
+                             subject="the triage classifier's contract", width=34)
 
 
 def parser() -> argparse.ArgumentParser:

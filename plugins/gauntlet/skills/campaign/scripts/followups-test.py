@@ -21,13 +21,12 @@ import json
 import os
 import re
 import sys
-import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ledger  # noqa: E402
 from _gauntlet.table import escape_cell, hidden_notice  # noqa: E402
-from _gauntlet.testing import capture_cli  # noqa: E402
+from _gauntlet.testing import capture_cli, run_cases  # noqa: E402
 
 # The ledger's test ORACLE — `grid`, `notices`, `check`, `SelfTestFailure`, and the hostile corpus — lives
 # in the ledger's SIBLING suite, `ledger-test.py`, loaded BY PATH (its name is not a legal module name).
@@ -1472,45 +1471,9 @@ CASES = [
 
 
 def self_test() -> int:
-    """Run every fixture. Return 0 iff every rule the store claims to enforce actually holds.
-
-    A SUITE THAT RAN NOTHING IS NOT A PASS: an empty `CASES` fails here rather than printing an all-clear.
-    CI runs `followups.py self-test` and trusts the exit code, so the one thing this must never do is report
-    success over a suite that checked nothing.
-    """
-    if not CASES:
-        print("CASES is EMPTY — this suite has not tested anything, and that is not a pass.")
-        return 1
-    failures = 0
-    with tempfile.TemporaryDirectory() as tmpdir:
-        for i, (name, rule, fn) in enumerate(CASES):
-            work = Path(tmpdir) / f"{i:02d}-{name}"
-            work.mkdir(parents=True)
-            try:
-                fn(work)
-            except SelfTestFailure as exc:
-                print(f"FAIL     {name:24} -> {rule}\n         {exc}")
-                failures += 1
-                continue
-            except SystemExit as exc:
-                # A fixture called an accessor DIRECTLY (`load()`, not through `run()`) and it REFUSED —
-                # `fail()` raises SystemExit, a BaseException that would otherwise take the whole run down,
-                # printing no verdict and naming no rule.
-                print(f"FAIL     {name:24} -> {rule}\n         the accessor REFUSED the store (exit "
-                      f"{exc.code}) inside the fixture — its message is on stderr, above")
-                failures += 1
-                continue
-            except Exception as exc:  # noqa: BLE001 — a fixture that CRASHES has not passed
-                print(f"FAIL     {name:24} -> {rule}\n         raised {type(exc).__name__}: {exc}")
-                failures += 1
-                continue
-            print(f"ok       {name:24} -> {rule}")
-    print()
-    if failures:
-        print(f"{failures} check(s) FAILED — the follow-up store's contract is broken.")
-        return 1
-    print(f"all {len(CASES)} fixtures hold — the follow-up store's contract is intact.")
-    return 0
+    """Run every fixture on the shared runner. `followups.py self-test` is the door CI uses."""
+    return run_cases(CASES, failure=SelfTestFailure, subject="the follow-up store's contract",
+                     width=24, per_case_dir=True)
 
 
 if __name__ == "__main__":

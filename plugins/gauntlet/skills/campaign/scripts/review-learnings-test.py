@@ -17,7 +17,6 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -25,7 +24,7 @@ sys.path.insert(0, str(HERE))
 import ledger  # noqa: E402
 from _gauntlet.modules import load_module_from_path  # noqa: E402
 from _gauntlet.table import escape_cell, hidden_notice  # noqa: E402
-from _gauntlet.testing import capture_cli  # noqa: E402
+from _gauntlet.testing import capture_cli, run_cases  # noqa: E402
 
 
 def _load(name: str, filename: str):
@@ -792,37 +791,9 @@ CASES = [
 
 
 def self_test() -> int:
-    """Run every fixture. Return 0 iff every rule the store claims to enforce actually holds."""
-    if not CASES:
-        print("CASES is EMPTY — this suite has not tested anything, and that is not a pass.")
-        return 1
-    failures = 0
-    with tempfile.TemporaryDirectory() as tmpdir:
-        for i, (name, rule, fn) in enumerate(CASES):
-            work = Path(tmpdir) / f"{i:02d}-{name}"
-            work.mkdir(parents=True)
-            try:
-                fn(work)
-            except SelfTestFailure as exc:
-                print(f"FAIL     {name:24} -> {rule}\n         {exc}")
-                failures += 1
-                continue
-            except SystemExit as exc:
-                print(f"FAIL     {name:24} -> {rule}\n         the accessor REFUSED the store (exit "
-                      f"{exc.code}) inside the fixture — its message is on stderr, above")
-                failures += 1
-                continue
-            except Exception as exc:  # noqa: BLE001
-                print(f"FAIL     {name:24} -> {rule}\n         raised {type(exc).__name__}: {exc}")
-                failures += 1
-                continue
-            print(f"ok       {name:24} -> {rule}")
-    print()
-    if failures:
-        print(f"{failures} check(s) FAILED — the review-learnings store's contract is broken.")
-        return 1
-    print(f"all {len(CASES)} fixtures hold — the review-learnings store's contract is intact.")
-    return 0
+    """Run every fixture on the shared runner. `review-learnings.py self-test` is the door CI uses."""
+    return run_cases(CASES, failure=SelfTestFailure, subject="the review-learnings store's contract",
+                     width=24, per_case_dir=True)
 
 
 if __name__ == "__main__":

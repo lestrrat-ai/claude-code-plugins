@@ -48,7 +48,7 @@ from typing import NoReturn
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _gauntlet.atomic import replace_text  # noqa: E402
 from _gauntlet.jsonl import JsonlError, object_lines  # noqa: E402
-from _gauntlet.modules import load_module_from_path  # noqa: E402
+from _gauntlet.testing import run_sibling_suite  # noqa: E402
 from _gauntlet.table import config_lines, grid_lines, hidden_notice  # noqa: E402
 
 DESCRIPTION = (
@@ -600,17 +600,15 @@ TESTS = Path(__file__).resolve().parent / "review-learnings-test.py"
 
 
 def self_test() -> int:
-    """Run the fixtures in `review-learnings-test.py`, loaded BY PATH from this script's own directory.
+    """Run every fixture in `review-learnings-test.py` on the shared runner (`_gauntlet/testing.py`).
 
-    A MISSING SIBLING IS A LOUD FAILURE, NEVER A PASS: a self-test that reports success because it found no
-    tests certifies a contract that nothing checked.
+    `failure=AssertionError` is this suite's own failure type reached by its base class: the fixtures
+    raise `ledger-test.py`'s `SelfTestFailure`, which subclasses it, and this file never imports that
+    module. Each fixture is handed its own empty working directory — they build stores on disk.
     """
-    if not TESTS.exists():
-        fail(f"the fixtures are GONE — {TESTS} does not exist. `self-test` verifies NOTHING without them.")
-    module = load_module_from_path("review_learnings_test", TESTS, register=True)
-    if module is None:
-        fail(f"cannot load the fixtures at {TESTS}")
-    return module.self_test()
+    return run_sibling_suite(TESTS, "review_learnings_test", failure=AssertionError,
+                             subject="the review-learnings store's contract", width=24,
+                             per_case_dir=True)
 
 
 # --- cli ----------------------------------------------------------------------

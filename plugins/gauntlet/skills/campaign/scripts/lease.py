@@ -44,15 +44,13 @@ import os
 import secrets
 import stat
 import sys
-import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import NoReturn
 
 from _gauntlet.atomic import replace_text
-from _gauntlet.modules import load_module_from_path
-from _gauntlet.testing import capture_cli
+from _gauntlet.testing import capture_cli, run_sibling_suite
 
 DESCRIPTION = "Schema-owning accessor for the campaign run lease (lease.json)."
 
@@ -560,55 +558,14 @@ def run(argv: "list[str]") -> "tuple[int, str, str]":
     return capture_cli(main, argv)
 
 
-def sibling_cases() -> list:
-    """Load the sibling's fixtures — and FAIL LOUDLY if they are not there.
-
-    A self-test that passes because it found nothing to check reports health while checking nothing.
-    """
-    if not SIBLING.exists():
-        raise SelfTestFailure(
-            f"the fixture file {SIBLING} IS MISSING — this suite has no fixtures to run and CANNOT report "
-            f"health. Every rule this file enforces is now unpinned."
-        )
-    mod = load_module_from_path("lease_test", SIBLING, register=True)
-    if mod is None:
-        raise SelfTestFailure(f"{SIBLING} exists but cannot be loaded as a module")
-    cases = getattr(mod, "CASES", None)
-    if not cases:
-        raise SelfTestFailure(f"{SIBLING} exports no CASES — every rule in this file is unpinned while the "
-                              f"suite still exits 0")
-    return list(cases)
-
-
 def self_test() -> int:
-    failures = 0
-    try:
-        cases = sibling_cases()
-    except SelfTestFailure as exc:
-        print(f"FAIL     {'sibling-fixtures':26} -> the fixtures in {SIBLING.name} must be RUNNABLE\n"
-              f"         {exc}")
-        print("\n1 check(s) FAILED — the lease's contract is broken.")
-        return 1
-    with tempfile.TemporaryDirectory() as tmpdir:
-        for name, rule, fn in cases:
-            work = Path(tmpdir) / name
-            work.mkdir()
-            try:
-                fn(work)
-            except SelfTestFailure as exc:
-                print(f"FAIL     {name:26} -> {rule}\n         {exc}")
-                failures += 1
-            except Exception as exc:  # noqa: BLE001 — a fixture that CRASHES has not passed
-                print(f"FAIL     {name:26} -> {rule}\n         raised {type(exc).__name__}: {exc}")
-                failures += 1
-            else:
-                print(f"ok       {name:26} -> {rule}")
-    print()
-    if failures:
-        print(f"{failures} check(s) FAILED — the lease's contract is broken.")
-        return 1
-    print(f"all {len(cases)} fixtures hold — the lease's contract is intact.")
-    return 0
+    """Run every fixture in the sibling suite on the shared runner (`_gauntlet/testing.py`).
+
+    Each fixture is handed its own empty working directory: a lease is a FILE, so a fixture that shared
+    a directory with the next one would be reading the previous fixture's state.
+    """
+    return run_sibling_suite(SIBLING, "lease_test", failure=SelfTestFailure,
+                             subject="the lease's contract", width=26, per_case_dir=True)
 
 
 # --- cli ----------------------------------------------------------------------
