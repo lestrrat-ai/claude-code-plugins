@@ -75,7 +75,19 @@ def build_ledger(d: Path, *, status="in_review", tier="STANDARD", reviews_ok="0"
     return led
 
 
-def drive(led: Path, pr: str, repo: str, fake: FakeGh, *, dry_run=False) -> tuple:
+def verdict(parsed: "dict | None") -> dict:
+    """The printed verdict JSON, or a fixture failure saying it was absent.
+
+    `drive` returns `None` for empty stdout because the REFUSAL fixtures assert exactly that. The
+    success-path fixtures need the dict, so they come through here rather than each restating the
+    None check before subscripting."""
+    if parsed is None:
+        raise M.SelfTestFailure("expected verdict JSON on stdout, got nothing")
+    return parsed
+
+
+def drive(led: Path, pr: str, repo: str, fake: FakeGh, *,
+          dry_run=False) -> "tuple[int, dict | None, str]":
     """Run the REAL `mirror()` with the fake seam; return (exit_code, parsed_stdout_or_None, stderr)."""
     out, err = StringIO(), StringIO()
     try:
@@ -102,8 +114,10 @@ def t_reviewing_to_accepted_swaps():
         led = build_ledger(Path(d), tier="STANDARD", reviews_ok="2")   # 2/2 -> accepted
         fake = FakeGh(view=view_with("gauntlet-reviewing", "gauntlet-run-g1"))
         code, out, _err = drive(led, "9", REPO, fake)
+        out = verdict(out)
     check(code == 0, f"a met gate must reconcile and exit 0, got {code}")
-    check(out is not None and out["changed"] is True, f"a reviewing->accepted swap must report changed, got {out!r}")
+    out = verdict(out)
+    check(out["changed"] is True, f"a reviewing->accepted swap must report changed, got {out!r}")
     check(out["desired"] == "gauntlet-accepted", f"desired must be accepted, got {out!r}")
     check(out["required"] == 2 and out["reviews_ok"] == 2, f"tier/tally must be reported, got {out!r}")
     check(out["current"] == ["gauntlet-reviewing", "gauntlet-run-g1"], f"current labels must be reported, got {out!r}")
@@ -118,6 +132,7 @@ def t_accepted_stays():
         led = build_ledger(Path(d), tier="STANDARD", reviews_ok="2")
         fake = FakeGh(view=view_with("gauntlet-accepted"), edit=None)  # edit=None => any edit is a failure
         code, out, _err = drive(led, "9", REPO, fake)
+        out = verdict(out)
     check(code == 0, f"an already-accepted PR reconciles to a no-op, got {code}")
     check(out["changed"] is False, f"no swap is needed, got {out!r}")
     check("argv" not in out, f"a no-op reconcile prints no argv, got {out!r}")
@@ -129,6 +144,7 @@ def t_reviewing_stays():
         led = build_ledger(Path(d), tier="STANDARD", reviews_ok="1")   # 1/2 -> reviewing
         fake = FakeGh(view=view_with("gauntlet-reviewing"), edit=None)
         code, out, _err = drive(led, "9", REPO, fake)
+        out = verdict(out)
     check(code == 0, f"a short gate already reviewing is a no-op, got {code}")
     check(out["desired"] == "gauntlet-reviewing" and out["changed"] is False, f"expected reviewing no-op, got {out!r}")
     check(not fake.edited, "an already-reviewing label must trigger NO edit")
@@ -146,8 +162,10 @@ def t_readopt_escalation_flips_accepted_to_reviewing():
         led = build_ledger(Path(d), tier="STANDARD", reviews_ok="1")   # 1/2 -> reviewing
         fake = FakeGh(view=view_with("gauntlet-accepted", "gauntlet-run-g1"))
         code, out, _err = drive(led, "9", REPO, fake)
+        out = verdict(out)
     check(code == 0, f"a short gate after escalation must reconcile and exit 0, got {code}")
-    check(out is not None and out["changed"] is True,
+    out = verdict(out)
+    check(out["changed"] is True,
           f"an accepted->reviewing swap must report changed, got {out!r}")
     check(out["desired"] == "gauntlet-reviewing", f"desired must be reviewing after escalation, got {out!r}")
     check(out["required"] == 2 and out["reviews_ok"] == 1, f"tier/tally must be reported, got {out!r}")
@@ -226,6 +244,7 @@ def t_dry_run_no_edit():
         led = build_ledger(Path(d), tier="STANDARD", reviews_ok="2")
         fake = FakeGh(view=view_with("gauntlet-reviewing"), edit=None)  # any edit fails the fixture
         code, out, _err = drive(led, "9", REPO, fake, dry_run=True)
+        out = verdict(out)
     check(code == 0, f"a dry-run exits 0, got {code}")
     check(out["changed"] is True and out["argv"] == SWAP_TO_ACCEPTED,
           f"a dry-run must show the swap it WOULD apply, got {out!r}")
@@ -249,6 +268,7 @@ def t_required_boundary():
             other = "gauntlet-reviewing" if desired == "gauntlet-accepted" else "gauntlet-accepted"
             fake = FakeGh(view=view_with(other))
             code, out, _err = drive(led, "9", REPO, fake)
+            out = verdict(out)
         check(code == 0, f"[{tier} {ok}] exit 0, got {code}")
         check(out["desired"] == desired, f"[{tier} {ok}/{out['required']}] desired must be {desired}, got {out!r}")
 

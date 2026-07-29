@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# ci: pyright
 """Executable fixtures for `worker-prompt.py` and its canonical prompt template."""
 
 from __future__ import annotations

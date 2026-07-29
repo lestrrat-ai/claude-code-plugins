@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# ci: pyright
 """Fixtures for the shared fixture runner in `_gauntlet/testing.py`.
 
 MOST `self-test` SUBCOMMANDS IN THIS DIRECTORY NOW GET THEIR EXIT CODE FROM THAT ONE RUNNER. That

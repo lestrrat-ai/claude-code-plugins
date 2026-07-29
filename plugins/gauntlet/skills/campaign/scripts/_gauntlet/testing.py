@@ -1,4 +1,3 @@
-# ci: pyright
 """Narrow helpers shared by Gauntlet's in-process CLI tests."""
 
 from __future__ import annotations

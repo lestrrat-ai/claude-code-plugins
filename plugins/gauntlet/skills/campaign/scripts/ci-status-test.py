@@ -47,7 +47,7 @@ import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable
+from typing import IO, Callable
 
 HERE = Path(__file__).resolve().parent
 STATUS_PY = HERE / "ci-status.py"
@@ -450,8 +450,11 @@ def required_set_cli_cases(ci, tmp: Path) -> list[str]:
     cli_tmp = tmp / "required-set-cli"
     cli_tmp.mkdir()
 
+    # `stdout` is whatever subprocess accepts there: the PIPE constant, or a real file object when a
+    # fixture needs the child's stdout to fail on write. Both forms are used here, so the annotation
+    # names both rather than the default's type alone.
     def run_cli(ledger: Path, *, repo: str = "o/r", env: "dict[str, str] | None" = None,
-                stdout=subprocess.PIPE, preexec_fn=None):
+                stdout: "int | IO[str] | None" = subprocess.PIPE, preexec_fn=None):
         return subprocess.run(  # noqa: S603 - this suite drives its sibling command
             [sys.executable, str(STATUS_PY), "required-set", "--ledger", str(ledger), "--repo", repo],
             stdout=stdout, stderr=subprocess.PIPE, text=True, check=False, env=env,

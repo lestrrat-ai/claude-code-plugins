@@ -1,4 +1,3 @@
-# ci: pyright
 """Shared JSONL object reader for Gauntlet campaign stores."""
 
 from __future__ import annotations

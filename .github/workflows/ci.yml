@@ -66,142 +66,40 @@ jobs:
       # through `ast.AST`, which does not declare it — code that compiles, runs, and is a lie about what the
       # walk yields.
       #
-      # DELIBERATELY FILE-SCOPED, not repo-wide. The other scripts here are not type-clean yet, and a
-      # repo-wide gate would fail builds for reasons that have nothing to do with the change under review —
-      # a gate that is red for everyone is a gate nobody can use. Add the exact `# ci: pyright` marker
-      # to each Python source or stub file as it becomes type-clean. Never remove the marker from a covered file.
+      # REPO-WIDE. Every tracked Python source and stub file is checked, with no opt-in marker and no list
+      # to maintain: a new file is covered the moment it is committed, and there is no way to add one that
+      # is quietly not type-checked. This replaced a per-file `# ci: pyright` marker scheme that existed
+      # only because the tree was not yet clean — it is, so the scheme's whole reason is gone. Discovery is
+      # `git ls-files`, so an untracked scratch file in a working tree cannot make the gate fail or pass.
       #
       # The `filesAnalyzed` assertion is the load-bearing half of this step, not a flourish. Pyright can
       # silently skip an explicit input while still reporting "0 errors" and exiting 0. A step that trusted
-      # the exit code alone could therefore pass without covering every file discovered from the marker
-      # inventory. So the count is asserted: every discovered input must actually be analysed.
-      - name: Pyright (the type-clean files)
+      # the exit code alone could therefore pass without covering every discovered file. So the count is
+      # asserted: every discovered input must actually be analysed.
+      - name: Pyright (every tracked Python file)
         run: |
           set -o pipefail
-          marker_args=(-e '^# ci: pyright$' -e $'^# ci: pyright\r$')
-
-          # This is the coverage floor: every previously type-clean source or stub file must retain the exact marker.
-          # Marker discovery below remains open-ended, so newly type-clean files are analysed without a
-          # second list edit.
-          baseline=(
-            plugins/gauntlet/skills/campaign/scripts/_gauntlet/__init__.py
-            plugins/gauntlet/skills/campaign/scripts/_gauntlet/argv.py
-            plugins/gauntlet/skills/campaign/scripts/_gauntlet/atomic.py
-            plugins/gauntlet/skills/campaign/scripts/_gauntlet/clock.py
-            plugins/gauntlet/skills/campaign/scripts/_gauntlet/gh.py
-            plugins/gauntlet/skills/campaign/scripts/_gauntlet/gitfixture.py
-            plugins/gauntlet/skills/campaign/scripts/_gauntlet/modules.py
-            plugins/gauntlet/skills/campaign/scripts/_gauntlet/jsonl.py
-            plugins/gauntlet/skills/campaign/scripts/_gauntlet/mutation.py
-            plugins/gauntlet/skills/campaign/scripts/_gauntlet/review_door.py
-            plugins/gauntlet/skills/campaign/scripts/_gauntlet/table.py
-            plugins/gauntlet/skills/campaign/scripts/_gauntlet/testing.py
-            plugins/gauntlet/skills/campaign/scripts/_gauntlet/view.py
-            plugins/gauntlet/skills/campaign/scripts/ledger.py
-            plugins/gauntlet/skills/campaign/scripts/ledger-test.py
-            plugins/gauntlet/skills/campaign/scripts/mutate-ci-snapshot.py
-            plugins/gauntlet/skills/campaign/scripts/review-pass.py
-            plugins/gauntlet/skills/campaign/scripts/review-pass-test.py
-            plugins/gauntlet/skills/campaign/scripts/emit-finding.py
-            plugins/gauntlet/skills/campaign/scripts/finding-audit.py
-            plugins/gauntlet/skills/campaign/scripts/finding-audit-test.py
-            plugins/gauntlet/skills/campaign/scripts/repair-pass.py
-            plugins/gauntlet/skills/campaign/scripts/repair-pass-test.py
-            plugins/gauntlet/skills/campaign/scripts/followups.py
-            plugins/gauntlet/skills/campaign/scripts/followups-test.py
-            plugins/gauntlet/skills/campaign/scripts/nudge.py
-            plugins/gauntlet/skills/campaign/scripts/nudge-test.py
-            plugins/gauntlet/skills/campaign/scripts/pr-adopt.py
-            plugins/gauntlet/skills/campaign/scripts/pr-adopt-test.py
-            plugins/gauntlet/skills/campaign/scripts/triage.py
-            plugins/gauntlet/skills/campaign/scripts/triage-test.py
-            plugins/gauntlet/skills/campaign/scripts/reviewer-liveness.py
-            plugins/gauntlet/skills/campaign/scripts/reviewer-liveness-test.py
-            plugins/gauntlet/skills/campaign/scripts/lease.py
-            plugins/gauntlet/skills/campaign/scripts/lease-test.py
-            plugins/gauntlet/skills/campaign/scripts/heartbeat.py
-            plugins/gauntlet/skills/campaign/scripts/heartbeat-test.py
-            plugins/gauntlet/skills/campaign/scripts/run-id.py
-            plugins/gauntlet/skills/campaign/scripts/run-id-test.py
-            plugins/gauntlet/skills/campaign/scripts/fixtures/pyright/marked_stub.pyi
-            plugins/gauntlet/skills/campaign/scripts/script-table-test.py
-            plugins/gauntlet/skills/campaign/scripts/self-test-runner-test.py
-            plugins/gauntlet/skills/campaign/scripts/base-preflight.py
-            plugins/gauntlet/skills/campaign/scripts/base-preflight-test.py
-            plugins/gauntlet/skills/campaign/scripts/worker-prompt.py
-            plugins/gauntlet/skills/campaign/scripts/worker-prompt-test.py
-            plugins/gauntlet/skills/campaign/scripts/merge-check.py
-            plugins/gauntlet/skills/campaign/scripts/merge-check-test.py
-            plugins/gauntlet/skills/campaign/scripts/merge.py
-            plugins/gauntlet/skills/campaign/scripts/merge-test.py
-          )
-          missing=()
-          for file in "${baseline[@]}"; do
-            if ! git grep -q "${marker_args[@]}" -- "${file}"; then
-              missing+=("${file}")
-            fi
-          done
-          if ((${#missing[@]} != 0)); then
-            printf '::error::covered Python source or stub file lacks the exact # ci: pyright marker: %s\n' "${missing[@]}"
-            exit 1
-          fi
-
-          # Exact marker lines, with either LF or CRLF endings, define the current type-clean source and stub set.
-          # filesAnalyzed is derived from this discovered set, never from the baseline.
-          discovery_file=$(mktemp "${RUNNER_TEMP}/pyright-markers.XXXXXX")
+          discovery_file=$(mktemp "${RUNNER_TEMP}/pyright-files.XXXXXX")
           trap 'rm -f "${discovery_file}" pyright.json' EXIT
-          if git grep -l -z "${marker_args[@]}" -- '*.py' '*.pyi' > "${discovery_file}"; then
-            mapfile -d '' -t files < "${discovery_file}"
-          else
-            grep_status=$?
-            if [ "${grep_status}" -ne 1 ]; then
-              exit "${grep_status}"
-            fi
-            files=()
-          fi
+          git ls-files -z -- '*.py' '*.pyi' > "${discovery_file}"
+          mapfile -d '' -t files < "${discovery_file}"
           if ((${#files[@]} == 0)); then
-            echo "::error::no Python source or stub files carry the exact # ci: pyright marker"
+            echo "::error::no tracked Python source or stub files were discovered — check the ls-files patterns"
             exit 1
           fi
-          declare -A discovered
-          for file in "${files[@]}"; do
-            discovered["${file}"]=1
-          done
-          missing_from_discovery=()
-          for file in "${baseline[@]}"; do
-            if [[ ! -v discovered["${file}"] ]]; then
-              missing_from_discovery+=("${file}")
-            fi
-          done
-          if ((${#missing_from_discovery[@]} != 0)); then
-            printf '::error::covered Python source or stub file was not discovered: %s\n' "${missing_from_discovery[@]}"
-            exit 1
-          fi
-          crlf_fixture='plugins/gauntlet/skills/campaign/scripts/fixtures/pyright/crlf_marker.txt'
-          if crlf_match=$(git grep -l "${marker_args[@]}" -- "${crlf_fixture}"); then
-            :
-          else
-            grep_status=$?
-            if [ "${grep_status}" -eq 1 ]; then
-              crlf_match=''
-            else
-              exit "${grep_status}"
-            fi
-          fi
-          if [ "${crlf_match}" != "${crlf_fixture}" ]; then
-            echo "::error::the tracked CRLF marker fixture did not match exactly: ${crlf_fixture}"
-            exit 1
-          fi
+          printf 'type-checking %s\n' "${files[@]}"
+
           npx --yes pyright@1.1.410 --outputjson "${files[@]/#/./}" | tee pyright.json
           analyzed=$(jq '.summary.filesAnalyzed' pyright.json)
           expected=${#files[@]}
           echo "filesAnalyzed=${analyzed} expected=${expected}"
           if [ "${analyzed}" != "${expected}" ]; then
             echo "::error::pyright analysed ${analyzed} file(s), not the ${expected} it was pointed at — it checked" \
-                 "an incomplete marker inventory. Inspect marker discovery and Pyright input handling;" \
+                 "an incomplete inventory. Inspect discovery and Pyright input handling;" \
                  " every discovered file must be analysed."
             exit 1
           fi
+
 
       # The CI-snapshot contract, executed. The rules it pins are prose in stage-2-ci.md, and prose
       # cannot be run — three defects shipped in that prose, each of which dies instantly against a

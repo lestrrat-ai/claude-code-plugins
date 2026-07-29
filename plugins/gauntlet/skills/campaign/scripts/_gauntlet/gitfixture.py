@@ -1,4 +1,3 @@
-# ci: pyright
 """One owner for the throwaway Git repositories the campaign self-test suites build.
 
 Several suites here prove their claims against a REAL git, not a mock: they build a repository in a

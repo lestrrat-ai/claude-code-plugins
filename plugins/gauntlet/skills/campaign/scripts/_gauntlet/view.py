@@ -1,4 +1,3 @@
-# ci: pyright
 """The field-shape check every Gauntlet campaign decider applies to a `gh pr view` payload."""
 
 from __future__ import annotations

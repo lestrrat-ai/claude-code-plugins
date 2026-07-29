@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# ci: pyright
 """THE EXECUTABLE CONTRACT FOR `ledger.py` — every rule the accessor claims, pinned by a fixture.
 
 Run it through the tool it tests (this is what CI runs):

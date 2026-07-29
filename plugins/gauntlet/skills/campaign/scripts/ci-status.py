@@ -152,7 +152,7 @@ import sys
 import textwrap
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, NamedTuple, NoReturn
+from typing import Callable, NamedTuple, NoReturn, cast
 from urllib.parse import quote
 
 from _gauntlet.modules import load_module_from_path
@@ -450,7 +450,10 @@ def resolve_required_for_derive(ledger_file: str, pr: str, required_set_arg: "st
 
 def required_check(source: str, value: object, app_key: str) -> tuple[str, str]:
     """Parse one GitHub required-check declaration without turning absence into an empty value."""
-    context = field(source, value, "context", str)
+    # `field` has already REFUSED anything but the declared shape, so each cast below records a fact the
+    # runtime check established and the type checker cannot see. A cast is never a second opinion about the
+    # shape: change the shape argument and the cast must change with it.
+    context = cast(str, field(source, value, "context", str))
     app = field(source, value, app_key, int, NULL, ABSENT)
     if app is None:
         app = SNAP.ANY_APP
@@ -467,7 +470,7 @@ def classic_required_set(payload: object) -> list[tuple[str, str]]:
     if not enabled:
         return []
     status_checks = field(source, protection, "required_status_checks", dict)
-    checks = field(source, status_checks, "checks", list)
+    checks = cast(list, field(source, status_checks, "checks", list))
     return [required_check(source, check, "app_id") for check in checks]
 
 
@@ -485,7 +488,7 @@ def ruleset_required_set(payload: object) -> list[tuple[str, str]]:
             if rule_type != "required_status_checks":
                 continue
             parameters = field(source, rule, "parameters", dict)
-            declared = field(source, parameters, "required_status_checks", list)
+            declared = cast(list, field(source, parameters, "required_status_checks", list))
             checks.extend(required_check(source, check, "integration_id") for check in declared)
     return checks
 
@@ -1042,9 +1045,9 @@ def read_pages(fetch: Fetch, source: str, argv: list[str], rows_key: str) -> tup
     # we cannot read). Delete that member from an otherwise-green fixture and the count still matched the rows
     # collected — zero — containment still held, and `derive()` returned **GREEN**. A page missing the key, or
     # carrying anything but a LIST there, is REFUSED — never defaulted, never coerced.
-    rows = [row for page in pages for row in field(source, page, rows_key, list, why=(
+    rows = [row for page in pages for row in cast(list, field(source, page, rows_key, list, why=(
         f"Every page of this response carries its rows under {rows_key!r}; a page that does not is not a "
-        f"page with NO rows, and the row it is hiding could be the FAILING one."))]
+        f"page with NO rows, and the row it is hiding could be the FAILING one.")))]
 
     first = next(iter(pages))
     # A COUNT WE CANNOT READ IS REFUSED, for the same reason `headRefOid` is: the completeness test below
@@ -1059,11 +1062,11 @@ def read_pages(fetch: Fetch, source: str, argv: list[str], rows_key: str) -> tup
     # and cross-source rules already fail closed on. So the count is read off every page (`field` refuses an
     # absent/non-integer count on ANY page, not only the first), and the collected rows are checked against
     # ALL of them.
-    totals = [field(source, page, "total_count", int, why=(
+    totals = [cast(int, field(source, page, "total_count", int, why=(
         "That is GitHub's own count of the rows it holds for this commit, and it is the ONLY thing we can "
         "check our read against: without it we cannot tell a complete read from a truncated one, and "
         "cannot-tell is not a green. It is read off EVERY page — a later page reporting a different count is "
-        "a check that registered mid-fetch, and the row it added could be the failing one.")) for page in pages]
+        "a check that registered mid-fetch, and the row it added could be the failing one."))) for page in pages]
 
     # WHAT WE COLLECTED MUST BE WHAT GITHUB SAYS IT HOLDS, ON EVERY PAGE. A page whose count disagrees with
     # the rows we collected is a short read (or a response whose pages contradict each other), and a hole we
@@ -1243,10 +1246,10 @@ def fetch_rollup(fetch: Fetch, pr: str) -> tuple[list[dict], dict, object, list[
     # suites are all dynamic-event legitimately looks like that. A MISSING (or non-list) key is a response we
     # did not understand, and reading it as "no witnesses" makes CONTAINMENT VACUOUS: "REST saw everything
     # the rollup saw" is then a claim about the empty set, and it passes trivially.
-    entries = field("rollup", data, "statusCheckRollup", list, why=(
+    entries = cast(list, field("rollup", data, "statusCheckRollup", list, why=(
         "That is not an EMPTY rollup (a fact GitHub can state), it is a response we cannot read. Treating "
         "it as 'no witnesses' would make the containment test a claim about the empty set, which passes "
-        "TRIVIALLY: an absence read as 'nothing wrong'."))
+        "TRIVIALLY: an absence read as 'nothing wrong'.")))
 
     witnesses: list[dict] = []
     status_rollup: list[RollupStatus] = []
@@ -2595,7 +2598,7 @@ def self_test() -> int:
         return tests.run(sys.modules[__name__], Path(tmp))
 
 
-def resolve_repo(fetch: Fetch) -> object:
+def resolve_repo(fetch: Fetch) -> str:
     """WHICH REPOSITORY IS THIS CHECKOUT? The one fetch that happens outside `derive` — and it goes THROUGH
     THE DOOR, like every other read of a GitHub response.
 
@@ -2605,8 +2608,8 @@ def resolve_repo(fetch: Fetch) -> object:
     instead of the caller's actual problem. It failed closed, and it lied about why. `field()` refuses it,
     and the operator gets the error that is true: we cannot tell which repo this is.
     """
-    return field("repo", fetch("repo", ["gh", "repo", "view", "--json", "nameWithOwner"]),
-                 "nameWithOwner", str)
+    return cast(str, field("repo", fetch("repo", ["gh", "repo", "view", "--json", "nameWithOwner"]),
+                           "nameWithOwner", str))
 
 
 def main() -> int:

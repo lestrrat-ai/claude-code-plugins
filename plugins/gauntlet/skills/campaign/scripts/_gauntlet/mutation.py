@@ -1,4 +1,3 @@
-# ci: pyright
 """Shared mechanics for Gauntlet's source-mutation test harnesses."""
 
 from __future__ import annotations
