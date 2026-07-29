@@ -357,9 +357,9 @@ def resolve_rundir(file_arg: str, rundir_arg: "str | None") -> Path:
 
 
 def reminders(header: dict, rows: list, n_followups: "int | None", rundir: "Path | None",
-              now: "datetime | None" = None, followups_path: "Path | None" = None,
-              notes: "list | None" = None, notes_unread: "str | None" = None,
-              followups_unread: "str | None" = None) -> list:
+              followups_unread: "str | None", now: "datetime | None" = None,
+              followups_path: "Path | None" = None,
+              notes: "list | None" = None, notes_unread: "str | None" = None) -> list:
     """Compute the reminder lines. Pure: same inputs → same output. Returns a list of strings.
 
     `now` is the current UTC time, injectable so the quiet-run rule is testable; it defaults to
@@ -503,11 +503,11 @@ def reminders(header: dict, rows: list, n_followups: "int | None", rundir: "Path
 
 
 def render(header: dict, rows: list, n_followups: "int | None", rundir: "Path | None",
-           now: "datetime | None" = None, followups_path: "Path | None" = None,
-           notes: "list | None" = None, notes_unread: "str | None" = None,
-           followups_unread: "str | None" = None) -> str:
-    lines = reminders(header, rows, n_followups, rundir, now, followups_path, notes, notes_unread,
-                      followups_unread)
+           followups_unread: "str | None", now: "datetime | None" = None,
+           followups_path: "Path | None" = None,
+           notes: "list | None" = None, notes_unread: "str | None" = None) -> str:
+    lines = reminders(header, rows, n_followups, rundir, followups_unread, now, followups_path, notes,
+                      notes_unread)
     run_id = header.get("run_id", "-")
     head = f"NUDGE (run {run_id}) — {len(lines)} reminder(s):"
     body = "\n".join(f"  - {line}" for line in lines)
@@ -542,8 +542,8 @@ def main(argv: "list[str] | None" = None) -> int:
     n_followups, followups_unread = open_followups(followups_path)
     notes, notes_unread = read_notes(notes_path(followups_path))
     rundir = resolve_rundir(args.file, args.rundir)
-    print(render(header, rows, n_followups, rundir, followups_path=followups_path,
-                 notes=notes, notes_unread=notes_unread, followups_unread=followups_unread))
+    print(render(header, rows, n_followups, rundir, followups_unread, followups_path=followups_path,
+                 notes=notes, notes_unread=notes_unread))
     return 0  # a nudge NEVER blocks — it only reminds
 
 

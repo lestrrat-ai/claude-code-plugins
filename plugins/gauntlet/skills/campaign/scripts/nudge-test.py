@@ -49,8 +49,8 @@ def row(pr, status, **kw) -> dict:
 def fire(rows, *, hdr=None, n_followups: "int | None" = 0, rundir=None, now=None,
          followups_path: "Path | None" = None, notes: "list | None" = None,
          notes_unread: "str | None" = None, followups_unread: "str | None" = None) -> list:
-    return N.reminders(hdr or header(run_id="g1"), rows, n_followups, rundir, now, followups_path,
-                       notes, notes_unread, followups_unread)
+    return N.reminders(hdr or header(run_id="g1"), rows, n_followups, rundir, followups_unread, now,
+                       followups_path, notes, notes_unread)
 
 
 # A fixed "now" and two stamps around it, so the quiet-run rule is DETERMINISTIC: one older than
