@@ -242,7 +242,7 @@ enforced: the progress file is a plaintext file in a directory the reviewer can 
     # raise ONE plan_amendment_request; ts stamped by the tool (what emit-amendment.py calls)
 ["python3", review_pass_script, "finding-add", "--file", findings_file,
  "--path", path, "--line", line, "--writer", writer, "--purpose", purpose,
- "--repro", repro, "--fix", fix]
+ "--base", base, "--base-repro", base_repro, "--repro", repro, "--fix", fix]
 ["python3", review_pass_script, "intent-check", "--file", intent_file, "--ledger", ledger_file]
     # the PRE-DISPATCH scope door ONLY: refuse a missing/malformed intent block, or one whose run-default
     # managed block has drifted from the ledger header default_non_goals, before a reviewer is launched.
@@ -449,12 +449,16 @@ as a template to write by hand (`review-pass.py` re-derives every rule from the 
 finding makes the pass `unusable` exactly as a hand-written progress event does):
 
 ```
-{"type":"finding","file":"scripts/ci-status.py","line":"769","writer":"network","purpose":"never emit a false green","repro":"I removed the `statuses` member from the otherwise-green fixture while leaving `total_count: 0`; `derive()` returned `verdict=green`, `ci=green`","fix":"treat a MISSING row array as unusable — `page.get(rows_key) or []` reads absence as empty"}
+{"type":"finding","file":"scripts/ci-status.py","line":"769","writer":"network","purpose":"never emit a false green","base":"introduced","base_repro":"-","repro":"I removed the `statuses` member from the otherwise-green fixture while leaving `total_count: 0`; `derive()` returned `verdict=green`, `ci=green`","fix":"treat a MISSING row array as unusable — `page.get(rows_key) or []` reads absence as empty"}
 ```
 
 That example is **the real PR #43 round-11 finding**, and it is the one to keep in mind: the reader it names
 was **added by an earlier fix round of this very gauntlet**, and it still **GATES** — because `network` names
 an actor who can really send that reply, and it quotes the PR's purpose verbatim.
+
+`base` answers the third question — **does the PR's BASE already do this?** — and `base_repro` is the run
+that proves a `pre-existing` answer. `review-pass.py`'s `gating()` owns what the pair means and when it
+discharges a finding; do not restate that rule here.
 
 #### `pass_identity` is the pass's attempt id, its dispatch clock, and its dispatch-time review scope
 
@@ -641,9 +645,11 @@ so a verdict earned under a since-changed scope is not counted ("Does this pass 
   not harden its own self-test against a developer editing it" is a *decision*, and re-litigating a decision
   is not review — it is the loop arguing with itself.
 - **EVERY FINDING MUST ANCHOR TO THE INTENT.** It names **either** the `## Purpose` line it defends (quoted
-  **verbatim**) **or** the `## Threat model` actor who can actually write the offending input. **A finding
-  that can anchor to neither is NON-GATING**: it does **not** produce `NOT SATISFIED`, **no fix is dispatched
-  for it**, it is recorded as a follow-up, and the review moves on.
+  **verbatim**) **or** the `## Threat model` actor who can actually write the offending input. Anchoring to
+  neither is **one** of the ways a finding ends up NON-GATING: it does **not** produce `NOT SATISFIED`,
+  **no fix is dispatched for it**, it is recorded as a follow-up, and the review moves on. It is not the
+  only way, and this bullet is not the rule — `review-pass.py`'s `gating()` owns it, and a finding also
+  answers a question this section does not cover (whether the PR's BASE already does the same thing).
 - **THE ADVERSARIAL SWEEP STAYS.** It found the real bugs and it is not narrowed — it is **BOUNDED**, by the
   threat model rather than by nothing. Hunt as hostilely as ever; then say who can reach what you found.
 
@@ -667,7 +673,7 @@ The reviewer now records **every** finding through the tool (its CLI is defined 
 run_argv([
   "python3", transport.emit_finding_path, "--file", transport.findings_path,
   "--path", file, "--line", line, "--writer", writer, "--purpose", purpose,
-  "--repro", repro, "--fix", fix
+  "--base", base, "--base-repro", base_repro, "--repro", repro, "--fix", fix
 ])
 ```
 
@@ -689,19 +695,28 @@ the pass if you say otherwise, because that repro describes a developer with a t
 
 #### The gating rule — enforced in `review-pass.py`, not by good intentions
 
-> **A finding whose `purpose` is `-` AND whose `writer` is one of `driver-only` / `hand-edit` / `dev-time`
-> is NON-GATING.** It anchors to nothing: no line of the PR's stated purpose is served by fixing it, and
-> nobody outside the machine can supply the input. It **MUST NOT** produce `NOT SATISFIED`, the driver
-> **MUST NOT** dispatch a fix for it, and it is recorded as a follow-up (`.gauntlet/followups.jsonl`, written through `scripts/followups.py`).
+> **A finding is NON-GATING when it anchors to no `## Purpose` line AND either the PR's BASE already does
+> it (`base = pre-existing`, with the run that proves it in `base_repro`) or nobody outside the machine can
+> supply the input (`writer` is one of `driver-only` / `hand-edit` / `dev-time`).** It **MUST NOT** produce
+> `NOT SATISFIED`, the driver **MUST NOT** dispatch a fix for it, and it is recorded as a follow-up
+> (`.gauntlet/followups.jsonl`, written through `scripts/followups.py`).
+
+`review-pass.py`'s `gating()` is the ONE definition of that rule, including the order its questions are
+asked in. Read it there before relying on any summary of it, this one included.
 
 **NOT EVERY TRUE STATEMENT ABOUT THE CODE IS A REASON TO BLOCK IT.** A non-gating finding is not refuted,
 not dismissed, and not necessarily wrong. It is simply not worth another round.
 
-**Both conjuncts are load-bearing, and the record is what proves it.** Do **NOT** simplify this to "a
+**Every clause is load-bearing, and the record is what proves it.** Do **NOT** simplify this to "a
 finding against code an earlier fix round added is non-gating": a fix round can absolutely introduce a
 real defect — the PR #43 round-11 finding shown above sat in code an earlier round had itself added, and
 it **GATES** (`writer=network`, and it quotes the PR's purpose). The same PR's round-15 finding — proof
 machinery that misses an input **nobody can write**, attacking a declared non-goal — does not.
+
+**And do NOT simplify the base clause into "old code is exempt".** It is not about the code's age; it is
+about whether THIS PR changed the behaviour. A defect a PR moves into a new shared owner is still that
+PR's, unless running the base proves the base does the very same thing. `pre-existing` is a claim about a
+run the reviewer performed, and a finding that defends a stated Purpose line gates whatever the base does.
 
 `review-pass.py verify` **exits non-zero** on any defect in the pass's artifacts — a missing intent block,
 a malformed or incomplete active-attempt report, a terminal result that does not cohere with the findings
@@ -712,10 +727,9 @@ not retell it. The verifier still **cannot raise `reviews_ok`** or judge whether
 
 **THE VERDICT/FINDINGS RULE IS AN IF AND ONLY IF, AND BOTH HALVES ARE ENFORCED: `NOT SATISFIED` exactly
 when at least one GATING finding stands.** The reviewer decided the finding gates **when it chose that
-`writer` and that `purpose`**; the verdict may not then ignore it. A finding the reviewer does **not**
-intend to block on is said so where it is **said**: `purpose = -` and a no-adversary `writer`, which is
-what makes it NON-GATING — and `emit-finding.py` prints `NON-GATING` when it writes one, so the reviewer
-learns it in time to act. A `SATISFIED` pass carrying only non-gating findings is the ordinary, intended
+`writer`, that `purpose` and that `base`**; the verdict may not then ignore it. A finding the reviewer does
+**not** intend to block on is said so where it is **said**, in those fields — and `emit-finding.py` prints
+`GATING` or `NON-GATING` when it writes the line, so the reviewer learns which it recorded in time to act. A `SATISFIED` pass carrying only non-gating findings is the ordinary, intended
 shape and passes untouched.
 
 **AND THE INTENT IS CHECKED FOR EVERY PASS — whatever it found, and even when it found nothing.** A

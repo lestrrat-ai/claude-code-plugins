@@ -218,12 +218,30 @@ WAIVER_KEYS = {"type", "dimension", "reason"}
 #   * `writer`  — WHO CAN ACTUALLY PUT THE BAD INPUT THERE, from a closed enum.
 # A finding that can anchor to neither is a true statement about code that nothing in the world can reach
 # and nothing the PR promised depends on. It is recorded as a follow-up. It does not gate.
+#
+# AND IT MUST ALSO BE THIS PR'S WORK — `base`, the third field, and the newest of the three. A defect the
+# PR's BASE already has is not something this PR broke. Holding it against the PR makes a refactor pay for
+# main's history, and the record shows exactly what that costs (see `base` below).
 
 FINDING = "finding"
 
 # The EXACT key set, by the same rule every other record here obeys: every key it requires, and NOT ONE
 # more. `line` is a string like every other value in these artifacts.
-FINDING_KEYS = {"type", "file", "line", "writer", "purpose", "repro", "fix"}
+#
+# **ADDING A KEY HERE BREAKS EVERY FINDING ALREADY ON DISK, AND THAT IS A DISCLOSED RESIDUAL, NOT AN
+# OVERSIGHT.** Exactness cuts both ways: a record written before the new key is now MISSING a required one,
+# so it is refused. That refusal reaches further than the door that wrote it, because the two HISTORICAL
+# readers — `repair-pass.py`'s `load_historical_findings` and `finding-audit.py`'s `read_source_historical`
+# — run this same check over LANDED rounds. Both exist so that re-authoring an intent cannot wedge a PR;
+# neither can help with this, because the missing key is not an anchor they can hold historical.
+#
+# So a run whose early rounds landed under the previous key set cannot bundle its own history after the
+# plugin updates, and the PR wedges at the next cap. It is accepted because of what the artifact IS: the
+# run directory is local, git-ignored and driver-owned, one user drives it, and the recovery is to finish
+# the run before updating or to start a fresh one. There is deliberately no migration path and no
+# tolerant read — a findings artifact this tool cannot fully validate is one it must not reason from.
+# What is NOT acceptable is shipping the next key without saying so again here.
+FINDING_KEYS = {"type", "file", "line", "writer", "purpose", "base", "base_repro", "repro", "fix"}
 # The prose fields — checked for being a non-blank string, and nothing more. `file` and `line` are the
 # CITATION (a finding with no `file:line` is not a finding, it is an opinion); `repro` is what makes it a
 # demonstrated defect rather than a claim; `fix` is what the fix subagent is dispatched with.
@@ -264,23 +282,81 @@ NO_ADVERSARY = ("driver-only", "hand-edit", "dev-time")
 # `purpose == NO_PURPOSE or purpose in purposes` can never be true for two different reasons at once.
 NO_PURPOSE = "-"
 
+# **DOES THE PR'S BASE ALREADY DO THIS? — A CLOSED ENUM OF TWO, DECLARED PER FINDING.**
+#
+#   introduced    the mechanism does NOT reproduce on the base. Either this PR created it, or the code it
+#                 lives in is new here and there is no base version to run. Both are "this PR's work".
+#   pre-existing  the mechanism reproduces on the base, UNCHANGED, and the reviewer RAN IT there.
+#
+# **THE RECORD THIS COMES FROM.** A refactor shared one self-test loop across fifteen scripts. Its first
+# review round reported three real false greens — a fixture whose body never runs counted as a pass, a
+# fixture calling `sys.exit(0)` ending the run silently green, a fixture module exiting at import printing
+# nothing at all. Every one of them was TRUE. Every one of them also happened, identically, on the base:
+# the new shared loop discarded each fixture's return value exactly as the fifteen loops it replaced did.
+# None carried a purpose anchor. But `writer=repo-content` names a real actor, so all three GATED, and the
+# rule below had no third question to ask. The fix then added never-ran detection that no version of that
+# code had ever had — and four of the run's eleven rounds were spent on the consequences of that detection
+# before the PR was abandoned at the round cap.
+#
+# **THIS IS A WAY TO MAKE A REPRODUCED, TRUE DEFECT NON-GATING, AND THAT IS THE POINT AND THE DANGER.** It
+# is bounded three ways, and every one of them matters:
+#   * a finding that ANCHORS TO A PURPOSE LINE is never eligible — a PR promising to harden the thing
+#     cannot plead that the thing was already broken;
+#   * `pre-existing` REQUIRES the base reproduction in `base_repro`. The failure this rule comes from was a
+#     claim nobody measured, and accepting a second unmeasured claim would be that same failure wearing a
+#     new hat;
+#   * unsure is NOT a value. The enum has no "maybe", so doubt has exactly one home: `introduced`, which
+#     gates — the same direction `critical-rules.md` sends an unsure audit verdict.
+# What it never does is DISCARD the finding: a `pre-existing` finding is recorded as a follow-up, in the
+# durable store, for a human. `main` having a defect is a fact worth writing down; it is not this PR's bill.
+#
+# **AND NOW THE PART THAT IS NOT BOUNDED, STATED PLAINLY BECAUSE THE THREE ABOVE READ STRONGER THAN THEY
+# ARE.** The second bound is a FORMAT check, not a verification: this tool asks that `base_repro` be a
+# non-blank string, and nothing here or downstream re-runs the base to see whether that string describes
+# anything that happened. `repro` is trusted the same way — but the DIRECTION differs, and that is the
+# residual. An invented `repro` costs a wasted round and the audit is there to catch it; an invented
+# `base_repro` DISCHARGES the finding, and `finding-audit.py` audits GATING findings only, so a
+# `pre-existing` claim is the one claim in this record that NO independent context ever reads. The audit
+# asks "is it TRUE?" of everything except the answer that made asking unnecessary.
+#
+# That is accepted, not overlooked, and the reason is the same one the whole gate rests on: the reviewer is
+# already trusted for `repro`, `writer` and the verbatim `purpose` quote, and a tool that could check the
+# base claim mechanically would be a tool that could have judged the finding without a reviewer. The guard
+# is SOCIAL and it lives in the prompt: `review-prompt.txt` tells the reviewer not to go looking for
+# reasons to say `pre-existing`. If a run ever ends with a merged regression whose finding was discharged
+# this way, THIS is the paragraph that was wrong, and the fix is to make `pre-existing` reach the audit.
+INTRODUCED = "introduced"
+PRE_EXISTING = "pre-existing"
+BASE_STATUSES = (INTRODUCED, PRE_EXISTING)
+
+# `base_repro`'s value when there is nothing to show — the same sentinel discipline `purpose` uses, and for
+# the same reason: "there is no base reproduction" must be a string the reviewer TYPES, never one it
+# reaches by leaving a field empty.
+NO_BASE_REPRO = "-"
+
 
 def gating(rec: dict) -> bool:
     """**MAY THIS FINDING BLOCK THE PR?** The rule, in one statement, and the only definition of it.
 
-    A finding gates unless it anchors to NOTHING: no line of the PR's stated purpose is served by fixing
-    it, AND nobody outside the machine can write the input that triggers it.
+    THREE questions, asked in this order. The first that answers, decides:
+
+      1. Does it DEFEND something the PR promised (`purpose` quotes that promise)? Then it GATES, whatever
+         else is true. This is checked FIRST on purpose: it is the bound on question 2, and a PR that
+         promised to fix a thing cannot plead that the thing was already broken.
+      2. Does the PR's BASE already do this (`base`)? Then it does NOT gate. It is real, it is recorded as
+         a follow-up, and it is not this PR's bill.
+      3. Is it reachable by SOMEONE (`writer` names them)? Then it GATES. Otherwise nothing in the world
+         can reach it and nothing the PR promised depends on it, and it does not gate.
 
     **NOT EVERY TRUE STATEMENT ABOUT THE CODE IS A REASON TO BLOCK IT.** A non-gating finding is not
     refuted, not dismissed and not necessarily wrong — it is simply not a reason to spend another round.
     It is recorded as a follow-up and the review moves on.
-
-    Read the two conjuncts as the two ways a finding can EARN its block, because that is what they are:
-      * it DEFENDS something the PR promised to do (`purpose` quotes that promise), or
-      * it is reachable by SOMEONE (`writer` names them).
-    Only a finding that can say neither is discharged.
     """
-    return not (rec["purpose"] == NO_PURPOSE and rec["writer"] in NO_ADVERSARY)
+    if rec["purpose"] != NO_PURPOSE:
+        return True
+    if rec["base"] == PRE_EXISTING:
+        return False
+    return rec["writer"] not in NO_ADVERSARY
 
 
 # **THE REPRO THAT GIVES THE WRITER AWAY.** `writer` is declared by the reviewer, so it is the soft joint
@@ -1185,6 +1261,30 @@ def check_finding(rec: dict, where: str, purposes: "list[str]") -> None:
             f"from a CLOSED enum: {list(WRITERS)}. A value outside it is not a new kind of actor, it is a "
             f"field nobody filled in. `hand-edit` = only by hand-editing a local git-ignored file the driver "
             f"owns; `dev-time` = only by editing the source of the code under review"
+        )
+    if rec["base"] not in BASE_STATUSES:
+        # MUTATE:finding-base-enum:pass
+        raise Defect(
+            f"{where}: `base` is {rec['base']!r} — it answers ONE question, from a CLOSED enum of two: does "
+            f"this mechanism reproduce on the PR's BASE? {list(BASE_STATUSES)}. There is deliberately no "
+            f"'maybe': if you did not RUN it on the base, you do not know that it is there, and the value "
+            f"that says so is {INTRODUCED!r}"
+        )
+    if rec["base"] == PRE_EXISTING and rec["base_repro"].strip() in ("", NO_BASE_REPRO):
+        # MUTATE:finding-base-repro-required:pass
+        raise Defect(
+            f"{where}: `base` is {PRE_EXISTING!r} but `base_repro` is {rec['base_repro']!r} — that claim "
+            f"DISCHARGES the finding, so it is the one claim in this record that may not go unmeasured. Show "
+            f"the run: the base you checked out, the command, and what it printed there. If you did not run "
+            f"it on the base, the honest value is {INTRODUCED!r} and the finding gates"
+        )
+    if rec["base"] == INTRODUCED and rec["base_repro"] != NO_BASE_REPRO:
+        # MUTATE:finding-base-repro-absent:pass
+        raise Defect(
+            f"{where}: `base` is {INTRODUCED!r}, so there is no base reproduction to show and `base_repro` "
+            f"must be the literal {NO_BASE_REPRO!r} — it is {rec['base_repro']!r}. A base reproduction "
+            f"filed beside a claim that the base does NOT do this contradicts itself, and the reader cannot "
+            f"tell which half to believe"
         )
     if rec["purpose"] != NO_PURPOSE and rec["purpose"] not in purposes:
         # MUTATE:finding-purpose-anchor:pass
@@ -2353,7 +2453,8 @@ def cmd_finding_add(args) -> int:
     path = Path(args.file)
     rec: "dict[str, object]" = {
         "type": FINDING, "file": args.path, "line": args.line, "writer": args.writer,
-        "purpose": args.purpose, "repro": args.repro, "fix": args.fix,
+        "purpose": args.purpose, "base": args.base, "base_repro": args.base_repro,
+        "repro": args.repro, "fix": args.fix,
     }
     # The NAME first, and by the SAME statement the read door runs: a path that is not a findings
     # artifact's name is not a file this tool reads at all, and the `pr` in that name is what locates the
@@ -2371,12 +2472,18 @@ def cmd_finding_add(args) -> int:
     # a GATING one left out of the verdict. `verify` refuses the pass either way, fifteen minutes later,
     # by a tool the reviewer never sees; this is where it learns it, while it can still act.
     if not gating(rec):
+        why = (
+            f"the PR's BASE already does this, and you showed the run that proves it — so it is not this "
+            f"PR's bill"
+            if rec["base"] == PRE_EXISTING else
+            f"it anchors to no `{PURPOSE_H}` line and its writer is `{rec['writer']}` — nobody outside the "
+            f"machine can supply that input"
+        )
         sys.stdout.write(
-            f"# NON-GATING: this finding anchors to no `{PURPOSE_H}` line and its writer is "
-            f"`{rec['writer']}` — nobody outside the machine can supply that input. It is RECORDED as a "
-            f"follow-up and it MUST NOT produce NOT SATISFIED. If you believe it does gate, then either it "
-            f"defends a stated purpose (quote that line in --purpose) or a real actor can write the input "
-            f"(name them in --writer) — say which, do not simply re-file it.\n"
+            f"# NON-GATING: {why}. It is RECORDED as a follow-up and it MUST NOT produce NOT SATISFIED. If "
+            f"you believe it does gate, then it defends a stated purpose (quote that line in --purpose), or "
+            f"a real actor can write the input (name them in --writer), or this PR is what introduced it "
+            f"(--base {INTRODUCED}) — say which, do not simply re-file it.\n"
         )
     else:
         sys.stdout.write(
@@ -2386,8 +2493,9 @@ def cmd_finding_add(args) -> int:
             f"UNUSABLE and gets thrown away — the rule is NOT SATISFIED if and ONLY if at least one GATING "
             f"finding stands. If it does not really block, it is the ANCHOR that is wrong, not the verdict: "
             f"a finding that serves no stated purpose and that nobody outside the machine can trigger is "
-            f"`--purpose -` with a `driver-only`/`hand-edit`/`dev-time` writer, and it is recorded as a "
-            f"follow-up instead.\n"
+            f"`--purpose -` with a `driver-only`/`hand-edit`/`dev-time` writer, and a defect the PR's BASE "
+            f"already has is `--purpose -` with `--base {PRE_EXISTING}` and the run that proves it. Either "
+            f"way it is recorded as a follow-up instead.\n"
         )
     return 0
 
@@ -2675,13 +2783,19 @@ def progress_tally(events: "list[dict]") -> "tuple[int, str]":
 
 def finding_counts(progress: Path) -> str:
     """`<gating>/<non-gating>` via the ONE `gating()` predicate. A record missing the keys `gating()` reads
-    is SKIPPED, not crashed on (advisory divergence from `verify`, which would reject it)."""
+    is SKIPPED, not crashed on (advisory divergence from `verify`, which would reject it).
+
+    The skip is enforced by the guard below and NOT by a list of key names. Naming them here would be a
+    copy of `gating()`'s field set that goes stale the next time it grows one — silently, because a record
+    missing the unnamed key would then reach `gating()` and be skipped by the `except` anyway, one field
+    later than intended. The `KeyError` a missing key raises IS the test.
+    """
     recs = read_lenient(findings_path(progress))
     if not recs:
         return "0/0"
     g = ng = 0
     for rec in recs:
-        if not isinstance(rec, dict) or "purpose" not in rec or "writer" not in rec:
+        if not isinstance(rec, dict):
             continue
         try:
             (g := g + 1) if gating(rec) else (ng := ng + 1)  # noqa: F841 - walrus updates the counters
@@ -3035,6 +3149,16 @@ def add_finding_args(p: argparse.ArgumentParser) -> None:
                         "`-` if fixing it serves no stated purpose. Not a formality: it is the question "
                         "'does this PR do its job?', and a finding that cannot answer it is not a reason to "
                         "block the PR")
+    p.add_argument("--base", required=True, choices=BASE_STATUSES,
+                   help="does this mechanism reproduce on the PR's BASE? `pre-existing` = you RAN it there "
+                        "and it does, so the PR did not break this and it does not gate (record it, it is "
+                        "still real). `introduced` = it does not, or the code is new here and there is no "
+                        "base version to run. There is no 'maybe': if you did not run it on the base, the "
+                        "answer is `introduced`")
+    p.add_argument("--base-repro", required=True,
+                   help="the run that PROVES `--base pre-existing`: the base you checked out, the command, "
+                        "and what it printed there. The literal `-` when `--base introduced`, because then "
+                        "there is nothing to show")
     p.add_argument("--repro", required=True,
                    help="the command, input or edit that makes it fail — what you actually did")
     p.add_argument("--fix", required=True, help="the concrete fix")

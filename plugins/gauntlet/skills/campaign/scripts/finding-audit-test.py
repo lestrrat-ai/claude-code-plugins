@@ -33,6 +33,10 @@ def finding(number: int, *, gating: bool = True, **over) -> dict:
         "line": str(number),
         "writer": "repo-content" if gating else "driver-only",
         "purpose": PURPOSE if gating else "-",
+        # A finding this suite calls GATING must stay gating under every one of `gating()`'s three
+        # questions, so the base answer is pinned to the one that never discharges.
+        "base": "introduced",
+        "base_repro": "-",
         "repro": f"run fixture {number}",
         "fix": f"repair fixture {number}",
     }

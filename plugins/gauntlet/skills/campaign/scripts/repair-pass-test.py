@@ -526,6 +526,8 @@ GATING_FINDING = {
     "line": "2",
     "writer": "end-user",
     "purpose": "assemble complete repair history deterministically",
+    "base": "introduced",
+    "base_repro": "-",
     "repro": "supply the feature input through the documented user path",
     "fix": "handle the feature input at the shared boundary",
 }
@@ -909,6 +911,8 @@ def t_bundle_preserves_findings_from_an_older_intent(tmp: Path) -> None:
         "line": "2",
         "writer": "end-user",
         "purpose": "purpose text from the intent that governed round 1",
+        "base": "introduced",
+        "base_repro": "-",
         "repro": "supply the feature input through the documented user path",
         "fix": "handle the feature input at the shared boundary",
     }) + "\n")
@@ -935,6 +939,8 @@ def t_bundle_preserves_non_gating_findings_beside_the_required_gate(tmp: Path) -
             "line": "2",
             "writer": "dev-time",
             "purpose": R.RP.NO_PURPOSE,
+            "base": "introduced",
+            "base_repro": "-",
             "repro": "edit the local fixture before running the helper",
             "fix": "add a local-only diagnostic",
         },
