@@ -169,9 +169,10 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
     this PR achieve its stated Purpose, without breaking anything reachable by an actor named in its
     Threat model? Non-goals BIND, the run defaults among them. A pass with no usable intent earns no verdicts at all. Every finding is a record
     (`emit-finding.py`) that must ANCHOR — a `## Purpose` line quoted verbatim, or the writer who can
-    actually supply the bad input; a finding that anchors to neither is NON-GATING (a follow-up, never
-    a `NOT SATISFIED`, never a fix). The rule is an if-and-only-if: `NOT SATISFIED` exactly when at
-    least one GATING finding stands.
+    actually supply the bad input — and must say whether the PR's BASE already does the same thing.
+    A finding that anchors to neither, or whose mechanism the base already has, is NON-GATING (a
+    follow-up, never a `NOT SATISFIED`, never a fix); `review-pass.py`'s `gating()` owns that rule.
+    The verdict is an if-and-only-if: `NOT SATISFIED` exactly when at least one GATING finding stands.
 16. Review verdict returned -> `ledger.py verdict`: the ONLY way to record it — NEVER hand-set
     `reviews_ok`. It bumps `review_rounds` (monotone, never reset — the loop's only memory across
     fresh-context heartbeats) and `ns_streak` atomically, and at a cap holds the PR `repairing` and

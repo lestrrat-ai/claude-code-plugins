@@ -192,6 +192,7 @@ class Tables:
         def finding(**over: Value) -> str:
             return _rec({"type": R.FINDING, "file": "scripts/ci-status.py", "line": "421",
                          "writer": "network", "purpose": PURPOSE_GREEN,
+                         "base": R.INTRODUCED, "base_repro": R.NO_BASE_REPRO,
                          "repro": "a rollup whose headRefOid moved while the REST page still read green",
                          "fix": "refuse a snapshot whose head moved under the fetch"}, over)
 
@@ -578,6 +579,11 @@ class Tables:
                 PLAN, WORKED, [F(writer="attacker")], INTENT, NS, UNUSABLE, "CLOSED enum",
                 "`writer` outside the enum. It is not a new kind of actor — it is a field nobody filled in, "
                 "and the gating rule reads it"),
+            "finding-bad-base": (
+                PLAN, WORKED, [F(base="maybe")], INTENT, NS, UNUSABLE, "CLOSED enum of two",
+                "`base` outside the enum, reached the ONLY way it can be: a HAND-WRITTEN findings line. "
+                "Argparse's `choices` refuses it at the CLI door, so without this fixture the read-side "
+                "rule is unpinned — and the read side is what `verify` re-derives the verdict from"),
             "finding-invented-purpose": (
                 PLAN, WORKED, [F(purpose="never emit a false green anywhere")], INTENT, NS, UNUSABLE,
                 "NOT a line of this PR's",
@@ -1007,9 +1013,13 @@ class Tables:
                                        "a tier that is not exactly TRIVIAL owes the defaults — a typo can only ask for MORE accounting, never less"),
         }
 
+        # The new `--base`/`--base-repro` pair is APPENDED, never spliced into the middle: the cases below
+        # slice this list by INDEX (`FIND_OK[:6]`, `FIND_OK[8:]`), so a flag inserted anywhere but the end
+        # would silently re-aim every one of those slices at a different flag.
         FIND_OK = ["--path", "scripts/ci-status.py", "--line", "769", "--writer", "network",
                    "--purpose", PURPOSE_GREEN, "--repro", "a paginated reply with no `statuses` member",
-                   "--fix", "refuse a missing row array"]
+                   "--fix", "refuse a missing row array",
+                   "--base", R.INTRODUCED, "--base-repro", R.NO_BASE_REPRO]
         self.FINDING_CLI_CASES = [
             (FINDINGS_FILE, FIND_OK, 0, '"writer":"network"',
              "the call the reviewer prompt makes — a finding that DEFENDS a stated purpose and names a real actor"),
@@ -1022,9 +1032,37 @@ class Tables:
              "of losing the pass to it fifteen minutes later"),
             (FINDINGS_FILE, ["--path", "scripts/followups.py", "--line", "1815", "--writer", "dev-time",
                              "--purpose", "-", "--repro", "I mutated EXCEPTIONS in memory and self_test() still exited 0",
-                             "--fix", "bound the exception table"],
+                             "--fix", "bound the exception table",
+                             "--base", R.INTRODUCED, "--base-repro", R.NO_BASE_REPRO],
              0, "NON-GATING",
              "**THE SPIRAL FINDING, RECORDED AND DISCHARGED.** It is WRITTEN — this is not censorship, and the reviewer is not told to stop looking. The tool tells it, on stdout, that the finding anchors to nothing and MUST NOT produce NOT SATISFIED. It becomes a follow-up"),
+            (FINDINGS_FILE, [*FIND_OK[:6], "--purpose", "-", *FIND_OK[8:12],
+                             "--base", R.PRE_EXISTING,
+                             "--base-repro", "checked out origin/main at 9efa22b and ran the same probe: "
+                                             "it printed `all 1 fixtures hold` and exited 0 there too"],
+             0, "NON-GATING",
+             "**THE PR-207 FINDING, RECORDED AND DISCHARGED.** True, reproduced, `writer=repo-content` — "
+             "and the BASE does exactly the same thing. Under the old two-question rule this GATED, and a "
+             "refactor was made to pay for main's history: the fix added detection no version of that code "
+             "had ever had, and four of eleven rounds went on its consequences. It anchors to no purpose "
+             "line, so the base answer decides, and the finding becomes a follow-up"),
+            (FINDINGS_FILE, [*FIND_OK[:6], "--purpose", "-", *FIND_OK[8:12],
+                             "--base", R.PRE_EXISTING, "--base-repro", "-"],
+             1, "may not go unmeasured",
+             "**AND IT MAY NOT BE A BARE ASSERTION.** The same discharge, claimed with nothing behind it. "
+             "The one claim that discharges a finding is the one claim that must carry its run — the "
+             "failure this whole rule comes from was a claim nobody measured"),
+            (FINDINGS_FILE, [*FIND_OK[:12], "--base", R.INTRODUCED,
+                             "--base-repro", "I ran it on main and it failed there"],
+             1, "contradicts itself",
+             "the mirror: a base reproduction filed beside a claim that the base does NOT do this. The "
+             "reader cannot tell which half to believe, so neither is accepted"),
+            (FINDINGS_FILE, [*FIND_OK[:12], "--base", R.PRE_EXISTING,
+                             "--base-repro", "main prints the same thing at 9efa22b"],
+             0, "# GATING:",
+             "**THE BOUND ON THE WHOLE RULE.** Pre-existing, measured, and it STILL gates — because this "
+             "one anchors to a `## Purpose` line. A PR that promised to fix the thing cannot plead that "
+             "the thing was already broken"),
             (FINDINGS_FILE, [*FIND_OK[:6], "--purpose", "stop false greens", *FIND_OK[8:]], 1,
              "NOT a line of this PR's",
              "a PARAPHRASED purpose. The anchor is checked against the intent VERBATIM, so a reviewer cannot invent the justification for its own block — and it is checked HERE, while the reviewer can still fix the call"),
@@ -1106,6 +1144,7 @@ class Tables:
             "--amendments-ruled": ["0"], "--verdict": [R.SATISFIED],
             "--path": ["scripts/ci-status.py"], "--line": ["769"], "--writer": ["network"],
             "--purpose": [PURPOSE_GREEN], "--repro": ["a reply with no rows"], "--fix": ["refuse it"],
+            "--base": [R.INTRODUCED], "--base-repro": [R.NO_BASE_REPRO],
             # status's view flags. `--run .` drives the minimal invocation the door check executes; the
             # OPTIONAL flags are never in a minimal call, so their values are only here to satisfy the
             # "every advertised flag has a supplied value" reconciliation. `--verify`/`--history` are

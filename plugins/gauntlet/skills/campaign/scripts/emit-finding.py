@@ -32,8 +32,23 @@ Every finding must ANCHOR to that. It names EITHER:
     be triggered by editing the source of the code under review — **if your reproduction begins "I mutated …
     in memory", the writer is `dev-time`**, and the tool will tell you so.
 
-**A finding that anchors to NEITHER is NON-GATING.** It is still RECORDED — as a follow-up, for a human —
-and the tool says so on stdout when you write it. What it may not do is produce NOT SATISFIED, and no fix is
+And one more question, which is not an anchor but decides the same thing:
+
+  * `--base` — **DOES THE PR'S BASE ALREADY DO THIS?** Two values, no third. `pre-existing` means you
+    CHECKED OUT THE BASE, RAN IT THERE, and it behaved the same — so this PR did not break it, and the
+    finding does not gate. `--base-repro` then carries that run: the base you used, the command, what it
+    printed. `introduced` means it does not reproduce there, or the code is new here and there is no base
+    version to run; `--base-repro` is the literal `-`. **There is no "maybe": if you did not run it on the
+    base, the answer is `introduced`** — and a finding that anchors to a `## Purpose` line gates whatever
+    the base does, because a PR that promised to fix a thing cannot plead that the thing was already broken.
+
+This one exists because a refactor was once made to pay for its base's history. Its first round reported
+three true, reproduced false greens in a newly shared self-test loop — and every one of them happened
+identically on the base, which the new loop had copied faithfully. All three gated, the fix added detection
+no version of that code had ever had, and the PR died at the round cap. Being true was never the question.
+
+**A finding that anchors to NEITHER is NON-GATING.** So is one whose mechanism the base already has. It is
+still RECORDED — as a follow-up, for a human — and the tool says so on stdout when you write it. What it may not do is produce NOT SATISFIED, and no fix is
 dispatched for it. That is not a loophole and it is not a licence to lower your bar: it is the difference
 between the findings that were worth 21 rounds and the ones that were not, and it is the only reason this
 gate can ever finish.
@@ -51,7 +66,8 @@ reachable from a real GitHub response, found in code an earlier fix round had it
 `writer=network`, it defends the PR's whole purpose, and it GATES. Look for its kind.
 
 A non-zero exit means the finding was REJECTED, not that the tool is broken: read the message, fix the call,
-re-run. The flags are `--file --path --line --writer --purpose --repro --fix`, and they are defined in ONE
+re-run. The flags are `--file --path --line --writer --purpose --base --base-repro --repro --fix`, and they
+are defined in ONE
 place — `review-pass.py`'s `add_finding_args`, which this door and the owner's `finding-add` subcommand both
 call, so `--help` here can never advertise a command the tool refuses.
 """

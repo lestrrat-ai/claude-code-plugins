@@ -135,14 +135,18 @@
 - **A finding must ANCHOR, or it does NOT gate.** Every finding is a record written by
   `scripts/emit-finding.py`, naming **either** the `## Purpose` line it defends (quoted **verbatim** — the
   tool checks it against the intent) **or** the `writer` who can actually supply the bad input (a CLOSED
-  enum: `end-user`, `network`, `ci`, `repo-content`, `driver-only`, `hand-edit`, `dev-time`). **A finding
-  whose `purpose` is `-` AND whose `writer` is `driver-only`/`hand-edit`/`dev-time` is NON-GATING**: it
+  enum: `end-user`, `network`, `ci`, `repo-content`, `driver-only`, `hand-edit`, `dev-time`). It must also
+  say whether the PR's **BASE** already does the same thing (`base`, and the run that proves a
+  `pre-existing` answer in `base_repro`). **A finding that anchors to no `## Purpose` line and either is
+  `pre-existing` on the base or has a `driver-only`/`hand-edit`/`dev-time` writer is NON-GATING**: it
   **MUST NOT** produce `NOT SATISFIED`, **no fix is dispatched for it**, and it is recorded as a follow-up.
-  Enforced in `review-pass.py`. **Not every true statement about the code is a reason to block it**, and a
-  guard being incomplete is not, by itself, a defect: name the writer who gets through it.
+  `review-pass.py`'s `gating()` enforces it and OWNS the exact rule. **Not every true statement about the
+  code is a reason to block it**, a guard being incomplete is not by itself a defect (name the writer who
+  gets through it), and a defect the base already has is not this PR's bill.
 - **The gating rule and the audit ask DIFFERENT questions, and both must pass.** The gating rule asks
-  **does it MATTER?** (can anyone outside the machine trigger it; does it defend a stated purpose) — a NO
-  makes it a follow-up. The audit below asks **is it TRUE?** (can the mechanism occur) — a NO makes it
+  **does it MATTER, and is it THIS PR'S?** (does it defend a stated purpose; does the base already do it;
+  can anyone outside the machine trigger it) — a NO makes it a follow-up. The audit below asks **is it
+  TRUE?** (can the mechanism occur) — a NO makes it
   REFUTED. A finding must **matter** before anyone spends an audit on whether it is **true**. When the
   reachability test says *"provenance is the wrong question"*, it is answering **is it TRUE?**, and it is
   right; it is **not** saying "never ask who can write the input" — that is the other question, and the

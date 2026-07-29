@@ -91,7 +91,7 @@ They are orthogonal, and **both** must pass before a fix is dispatched:
 
 | | asks | asked of | a NO means |
 |---|---|---|---|
-| **The gating rule** (`writer` / `purpose`) | **does it MATTER?** — can anyone outside the machine trigger it, or does it defend something the PR promised? | **every** finding, by the reviewer, enforced by `review-pass.py` | it is a **follow-up**. It is not refuted, not wrong, and not fixed |
+| **The gating rule** (`purpose` / `base` / `writer`) | **does it MATTER, and is it THIS PR'S?** — does it defend something the PR promised; does the PR's BASE already do it; can anyone outside the machine trigger it? | **every** finding, by the reviewer, enforced by `review-pass.py` | it is a **follow-up**. It is not refuted, not wrong, and not fixed |
 | **The audit** (CONFIRMED / ADJUSTED / REFUTED) | **is it TRUE?** — can the mechanism it describes actually occur? | the **gating** findings that survive, by the dispatched context-isolated audit subagent | it is **REFUTED** — the mechanism is impossible, and the refutation is written into the tree |
 
 So when the reachability test below says *"provenance is the wrong question"*, it is answering **is it
@@ -130,7 +130,7 @@ fixed.**
 
 **Why the reviewer keeps raising them: `## Non-goals` binding is ADVISORY.** The reviewer is handed the
 intent's `## Non-goals` verbatim and told a finding that attacks one cannot gate — but `review-pass.py`'s
-`gating()` only checks `writer`/`purpose`; it never reads `## Non-goals`. So the binding takes effect ONLY
+`gating()` reads only the finding's own `purpose`/`base`/`writer`; it never reads `## Non-goals`. So the binding takes effect ONLY
 if the stochastic reviewer honors it, and a reviewer that anchors an immaterial finding to a real
 `## Purpose` line produces a gating finding the declared Non-goal never stopped. The audit is the first
 INDEPENDENT context to read that finding against the intent, so it is where the mismatch is first visible.
