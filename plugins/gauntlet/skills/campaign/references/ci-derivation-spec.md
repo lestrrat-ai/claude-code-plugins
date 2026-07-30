@@ -564,7 +564,87 @@ nothing was looking. Three checks close that, and **none is optional**:
   fetch the MOVED-HEAD rule can never fire on; that copy had drifted, and this is what caught it). It sweeps
   **every copy of the `ci-status.py derive` command across every skill doc** for a named required set
   (`--ledger`, which resolves the row's `effective_required_set`, or an explicit `--required-set`), too — the
-  set that decides a merge must not be droppable by a recap.
+  set that decides a merge must not be droppable by a recap. And it holds every **marked command block**
+  across every skill doc to the command `ci-status.py` GENERATES for that block's id. See "Marked command
+  blocks", below.
+
+##### Marked command blocks — the command is GENERATED, and the block must equal it
+
+**A fenced block whose info string is `sh gauntlet-cmd=<id>` holds one canonical `ci-status.py`
+invocation.** `<id>` keys `DOCUMENTED_COMMANDS` in `ci-status.py`, which — with one value slot per flag —
+GENERATES the canonical string for that command. `doc-check` enforces four things and they are not
+separable:
+
+- **the block is delimited exactly as the renderer delimits it.** It opens at column 0 with that info
+  string and ends at the first line, ALSO AT COLUMN 0, of three or more backticks carrying nothing but
+  optional spaces or tabs. Any other line is BODY and is part of the string compared — including a line
+  that merely starts with backticks, which CommonMark treats as body too because a closing fence may carry
+  no info string — so no text rendering inside the block can escape the equality. An opener with no
+  conforming close before end of file is REPORTED, never dropped: the renderer swallows the rest of the
+  document into such a block, and an opener the checker cannot pair also credits no id, so its command is
+  reported as having no block at all. That report does not depend on the document ending in a newline: a
+  last line carrying none renders as a line like any other, and the scan reads the file the renderer reads
+  — it appends the missing newline once, at the read, so no pattern in it carries an end-of-file case. The
+  close is not permitted the three spaces of indent CommonMark would allow it; an indented close reads as
+  an opener that never closes, and being told to unindent is the intended fail-closed outcome;
+- **no layer rewrites the bytes before the scan reads them**, so the read turns universal-newline
+  translation OFF and a **carriage return in a document holding a marked block is REPORTED**, naming the CR
+  and asking for LF line endings. The shell reads no line break in a `\r`: a wrap written
+  space-backslash-CR-LF escapes the CR into a literal argument and runs the next physical line as a
+  separate command, so a translating read would delete the very byte that makes the documented invocation
+  fail — and pass a body indistinguishable from its all-LF twin. Such a file is skipped whole, crediting no
+  id, so its commands are reported as having no block just as an unterminated opener's are. A CRLF file
+  holding no marked block is not this check's business and is passed over. This matters off Linux: Git for
+  Windows defaults to `core.autocrlf=true`, so an ordinary Windows checkout or plugin-cache clone
+  materializes every `.md` as CRLF;
+- **a marked block's body EQUALS the generated command**, and an id the table does not define is a failure
+  rather than an exemption. Equality is over the joined logical line with runs of separators collapsed, so
+  a copy may wrap across as many lines as it likes — **breaking only at a space followed by a backslash at
+  end of line**, the one wrap spelling the shell reads the same way. A backslash with no space before it
+  makes the shell join the two lines into a single invalid token, and whitespace after the backslash makes
+  the shell END the command and run the next line separately; both are a different string here, so both
+  are reported rather than passed as canonical. A trailing backslash on the body's LAST line is a wrap onto
+  a line the block does not have, and is reported for the same reason. **Every boundary in this comparison
+  is the SHELL's: a separator is an ASCII space, tab or line feed, and nothing else** — the check asks where
+  a line breaks, where a word ends and whether a line is blank exactly as `bash` answers them, never as
+  Python's Unicode-aware defaults do. So a non-breaking space between two words, a line break written with
+  U+2028, U+2029 or U+0085, and a line holding only a non-breaking space are all ordinary text in the string
+  compared, and a body carrying one differs from the generated command — which is the accurate answer,
+  because the shell does not read any of them as a separator either. The carriage return is the one
+  character of that class this check answers at the READ rather than at the comparison, for the reason the
+  bullet above gives. The check never locates the command
+  inside the body,
+  subtracts text it dislikes, or reasons about shell: a second line, a comment line, a trailing comment, a
+  chain, a pipe, a redirection, a substitution, a wrapper that echoes the command or writes it to a file,
+  and a tail of arguments the subcommand does not take are all simply a different string, refused with no
+  list of them written anywhere. The refusal prints the exact string to paste. Put a comment outside the
+  fence, give a second command its own block, and state an optional flag in the prose beside the block
+  rather than as a `[…]` suffix inside it;
+- every id the table defines has **at least one** block somewhere, so deleting the last copy of a command
+  goes red instead of quietly narrowing the check to nothing.
+
+**This check ADDS to the three copy checks beside it and replaces none of them.** Those still sweep the
+skill's prose for copies of `derive`, `liveness` and `required-set` and still fail on finding none. What
+they cannot tell a reader is that a documented command is the command the tool ACCEPTS: they ask whether a
+copy carries the one flag each was taught to look for. Equality against a generated string answers that
+question, and `DOCUMENTED_COMMANDS` is reconciled against the real argparse parser in both directions, so a
+flag the tool REQUIRES cannot go missing from the string the docs are held to. A parser cannot state every
+requirement, though: `action.required` speaks per flag, and `derive` needs one of `--ledger` or
+`--required-set` while accepting BOTH, which no argparse construct expresses. Requirements over a SET of
+flags are therefore declared once in `REQUIRED_ONE_OF`, the CLI guard and the reconciliation both read that
+declaration, and a row that stopped recording one is reported instead of generating a command that exits 2.
+
+**Why EQUALITY, rather than a token check.** Four rounds of review asked whether a documented line carried
+the tokens its id requires, and each died to a different piece of text the block's author put beside the
+command. Judging a line by searching it has no fixed point, because the author picks what else is on that
+line and can always add more. Equality has exactly one: the generated string. Do not add a case to it —
+a new carrier means the comparison stopped being equality.
+
+**Illustrating a violation:** use a HYPOTHETICAL script name, never a real one. A doc that quotes a live
+line as its bad example turns itself into a false-positive generator — the next sweeper searches for the
+example, lands on the correct site, and condemns it. Write `example-tool.py derive --pr 1`, not a real
+invocation: this repo ships no script called `example-tool.py`, so the illustration names nothing a reader
+can act on by mistake.
 
 **TWO refusals are CROSS-SOURCE and no single-fetch filter can state them** — the rollup's `StatusContext`
 **coverage**, and the **AGREEMENT** of the two sources about a check they both report. One `jq` filter sees
