@@ -46,9 +46,10 @@ string. Searching for the old value, spelling, command, or number is one input t
 sweep itself.
 
 An introduced rule is the sharpest form of the same trap: there is no old string, and searching for the
-new rule's wording or name matches only sites already fixed. The following strings are invented and exist
-nowhere in this repository: if you add “a re-queue must reset the freshness counters”, another site saying
-“it only bumps `retry_epoch`” becomes stale without sharing the rule's words.
+new rule's wording or name matches only sites already fixed. The following strings are invented: this repo
+has no such rule, and the phrases exist only as this illustration. If you add “a re-queue must reset the
+freshness counters”, another site saying “it only bumps `retry_epoch`” becomes stale without sharing the
+rule's words.
 
 Text search remains necessary. Search for the behavior identifiers the rule governs: fields, states,
 commands, and named caps. In the invented example, searching for `retry_epoch` finds the stale site, but
