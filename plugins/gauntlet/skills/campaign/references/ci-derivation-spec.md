@@ -579,9 +579,11 @@ canonical string for that command. `doc-check` enforces four things and they are
   no info string — so no text rendering inside the block can escape the equality. An opener with no
   conforming close before end of file is REPORTED, never dropped: the renderer swallows the rest of the
   document into such a block, and an opener the checker cannot pair also credits no id, so its command is
-  reported as having no block at all. The close is not permitted the three spaces of indent CommonMark
-  would allow it; an indented close reads as an opener that never closes, and being told to unindent is
-  the intended fail-closed outcome;
+  reported as having no block at all. That report does not depend on the document ending in a newline: a
+  last line carrying none renders as a line like any other, and the scan reads the file the renderer reads
+  — it appends the missing newline once, at the read, so no pattern in it carries an end-of-file case. The
+  close is not permitted the three spaces of indent CommonMark would allow it; an indented close reads as
+  an opener that never closes, and being told to unindent is the intended fail-closed outcome;
 - **a marked block's body EQUALS the generated command**, and an id the table does not define is a failure
   rather than an exemption. Equality is over the joined logical line with runs of whitespace collapsed, so
   a copy may wrap across as many backslash-continued lines as it likes and nothing else differs. The check

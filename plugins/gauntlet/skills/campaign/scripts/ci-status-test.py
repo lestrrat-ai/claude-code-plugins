@@ -1582,6 +1582,24 @@ def marked_command_cases(ci, tmp: Path) -> list[str]:
     expect("unterminated-only-block", others + f"```sh gauntlet-cmd=derive\n{incomplete}\n", 2, 0,
            "a block the checker never read cannot credit its id, so zero-blocks fires beside the broken fence")
 
+    # A LAST LINE WITH NO NEWLINE IS STILL A LINE, and the report of an unterminated opener does not depend
+    # on the file having a final one. A doc whose last byte is not `\n` renders exactly like one whose last
+    # byte is, so the scan must read it the same way — `_scanned` appends the newline once at the read
+    # rather than teaching each pattern an end-of-file case, which is how the opener came to differ from the
+    # close. These four are the whole family: the opener that renders an (empty) block, the same opener when
+    # it is its id's ONLY block, the same with the trailing spaces the info string drops, and a complete
+    # block whose CLOSE is itself the unterminated last line.
+    expect("eof-opener-no-newline", every() + "```sh gauntlet-cmd=nonesuch", 1, 0,
+           "an opener on a last line with no newline is reported, never silently dropped")
+    expect("eof-opener-no-newline-only-block", others + "```sh gauntlet-cmd=derive", 2, 0,
+           "and it credits nothing, so zero-blocks fires beside it")
+    expect("eof-opener-no-newline-trailing-space", every() + "```sh gauntlet-cmd=nonesuch  ", 1, 0,
+           "trailing info-string spaces do not save it either")
+    # THE POSITIVE CONTROL on the normalization: this one passes with or without `_scanned`, and its job is
+    # to prove the appended newline does not swallow a close that was already conforming.
+    expect("eof-close-no-newline", every()[:-1], 0, 0,
+           "a conforming close IS the last line with no newline, and still closes its block")
+
     # WHAT MAY SIT OUTSIDE A BLOCK. Prose NAMING a command is fine; a runnable copy is not.
     expect("prose-mention", every() + "\nWritten by `ci-status.py liveness`.\n", 0, 0,
            "prose naming the command without a flag is a mention, not a copy")

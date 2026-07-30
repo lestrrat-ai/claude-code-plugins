@@ -2367,6 +2367,24 @@ class MarkedBlock(NamedTuple):
     end: int
 
 
+def _scanned(md: Path) -> str:
+    """A doc's text as the fence scan reads it: a FINAL NEWLINE is appended when the file ends without one.
+
+    THIS EXISTS SO NO PATTERN IN THE SCAN NEEDS AN END-OF-FILE CASE. A last line with no newline renders
+    exactly like one with it, so the scan has to read it the same way — and the reliable way to make every
+    pattern do that is to leave no pattern the question. Teaching each pattern to accept `\\n` OR end-of-
+    input instead spreads one fact about files across every regex, and the pattern that forgets it drops
+    its match in SILENCE: a marked opener on such a last line matched nothing, so it was neither compared,
+    nor reported unclosed, nor reported for an unknown id, while the renderer showed a block. Normalize
+    once here and every pattern added later is correct without being told.
+
+    Carriage returns need no handling of their own either: `read_text` translates CRLF to `\\n` on the way
+    in, so `\\r` never reaches a pattern.
+    """
+    text = md.read_text(encoding="utf-8")
+    return text if not text or text.endswith("\n") else text + "\n"
+
+
 def marked_blocks(text: str) -> list[MarkedBlock]:
     """Every marked opener in `text`, paired with the body its conforming close delimits.
 
@@ -2478,7 +2496,7 @@ def check_marked_commands(root: Path | None = None) -> tuple[list[str], list[str
     problems, found = [], []
     seen: set[str] = set()
     for md in sorted((root or HERE.parent).rglob("*.md")):
-        text = md.read_text(encoding="utf-8")
+        text = _scanned(md)
         for block in marked_blocks(text):
             cmd_id, body = block.cmd_id, block.body
             where = f"{md.name}:{block.line}"
@@ -2550,7 +2568,7 @@ def check_unmarked_commands(root: Path | None = None) -> list[str]:
     """
     problems: list[str] = []
     for md in sorted((root or HERE.parent).rglob("*.md")):
-        raw = md.read_text(encoding="utf-8")
+        raw = _scanned(md)
         kept: list[str] = []
         pos = 0
         for block in marked_blocks(raw):
