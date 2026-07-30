@@ -21,7 +21,7 @@ campaign commit to the PR head resets the gate", below, through `scripts/ledger.
 
 **The heartbeat derives `ci` by RUNNING `scripts/ci-status.py`, and by nothing else:**
 
-```sh
+```sh gauntlet-cmd=derive
 python3 <skill>/scripts/ci-status.py derive --pr <N> --head-sha <the LEDGER's head_sha> --rundir <rundir> \
   --ledger <rundir>/state.jsonl
 ```
@@ -169,9 +169,14 @@ cannot see.**
 
 Run the required-set command before CI derivation on every heartbeat:
 
-```sh
-python3 <skill>/scripts/ci-status.py required-set --ledger <rundir>/state.jsonl [--repo <owner>/<repo>]
+```sh gauntlet-cmd=required-set
+python3 <skill>/scripts/ci-status.py required-set --ledger <rundir>/state.jsonl
 ```
+
+It takes one optional flag the block does not spell — **`--repo`, `<owner>/<repo>`** — and it defaults to
+the current checkout's repository. Pass it when the run is not standing in that repository. (A marked
+block's body must EQUAL the command generated for its id, so an optional-flag suffix belongs in this
+sentence rather than inside the fence; see "Marked command blocks" in `ci-derivation-spec.md`.)
 
 The command GROUPS the nonterminal rows by `effective_base` and reads each **distinct** base once: it
 resolves each base through `ledger.py`, URL-encodes it as an API path segment, scopes every GitHub call to
@@ -361,7 +366,7 @@ hold a **RUNNING** row, and that PR is still moving.
 
 ##### THE BOOKKEEPING IS A COMMAND — RUN IT. NEVER APPLY THE DERIVATION BLOCK BY HAND.
 
-```sh
+```sh gauntlet-cmd=liveness
 python3 <skill>/scripts/ci-status.py liveness --ledger <rundir>/state.jsonl --pr <N> \
   --derive-json <the JSON derive printed, saved to a file — or - for stdin> \
   --machine-action <due | in-flight | none>

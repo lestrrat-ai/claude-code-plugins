@@ -118,8 +118,10 @@ The enums, the CLASSIFY buckets and the DECIDE order are stated in `ci-derivatio
 one a reader believed. `doc-check` PARSES the doc's own enum block, its two CLASSIFY tables and its DECIDE
 bullet order, and asserts they agree with the sets `ci-snapshot.py` actually classifies with — and that the
 classification is TOTAL over the enums the doc declares. It also checks every copy of a `gh` command the doc
-prints against the argv this code really issues, every copy of the derive command for `--required-set`, and
-the moved-head owner block's retained-artifact/trust/result contract. Drift is a RED BUILD, not a discovery.
+prints against the argv this code really issues, every copy of the derive command for `--required-set`, every
+MARKED `ci-status.py` block against the command this file GENERATES for its `gauntlet-cmd` id — which the
+block's body must EQUAL — and the moved-head owner block's retained-artifact/trust/result contract. Drift is
+a RED BUILD, not a discovery.
 
 **A check that finds nothing MUST NOT PASS.** If the doc cannot be found, or a block cannot be parsed, or
 zero rules are extracted, `doc-check` FAILS. An extractor that silently matches nothing and reports success
@@ -1896,7 +1898,10 @@ class DocError(Exception):
 
 
 def fenced_blocks(text: str) -> list[str]:
-    return re.findall(r"^```[a-z]*\n(.*?)^```", text, re.MULTILINE | re.DOTALL)
+    # The info string is `[^\n]*`, not `[a-z]*`: a marked command fence carries `sh gauntlet-cmd=<id>`, and
+    # an opener this regex cannot match is not skipped — it is swallowed, so the NEXT fence's closing ```
+    # terminates the wrong block and the owner blocks below stop being findable.
+    return re.findall(r"^```[^\n]*\n(.*?)^```", text, re.MULTILINE | re.DOTALL)
 
 
 def parse_enums(blocks: list[str]) -> dict[str, set[str]]:
@@ -2346,6 +2351,311 @@ def check_required_set_copies(root: Path | None = None) -> tuple[list[str], list
     return problems, copies
 
 
+# A MARKED COMMAND BLOCK IS A FENCE WHOSE INFO STRING NAMES THE COMMAND IT HOLDS: ```sh gauntlet-cmd=<id>`.
+# `<id>` keys this table, and the block's body must BE the string `canonical_command()` GENERATES for that
+# id. This check ADDS a guarantee the three `check_*_copies` above cannot give, and replaces none of them:
+# they ask whether a copy carries the one flag each was taught to look for, which cannot tell a reader that
+# the documented command is the command the TOOL ACCEPTS. Equality against a generated string can.
+#
+# **THE REFERENCE IS GENERATED, SO NO CODE PATH JUDGES A MARKED BLOCK BY SEARCHING IT.** Four rounds of
+# review asked instead whether a documented line CARRIED the tokens its id requires, and every one of them
+# died to text the block's author put beside the command: a second line, a comment line, a trailing comment,
+# a `;`, `|`, `&&` or `$(…)` chain, an `echo` in front, a heredoc around it, a mislabelled tail of extra
+# arguments, and a `>` redirection whose operand spelled the very tokens the invocation lacked. Searching a
+# line has no fixed point, because the author picks what else is on that line and can always add more.
+# EQUALITY has one: exactly one string passes, this file writes it, and every carrier above fails BY
+# CONSTRUCTION instead of by enumeration. Nothing here parses shell, subtracts text, or locates a window —
+# the only latitude is `_collapsed_lines`, which joins continuations and collapses whitespace runs so a
+# wrapped copy is the same command as an unwrapped one.
+#
+# A ROW IS NOT HAND-MAINTAINED AGAINST THE CLI. Every fixture that drives this table is blind to a row that
+# is INCOMPLETE, because the omission deletes the case that would have caught it — so the suite reconciles
+# each row against `build_parser()` instead (`ci-status-test.documented_commands_agree_with_argparse`). A
+# flag the parser REQUIRES and a row omits is a copy this checker calls complete and the tool then refuses.
+# argparse's remaining job is exactly that reconciliation: the row, never the parser, decides which
+# OPTIONAL flags a documented copy spells, because `derive` alone would otherwise gain `--repo`,
+# `--ledger` and `--required-set` all at once.
+#
+# WHY THE MARKER, RATHER THAN A CLEVERER SCAN. Checking a command by hunting it in free Markdown means
+# deciding, for arbitrary prose, whether a stretch of text is a command or a sentence about one. That
+# question has no small answer: three PRs grew hand-written CommonMark and shell-word subsets trying to
+# reach it, two of them died at their repair cap, and 793 lines of that parsing were deleted unmerged. The
+# marker moves the decision from the checker to the author, where it costs one info string and cannot be
+# wrong. What this scheme recognizes is fences, and nothing else about Markdown.
+COMMAND_NAME = "ci-status.py"
+# THE FIXED PREFIX EVERY GENERATED COMMAND OPENS WITH. `<skill>` is this doc set's own convention for the
+# directory holding the active SKILL.md, so the string this file writes is the one a reader really types.
+COMMAND_PREFIX = f"python3 <skill>/scripts/{COMMAND_NAME}"
+# ONE VALUE SLOT PER FLAG — a property of the FLAG, not of the subcommand that takes it, so `--ledger`
+# reads the same in every command that names it. These are the doc set's `<…>` placeholder convention:
+# prose telling the reader what to supply, never shell, and nothing here reads them as shell because
+# nothing here reads shell at all. A flag `DOCUMENTED_COMMANDS` names with no slot here is a table
+# `canonical_command()` cannot render, which the argparse reconciliation refuses.
+FLAG_VALUES: dict[str, str] = {
+    "--pr": "<N>",
+    "--head-sha": "<the LEDGER's head_sha>",
+    "--rundir": "<rundir>",
+    "--ledger": "<rundir>/state.jsonl",
+    "--required-set": "<declared:… | none | unknown>",
+    "--derive-json": "<the JSON derive printed, saved to a file — or - for stdin>",
+    "--machine-action": "<due | in-flight | none>",
+}
+# The FLAGS each documented command spells, in the order the canonical copy spells them. The subcommand is
+# the id itself, and the script name comes from `COMMAND_PREFIX`, so neither can be stated here and drift.
+# A nested tuple is an alternation: its FIRST member is the form the canonical copy uses, and the rest
+# record the other spellings the tool accepts, which the argparse reconciliation still holds to the parser.
+DOCUMENTED_COMMANDS: dict[str, tuple[str | tuple[str, ...], ...]] = {
+    # The required set is what makes `green` mean *the required set passed*, and it is the ROW's
+    # `effective_required_set`: name it with `--ledger` (resolve the row's set — the production form) or
+    # with an explicit `--required-set`. A copy carrying NEITHER reconstructs an invocation the tool refuses.
+    "derive": ("--pr", "--head-sha", "--rundir", ("--ledger", "--required-set")),
+    # `--machine-action` is the one judgment the command asks of its caller. A reader who drops the question
+    # and invents a default strikes the very PR a fix is about to move. `--derive-json` is the evidence the
+    # bookkeeping is ABOUT: argparse requires it, so a copy without it is an invocation the tool refuses.
+    "liveness": ("--ledger", "--pr", "--derive-json", "--machine-action"),
+    # The command persists the value it read to the run ledger, which `--ledger` names. Its optional
+    # `--repo` belongs in the PROSE beside the block and never in it: a bracketed `[--repo <owner>/<repo>]`
+    # is literal text in a body that must BE the command, so the block would no longer equal it.
+    "required-set": ("--ledger",),
+}
+
+
+def canonical_flags(cmd_id: str) -> list[str]:
+    """The flags the canonical copy of `cmd_id` SPELLS, in the row's order.
+
+    THE ONE PLACE THE ALTERNATION RULE LIVES: a nested tuple contributes its FIRST member and nothing else.
+    Both the generator and the argparse reconciliation read it from here, so neither can restate it wrong.
+    """
+    return [want[0] if isinstance(want, tuple) else want for want in DOCUMENTED_COMMANDS[cmd_id]]
+
+
+def canonical_command(cmd_id: str) -> str:
+    """THE one string a block marked `gauntlet-cmd=<cmd_id>` must hold, generated rather than transcribed.
+
+    This is the whole reference the checker owns. The subcommand IS the id — every id is held to a real
+    subparser by `documented_commands_agree_with_argparse`, so the two cannot drift — and each flag the row
+    spells is emitted with its `FLAG_VALUES` slot. A `KeyError` here is a row naming a flag with no slot,
+    which the same reconciliation reports before it can ever be reached from a doc.
+    """
+    parts = [COMMAND_PREFIX, cmd_id]
+    for flag in canonical_flags(cmd_id):
+        parts += [flag, FLAG_VALUES[flag]]
+    return " ".join(parts)
+
+
+# The id is ANY nonempty run of characters, never a spelling this checker approves of: an id the regex
+# REJECTS is not a marked block at all, so the unknown-id branch below cannot fire and the author is told to
+# move a block that is already inside a marked fence. Capture whatever was written and let
+# DOCUMENTED_COMMANDS be the only thing that decides which ids exist. Trailing spaces are dropped because
+# CommonMark drops them from the info string, so a fence this checker rejected over one would be a fence the
+# renderer accepted.
+MARKED_OPENER = re.compile(r"^```sh gauntlet-cmd=(?P<id>[^\n]+?)[ \t]*\n", re.M)
+# THE CLOSE IS HALF THE DEFINITION OF THE BODY, SO IT IS AS STRICT AS THE EQUALITY IS. A closing fence is a
+# line AT COLUMN 0 of three or more backticks carrying nothing but optional spaces or tabs. Any other line
+# is BODY — including one that merely STARTS with backticks, which CommonMark also treats as body because
+# it forbids an info string on a closing fence. A close that ended at `^```` would hand the author the
+# carrier the equality exists to refuse: write ```` ``` anything ```` and every line after it renders inside
+# the block while none of it reaches the comparison. This is stated as ONE POSITIVE RULE and must stay one:
+# a list of the malformed spellings that are NOT a close is the enumeration that has no fixed point.
+#
+# COLUMN 0 IS DELIBERATE AND FAIL-CLOSED. CommonMark permits up to three spaces of indent on a closing
+# fence; this checker does not, so an indented close reads as an opener that never closes and is REPORTED.
+# The scheme recognizes a marked fence written at column 0 and its conforming close, and nothing else about
+# fence placement — being told to unindent is the correct outcome, never a false pass.
+MARKED_CLOSE = re.compile(r"^```+[ \t]*$", re.M)
+
+
+class MarkedBlock(NamedTuple):
+    """One marked opener and the span it delimits. `body` is None when the opener NEVER closes."""
+
+    cmd_id: str
+    body: str | None
+    line: int
+    start: int
+    end: int
+
+
+def _scanned(md: Path) -> str:
+    """A doc's text as the fence scan reads it: a FINAL NEWLINE is appended when the file ends without one.
+
+    THIS EXISTS SO NO PATTERN IN THE SCAN NEEDS AN END-OF-FILE CASE. A last line with no newline renders
+    exactly like one with it, so the scan has to read it the same way — and the reliable way to make every
+    pattern do that is to leave no pattern the question. Teaching each pattern to accept `\\n` OR end-of-
+    input instead spreads one fact about files across every regex, and the pattern that forgets it drops
+    its match in SILENCE: a marked opener on such a last line matched nothing, so it was neither compared,
+    nor reported unclosed, nor reported for an unknown id, while the renderer showed a block. Normalize
+    once here and every pattern added later is correct without being told.
+
+    Carriage returns need no handling of their own either: `read_text` translates CRLF to `\\n` on the way
+    in, so `\\r` never reaches a pattern.
+    """
+    text = md.read_text(encoding="utf-8")
+    return text if not text or text.endswith("\n") else text + "\n"
+
+
+def marked_blocks(text: str) -> list[MarkedBlock]:
+    """Every marked opener in `text`, paired with the body its conforming close delimits.
+
+    **THE OPENER IS THE ANCHOR, NOT THE PAIR.** One regex spanning opener-to-close cannot report what it
+    cannot match: an opener with no conforming close simply fails to match, and the whole block DISAPPEARS
+    from every caller — no comparison, no unknown-id complaint, and (when another block already covers the
+    id) no zero-blocks complaint either. To the renderer that same opener swallows the REST OF THE FILE into
+    a marked block, so a document could hold an incomplete invocation, inside a block that claims to be
+    checked, and pass. Scanning FROM the opener makes the missing close a reportable fact instead of a
+    silent non-match.
+
+    An unterminated opener is always the LAST block: everything after it is inside its body, so there is
+    nothing further to find.
+    """
+    blocks: list[MarkedBlock] = []
+    pos = 0
+    while (opener := MARKED_OPENER.search(text, pos)) is not None:
+        line = text.count("\n", 0, opener.start()) + 1
+        close = MARKED_CLOSE.search(text, opener.end())
+        if close is None:
+            blocks.append(MarkedBlock(opener.group("id"), None, line, opener.start(), len(text)))
+            break
+        blocks.append(MarkedBlock(opener.group("id"), text[opener.end():close.start()], line,
+                                  opener.start(), close.end()))
+        pos = close.end()
+    return blocks
+
+
+# A CONTINUATION IS EXACTLY WHITESPACE, BACKSLASH, NEWLINE — the one spelling that agrees with the shell,
+# written ONCE here so its two readers below cannot drift apart. A looser rule disagrees with the shell in
+# BOTH directions at once, and each direction passes a marked block the shell will not run as documented:
+#
+#   - `--ledger\` immediately before the newline, with NO space in front of the backslash. The shell removes
+#     both characters and receives the single invalid token `--ledger<rundir>/state.jsonl`, while a rule
+#     that substitutes a SPACE for the pair reads the body as the canonical command and passes it.
+#   - whitespace AFTER the backslash. There the backslash escapes the space, so the shell ENDS the command
+#     and runs the next physical line as a SEPARATE command, while a rule that strips the trailing run
+#     before looking for the backslash joins two shell commands into one logical line.
+#
+# Both were confirmed against `bash`. Neither needs shell parsing to refuse, because a wrap has exactly one
+# spelling and this demands it; `shlex` could not read these bodies anyway, since the `<…>` placeholders are
+# prose and `<the LEDGER's head_sha>` alone makes `shlex.split` raise. Every live marked block already wraps
+# this way, so the strict rule reports nothing that was passing for a good reason.
+_CONTINUATION = r"[ \t]\\"
+CONTINUED_LINE = re.compile(_CONTINUATION + r"\Z")
+CONTINUATION_JOIN = re.compile(_CONTINUATION + r"\n")
+
+
+def _logical_lines(body: str) -> list[str]:
+    """A fenced body's non-blank LOGICAL lines: backslash continuations joined into the line they continue.
+
+    **A command is not a physical line.** A shell invocation WRAPS with a trailing `\\`, and all three live
+    copies do: counting physical lines would read one correct command as two or three, and condemn every
+    block in the doc set for holding more than one.
+
+    A line continues only when it ends `CONTINUED_LINE`'s way. Anything else ENDS its logical line, which
+    is what keeps two commands the shell would run separately from being joined into one here.
+    """
+    lines: list[str] = []
+    pending: list[str] = []
+    for line in body.splitlines():
+        pending.append(line)
+        if CONTINUED_LINE.search(line):
+            continue
+        joined = "\n".join(pending)
+        pending = []
+        if joined.strip():
+            lines.append(joined)
+    if pending and "\n".join(pending).strip():
+        lines.append("\n".join(pending))
+    return lines
+
+
+def _collapsed_lines(body: str) -> list[str]:
+    """A fenced body as the command lines it holds: continuations JOINED, whitespace runs COLLAPSED.
+
+    This is the ONLY latitude the equality comparison allows, and it is not a relaxation of it. All three
+    live copies WRAP, so a byte-exact test would condemn every one of them over the `\\` and the indent
+    that continues the line — turning correct blocks red, which is how a check gets deleted by the next
+    person in a hurry.
+
+    Two lines never collapse into one. `_logical_lines` decides what a line is, and the caller compares the
+    LIST against a one-element list, so a body split across two commands cannot pass by concatenating into
+    the canonical string. A backslash that is NOT a continuation by `CONTINUATION_JOIN`'s rule survives into
+    the collapsed line, so a body the shell would read as one invalid token is a different string here too.
+    """
+    return [" ".join(CONTINUATION_JOIN.sub(" ", line).split()) for line in _logical_lines(body)]
+
+
+def check_marked_commands(root: Path | None = None) -> tuple[list[str], list[str]]:
+    """Every marked block's body EQUALS the command `canonical_command()` generates for its `gauntlet-cmd`
+    id.
+
+    Four ways to fail: the body is not that command; an id is claimed that `DOCUMENTED_COMMANDS` does not
+    define; a marked opener never closes; or an id the table defines has NO block anywhere. That last one is
+    what stops the marker from quietly narrowing the check — delete the only marked copy of a command and
+    the build goes red.
+
+    AN UNTERMINATED OPENER CREDITS NOTHING. It is reported and its id is NOT marked as seen, so when the
+    broken block is the only one claiming that id the zero-blocks failure fires beside it: a block whose
+    body the checker never read must never be the reason a command counts as documented.
+
+    **THE COMPARISON IS EQUALITY, AND THAT IS THE WHOLE DESIGN.** It does not locate the command inside the
+    body, subtract text it dislikes, or reason about shell. A body holding anything besides the generated
+    command is a DIFFERENT STRING, so every carrier that killed an earlier round — a second line, a comment
+    line, a trailing comment, a `;`/`|`/`&&`/`$(…)` chain, an `echo` in front, a heredoc around it, a tail
+    of arguments the subcommand does not take, a `>` redirection whose operand spells the missing flags —
+    fails by construction, with none of them enumerated anywhere. A block cannot lie about which command it
+    is either, because the id picks the string it is compared against: mark a `liveness` invocation
+    `gauntlet-cmd=derive` and it is held to `derive`'s command.
+
+    There is one repair for every failure, and the message states it: replace the body with the string.
+    """
+    problems, found = [], []
+    seen: set[str] = set()
+    for md in sorted((root or HERE.parent).rglob("*.md")):
+        text = _scanned(md)
+        for block in marked_blocks(text):
+            cmd_id, body = block.cmd_id, block.body
+            where = f"{md.name}:{block.line}"
+            if body is None:
+                problems.append(
+                    f"{where} opens `gauntlet-cmd={cmd_id}` and NEVER CLOSES — no line of three or more "
+                    f"backticks, at column 0 and carrying nothing but optional spaces or tabs, follows it. "
+                    f"The renderer swallows the rest of the file into this block, so text that never "
+                    f"reaches the comparison renders inside a block that claims to be checked. Close the "
+                    f"fence with a line reading exactly ```` ``` ````, and remember that a closing fence "
+                    f"may not be indented or carry an info string."
+                )
+                continue
+            if cmd_id not in DOCUMENTED_COMMANDS:
+                problems.append(
+                    f"{where} is marked `gauntlet-cmd={cmd_id}`, which DOCUMENTED_COMMANDS does not define "
+                    f"— known ids are {', '.join(sorted(DOCUMENTED_COMMANDS))}. An unknown id names no "
+                    f"command to compare against, so the marker would buy the block an exemption "
+                    f"instead of a check."
+                )
+                continue
+            seen.add(cmd_id)
+            found.append(f"{where} ({cmd_id})")
+            want = canonical_command(cmd_id)
+            got = _collapsed_lines(body)
+            if got != [want]:
+                shown = " / ".join(got) or "(nothing)"
+                problems.append(
+                    f"{where} is marked `gauntlet-cmd={cmd_id}` but its body is NOT that command. A marked "
+                    f"block must BE the one canonical invocation and nothing else — no comment, no second "
+                    f"line, no chain, pipe, redirection or substitution, no wrapper that echoes the "
+                    f"command or writes it to a file instead of running it, and no argument the command "
+                    f"does not take. Replace the body with exactly:  {want}  (wrap it over as many lines "
+                    f"as you like, breaking only at a space followed by a backslash at end of line; joined "
+                    f"continuations and collapsed whitespace runs are the only differences allowed). This "
+                    f"body reads:  {shown}"
+                )
+    for cmd_id in sorted(set(DOCUMENTED_COMMANDS) - seen):
+        problems.append(
+            f"ZERO blocks marked `gauntlet-cmd={cmd_id}` were found in the skill's docs — the command is "
+            f"prescribed, so finding none means this check has lost its subject, and a check that finds "
+            f"nothing must never pass"
+        )
+    return problems, found
+
+
 def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) -> int:
     """Assert the DOC, the CODE, and this tool's DECIDE_ORDER all say the same thing.
 
@@ -2362,7 +2672,9 @@ def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) 
          paragraphs. A value in a hole matches NO branch: not green, not red, not pending — the PR can never
          resolve, and it WEDGES. This is the check that catches that, and nothing else in the repo does.
       5. the doc's `gh` INVOCATIONS, in every copy of them, against the argv the code really issues — plus
-         every copy of the derive and required-set commands and their required ledger inputs.
+         every copy of the derive and required-set commands and their required ledger inputs, and every
+         MARKED `ci-status.py` block against the command `canonical_command()` generates for its id, which
+         its body must EQUAL and whose opener must have a conforming CLOSE.
       6. the moved-head owner block says the old-head artifact is retained for audit but contributes no
          current-PR verdict, fingerprint, or buckets; and the liveness owner block says that final
          untrusted result increments the refetch counter while trusted current-head evidence resets it.
@@ -2520,6 +2832,13 @@ def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) 
     if not liveness_problems:
         held.append(f"{'the liveness invocations':32} {len(liveness_copies)} runnable copies, every one "
                     f"answering --machine-action")
+    # AND EVERY MARKED COMMAND BLOCK, ACROSS EVERY SKILL DOC — the class, not the instance. The three checks
+    # above ask whether a copy carries one flag; this one asks whether the block IS the command.
+    marked_problems, marked_found = check_marked_commands()
+    problems += marked_problems
+    if not marked_problems:
+        held.append(f"{'the marked command blocks':32} {len(marked_found)} blocks across the skill's docs, "
+                    f"every one CLOSED and its body EQUAL to the command generated for its gauntlet-cmd id")
     for line in held:
         print(f"ok       {line}")
     for problem in problems:
@@ -2533,7 +2852,8 @@ def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) 
         return 1
     print(f"{len(checks) + len(held)} checks: {spec_doc.name}, {driver_doc.name}, ci-snapshot.py and "
           f"ci-status.py agree — enums, CLASSIFY buckets, TOTALITY, the DECIDE order, the caps, the "
-          f"FINGERPRINT lines, moved-head and liveness contracts, and every copy of every command.")
+          f"FINGERPRINT lines, moved-head and liveness contracts, every copy of every command, and every "
+          f"marked command block.")
     return 0
 
 
@@ -2604,7 +2924,17 @@ def resolve_repo(fetch: Fetch) -> str:
                            "nameWithOwner", str))
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """The CLI surface, built apart from `main` so a test can ASK it what each subcommand requires.
+
+    `DOCUMENTED_COMMANDS` says which flags a documented copy SPELLS and this parser says what the tool will
+    actually accept. Two statements of one contract drift, and the drift is silent in the direction that
+    matters: a flag only the parser insists on is a copy `doc-check` calls complete and the tool then
+    REFUSES. The fixture suite reconciles the two, which it can only do if the parser exists without
+    running. The reconciliation runs one way only — the row decides which OPTIONAL flags the documented
+    copy carries, because generating every optional the parser defines would make `derive`'s canonical copy
+    spell `--repo`, `--ledger` and `--required-set` at once.
+    """
     p = argparse.ArgumentParser(description=next(iter((__doc__ or "").splitlines()), ""))
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -2652,14 +2982,17 @@ def main() -> int:
 
     c = sub.add_parser("doc-check", help="assert the CI docs (ci-derivation-spec.md + stage-2-ci.md) "
                                          "agree with the code that runs — enums, CLASSIFY, DECIDE order, "
-                                         "caps, fingerprint, moved-head artifact contract, and every copy "
-                                         "of every command")
+                                         "caps, fingerprint, moved-head artifact contract, every copy of "
+                                         "every command, and every marked command block")
     c.add_argument("--spec-doc", type=Path, default=SPEC_DOC)
     c.add_argument("--driver-doc", type=Path, default=DRIVER_DOC)
 
     sub.add_parser("self-test", help="run every fixture (ci-status-test.py), then doc-check")
+    return p
 
-    args = p.parse_args()
+
+def main() -> int:
+    args = build_parser().parse_args()
 
     if args.cmd == "doc-check":
         return doc_check(args.spec_doc, args.driver_doc)

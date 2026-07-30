@@ -1444,6 +1444,258 @@ def documentation_option_form_cases(ci, tmp: Path) -> list[str]:
     return problems
 
 
+def _docs(tmp: Path, slug: str, body: str) -> Path:
+    root = tmp / f"marked-commands-{slug}"
+    root.mkdir()
+    (root / "commands.md").write_text(body, encoding="utf-8")
+    return root
+
+
+def _marked(cmd_id: str, command: str) -> str:
+    return f"```sh gauntlet-cmd={cmd_id}\n{command}\n```\n"
+
+
+def documented_commands_agree_with_argparse(ci) -> list[str]:
+    """`DOCUMENTED_COMMANDS` and the real CLI parser state ONE contract — reconcile them, never restate them.
+
+    Every fixture below drives the table, so not one of them can notice that the table is INCOMPLETE: drop a
+    flag from a row and the case that would have caught it disappears with it. That gap is the defect this
+    pins. The `liveness` row once omitted `--derive-json` — a flag argparse REQUIRES — so `doc-check`
+    reported the documented invocation as complete, and running it exited 2.
+
+    ARGPARSE'S ROLE IS SMALL AND ONE-DIRECTIONAL, and the direction is the point. It answers two questions:
+    does every flag the canonical copy SPELLS exist, and is every flag the parser REQUIRES spelled? It does
+    NOT get to say which OPTIONAL flags a documented copy carries — generating every optional the parser
+    defines would make `derive`'s canonical copy spell `--repo`, `--ledger` and `--required-set` at once,
+    an invocation the tool itself rejects. The ROW decides that, and only the parser knows the other two
+    answers, so ask it rather than writing them down twice.
+
+    A flag reachable only as an alternation's LATER member is checked for existence but never emitted, so
+    it is held to the parser without being put in front of a reader.
+    """
+    problems: list[str] = []
+    # `_actions` because argparse exposes no public accessor for its actions or its subparser map — the
+    # same read `followups-test.py` makes of its own parser.
+    subcommands = next((action.choices for action in ci.build_parser()._actions  # noqa: SLF001
+                        if isinstance(getattr(action, "choices", None), dict)), None)
+    if not subcommands:
+        return ["[documented commands] build_parser() exposed no subcommands — the reconciliation below "
+                "would then pass by asking nothing, which is this suite's founding defect"]
+
+    # A SLOT NO ROW NAMES IS A DEAD CONSTANT, and a row naming a flag with no slot is a table the generator
+    # cannot render (`KeyError`, from a doc-check that should have reported it). Reconcile the two sets.
+    named = {alt for wanted in ci.DOCUMENTED_COMMANDS.values() for want in wanted
+             for alt in (want if isinstance(want, tuple) else (want,))}
+    if unslotted := sorted(named - set(ci.FLAG_VALUES)):
+        problems.append(f"[documented commands] DOCUMENTED_COMMANDS names {unslotted}, which FLAG_VALUES "
+                        f"gives no value slot — canonical_command() cannot render that row")
+    if unused := sorted(set(ci.FLAG_VALUES) - named):
+        problems.append(f"[documented commands] FLAG_VALUES holds a slot for {unused}, which no row names "
+                        f"— a value nobody can read is a constant that rots unnoticed")
+
+    for cmd_id, wanted in ci.DOCUMENTED_COMMANDS.items():
+        parser = subcommands.get(cmd_id)
+        if parser is None:
+            problems.append(f"[documented commands {cmd_id}] DOCUMENTED_COMMANDS names an id that is not a "
+                            f"subcommand of ci-status.py — known: {sorted(subcommands)}. The id IS the "
+                            f"subcommand canonical_command() emits, so the generated copy would not run")
+            continue
+        documented = {alt for want in wanted for alt in (want if isinstance(want, tuple) else (want,))}
+        spelled = set(ci.canonical_flags(cmd_id))
+        defined = {opt for action in parser._actions for opt in action.option_strings}
+        required = {action.option_strings[0] for action in parser._actions
+                    if action.required and action.option_strings}
+        if missing := sorted(required - spelled):
+            problems.append(
+                f"[documented commands {cmd_id}] argparse REQUIRES {missing}, which the canonical copy does "
+                f"not spell — doc-check would call that copy correct and the tool would refuse to run it"
+            )
+        if unknown := sorted(flag for flag in documented if flag.startswith("--") and flag not in defined):
+            problems.append(
+                f"[documented commands {cmd_id}] DOCUMENTED_COMMANDS names {unknown}, which the "
+                f"{cmd_id} parser does not define — the doc would make every copy carry a rejected flag"
+            )
+    return problems
+
+
+def marked_command_cases(ci, tmp: Path) -> list[str]:
+    """Pin the marker contract: a marked block's body IS the command generated for its id, and nothing else.
+
+    THE MECHANISM IS ONE COMPARISON, SO IT IS PINNED ONCE AND THE CARRIERS ARE A TABLE. Four earlier rounds
+    asked whether a block's command CARRIED the tokens its id requires, and each died to a different piece
+    of text the author put beside it. Under equality none of those is a separate mechanism: every one of
+    them is simply a body that differs from the generated string, so they are listed as data rather than
+    written out as twenty near-identical cases. The table is kept in full anyway — it is the record of what
+    this check has already been broken by, and a future relaxation has to walk past every row of it.
+
+    WHERE THE BLOCK ENDS IS PART OF THE COMPARISON, so the fence group is pinned beside the carriers. The
+    body compared has to be the body the RENDERER shows: a delimiter looser than the rendered block lets
+    text sit inside a checked block without ever reaching the equality, which is the same escape the
+    carriers buy by other means.
+
+    HOW A WRAP IS JOINED IS PART OF IT TOO. The one latitude the comparison allows is a line continuation,
+    and a continuation the SHELL does not recognize is a body that passes here and fails there — so both
+    disagreeing spellings are pinned as carriers of their own.
+    """
+    problems: list[str] = []
+    # THE FIXTURES ARE GENERATED FROM THE TABLE, exactly as the docs are held to be. A hand-written copy
+    # here would be a fourth statement of the command, free to drift from the three the tool already
+    # reconciles. That the generated string is the one the LIVE docs hold is `doc-check`'s job, run by this
+    # same self-test over the real doc tree — so these cases are not comparing the generator to itself.
+    canon = {cmd_id: ci.canonical_command(cmd_id) for cmd_id in ci.DOCUMENTED_COMMANDS}
+    derive, liveness = canon["derive"], canon["liveness"]
+
+    def every(**override: str) -> str:
+        """Every id gets a block, so the has-at-least-one-block rule never fires for an unrelated reason."""
+        return "\n".join(_marked(i, override[i] if i in override else c) for i, c in canon.items())
+
+    def expect(slug: str, body: str, want_marked: int, why: str) -> None:
+        root = _docs(tmp, slug, body)
+        marked, _blocks = ci.check_marked_commands(root)
+        if len(marked) != want_marked:
+            problems.append(
+                f"[marked commands {slug}] {why}: expected {want_marked} marked-block problem(s); "
+                f"got marked={marked!r}"
+            )
+
+    # THE MECHANISM: the generated command passes, and the ONLY latitude is whitespace.
+    expect("all-present", every(), 0,
+           "a marked block per id, each body EQUAL to that id's generated command, is clean")
+
+    # A CONTINUED COMMAND IS ONE COMMAND. The live derive and liveness copies wrap, and a byte-exact
+    # comparison would condemn all three blocks over the `\` and the indent that continues the line —
+    # turning correct blocks red, which is how a check gets deleted by the next person in a hurry.
+    wrapped = {i: c.replace(" --ledger ", " \\\n    --ledger ") for i, c in canon.items()}
+    expect("continuation", every(**wrapped), 0,
+           "a backslash continuation joins into the same one command")
+    spaced = {i: "  " + c.replace(" --ledger ", "   --ledger  ") for i, c in canon.items()}
+    expect("whitespace-runs", every(**spaced), 0,
+           "runs of whitespace collapse, so indentation and alignment are not a difference")
+
+    # EVERY CARRIER THAT EVER BROKE THIS CHECK, AS DATA. Each row is a `gauntlet-cmd=derive` block whose
+    # body is not derive's generated command, so each must be reported — and none of them is named
+    # anywhere in `ci-status.py`, which is the property this table exists to demonstrate: the carriers are
+    # refused by construction, not by enumeration. Adding the block to a clean set means the ONE expected
+    # problem is that block, never a missing-id complaint.
+    carriers: tuple[tuple[str, str, str], ...] = (
+        ("other-script", derive.replace("/ci-status.py ", "/not-ci-status.py "),
+         "a different script — this repo ships none called `not-ci-status.py` — is not this command"),
+        ("prefixed-subcommand", derive.replace(" derive ", " rederive "),
+         "a subcommand that merely ENDS in the required one is a different command"),
+        ("comment-line", "# the derive step takes --head-sha <sha> --rundir <dir>\n" + liveness,
+         "a whole-line comment cannot supply what the invocation beside it lacks"),
+        ("second-line", liveness + "\ngrep derive --head-sha --rundir notes.txt",
+         "a second command line cannot supply it either"),
+        # THE COLLAPSE MUST NOT MERGE LINES, and this is the case that says so: the two lines CONCATENATE
+        # to the canonical string, so a comparison over the whole body joined would call them correct. A
+        # reader running this block runs an incomplete `derive` and then a `--rundir` that is no command.
+        ("split-lines", derive.replace(" --rundir ", "\n--rundir "),
+         "two lines that CONCATENATE to the command are still not one command"),
+        # THE TWO CONTINUATION SPELLINGS THE SHELL READS DIFFERENTLY FROM ANY `rstrip`-AND-SUBSTITUTE RULE,
+        # both confirmed against bash. A rule that replaced backslash-newline with a SPACE passed the first
+        # while the shell built the single invalid token `--ledger<rundir>/state.jsonl`; a rule that
+        # `rstrip`ped before looking for the backslash passed the second while the shell ended the command
+        # at the escaped space and ran the next line as a command of its own.
+        ("continuation-no-space", derive.replace(" --ledger ", " --ledger\\\n"),
+         "a backslash with NO space before it is not a wrap — the shell joins it into one invalid token"),
+        ("continuation-trailing-space", derive.replace(" --ledger ", " \\   \n--ledger "),
+         "whitespace AFTER the backslash is not a wrap either — the shell ends the command there"),
+        ("trailing-comment", liveness + "   # derive --head-sha abc --rundir run",
+         "nor a trailing comment on the command's own line"),
+        ("chained", liveness + " ; echo derive --head-sha abc --rundir run", "nor a `;` chain"),
+        ("piped", liveness + " | grep derive --head-sha --rundir", "nor a pipe"),
+        ("and-chained", liveness + " && echo derive --head-sha abc --rundir run", "nor an `&&` chain"),
+        ("substitution", liveness + " --note $(echo derive --head-sha abc --rundir run)",
+         "nor a `$(…)` substitution"),
+        ("redirection", liveness + " > /tmp/derive --head-sha abc --rundir run",
+         "nor a `>` redirection, whose OPERAND once supplied both the id and the flags it was missing"),
+        ("mislabelled-tail", liveness + " derive --head-sha abc --rundir run",
+         "nor a tail of arguments the subcommand does not take, which argparse exits 2 on"),
+        ("echo-wrapper", "echo " + derive,
+         "a block that ECHOES the command does not run it, whatever the line spells"),
+        ("heredoc", "cat > run-derive.sh <<'EOF'\n" + derive + "\nEOF",
+         "a block that WRITES the command to a file does not run it either"),
+        ("mislabelled", liveness,
+         "a liveness invocation marked gauntlet-cmd=derive is held to DERIVE's command"),
+        ("omits-flag", derive.replace(" --rundir <rundir>", ""),
+         "a flag the tool requires, dropped, is a different string"),
+        ("extra-flag", derive + " --repo <owner>/<repo>",
+         "and so is an extra one, even a real optional the parser accepts"),
+        ("bracketed-optional", derive + " [--repo <owner>/<repo>]",
+         "and so is a bracketed-optional suffix, which is literal text in a body that must BE the command"),
+        ("equals-form", derive.replace(" --ledger ", " --ledger="),
+         "argparse takes --name=value, but the doc shows ONE spelling and the block must be it"),
+        ("placeholder-edited", derive.replace("<rundir>", "<the run dir>"),
+         "a re-worded placeholder is a second spelling of a value slot the table owns"),
+    )
+    for slug, body, why in carriers:
+        expect(f"carrier-{slug}", every() + _marked("derive", body), 1, why)
+
+    # THE REFUSAL STATES THE ONE REPAIR — the exact string to paste. A message that only says what is wrong
+    # gets the block edited until it passes; this one leaves nothing to decide.
+    report, _blocks = ci.check_marked_commands(_docs(tmp, "message", every() + _marked("derive", liveness)))
+    if not any(derive in problem for problem in report):
+        problems.append(f"[marked commands message] a refused block must be told the exact command to hold; "
+                        f"got {report!r}")
+
+    # AN UNKNOWN ID IS REPORTED WHATEVER ITS SPELLING. The id pattern must not decide which ids exist: an id
+    # the pattern REJECTS is not a marked block at all, so this branch never fires and the author is instead
+    # told to move a block that already sits inside a marked fence.
+    for n, spelling in enumerate(("nonesuch", "nonesuch2", "NONESUCH", "none_such", "9")):
+        expect(f"unknown-id-{n}", every() + _marked(spelling, derive), 1,
+               f"the undefined id `{spelling}` is a failure, never an exemption")
+    expect("trailing-space", every().replace("=derive\n", "=derive  \n"), 0,
+           "CommonMark drops trailing info-string spaces, so a marked block stays marked despite them")
+
+    # A CHECK THAT FINDS NOTHING MUST NEVER PASS.
+    expect("no-blocks", "nothing here\n", len(ci.DOCUMENTED_COMMANDS),
+           "every id with zero blocks is reported")
+
+    # WHERE THE BLOCK ENDS IS PART OF THE COMPARISON, because the body is whatever the RENDERER puts inside
+    # the fence. A close ending at the first line merely STARTING with backticks would hand the author the
+    # one carrier equality cannot refuse: text after such a line renders inside the block and never reaches
+    # the comparison, and an opener with no close at all vanishes from the checker entirely while the
+    # renderer swallows the rest of the file into it. Both shapes are the SAME defect — a delimiter looser
+    # than the rendered block — so both are pinned here, against the one positive rule that fixes them.
+    hidden = _marked("derive", derive).replace("\n```\n", "\n``` x\nand this line renders inside it\n```\n")
+    expect("close-trailing-info", every() + hidden, 1,
+           "a line with anything after the backticks is BODY, so the text it hides is part of the comparison")
+    expect("close-trailing-spaces", every().replace("\n```\n", "\n```   \n"), 0,
+           "spaces and tabs after the backticks are all a conforming close may carry, and it still closes")
+    expect("indented-close", every() + f"```sh gauntlet-cmd=derive\n{derive}\n  ```\n", 1,
+           "an indented close is not a close, so the opener reads as unterminated and is REPORTED")
+    expect("unterminated-opener", every() + f"```sh gauntlet-cmd=derive\n{derive}\n", 1,
+           "an opener with no close is reported rather than dropped")
+    # THE SHARP ONE: an unterminated block holding an INCOMPLETE invocation. Before the opener-anchored scan
+    # the marked check was silent on it — a documented command that does not run, inside a block claiming to
+    # be checked, reported by nothing at all.
+    incomplete = f"{ci.COMMAND_PREFIX} derive"
+    expect("unterminated-no-long-option", every() + f"```sh gauntlet-cmd=derive\n{incomplete}\n", 1,
+           "the broken fence is reported on the fence rule alone, with no help from what the body holds")
+    others = "\n".join(_marked(i, c) for i, c in canon.items() if i != "derive")
+    expect("unterminated-only-block", others + f"```sh gauntlet-cmd=derive\n{incomplete}\n", 2,
+           "a block the checker never read cannot credit its id, so zero-blocks fires beside the broken fence")
+
+    # A LAST LINE WITH NO NEWLINE IS STILL A LINE, and the report of an unterminated opener does not depend
+    # on the file having a final one. A doc whose last byte is not `\n` renders exactly like one whose last
+    # byte is, so the scan must read it the same way — `_scanned` appends the newline once at the read
+    # rather than teaching each pattern an end-of-file case, which is how the opener came to differ from the
+    # close. These four are the whole family: the opener that renders an (empty) block, the same opener when
+    # it is its id's ONLY block, the same with the trailing spaces the info string drops, and a complete
+    # block whose CLOSE is itself the unterminated last line.
+    expect("eof-opener-no-newline", every() + "```sh gauntlet-cmd=nonesuch", 1,
+           "an opener on a last line with no newline is reported, never silently dropped")
+    expect("eof-opener-no-newline-only-block", others + "```sh gauntlet-cmd=derive", 2,
+           "and it credits nothing, so zero-blocks fires beside it")
+    expect("eof-opener-no-newline-trailing-space", every() + "```sh gauntlet-cmd=nonesuch  ", 1,
+           "trailing info-string spaces do not save it either")
+    # THE POSITIVE CONTROL on the normalization: this one passes with or without `_scanned`, and its job is
+    # to prove the appended newline does not swallow a close that was already conforming.
+    expect("eof-close-no-newline", every()[:-1], 0,
+           "a conforming close IS the last line with no newline, and still closes its block")
+    return problems
+
+
 def run(ci, tmp: Path) -> int:
     """Every fixture, then the seams, then `doc-check`. Non-zero on any failure.
 
@@ -1526,6 +1778,23 @@ def run(ci, tmp: Path) -> int:
     if not documentation_option_problems:
         print(f"ok       {'documentation option forms':32} -> standalone and --name=value forms are "
               f"recognized without accepting option-name lookalikes")
+
+    documented_command_problems = documented_commands_agree_with_argparse(ci)
+    for problem in documented_command_problems:
+        failures += 1
+        print(f"FAIL     {problem}")
+    if not documented_command_problems:
+        print(f"ok       {'DOCUMENTED_COMMANDS vs argparse':32} -> every flag a subcommand REQUIRES is a "
+              f"token its documented copies must carry, and no row names a flag the parser rejects")
+
+    marked_command_problems = marked_command_cases(ci, tmp)
+    for problem in marked_command_problems:
+        failures += 1
+        print(f"FAIL     {problem}")
+    if not marked_command_problems:
+        print(f"ok       {'marked command blocks':32} -> a block's body EQUALS the command generated for its "
+              f"id, every carrier that ever broke this check is refused, only a conforming close ends the "
+              f"body, an opener without one is reported, and an id with no block fails")
 
     print()
     print(f"--- doc-check: {ci.SPEC_DOC.name} + {ci.DRIVER_DOC.name} vs the code that runs ---")
