@@ -2557,6 +2557,18 @@ def check_unmarked_commands(root: Path | None = None) -> list[str]:
     opener that never closes buys no exemption either: `check_marked_commands` reports the broken fence,
     and nothing behind it is blanked, so a runnable copy sitting inside it is still reported here.
 
+    THAT CLAIM RESTS ON A FLOOR UNDER THE WINDOW, so "to the next backtick" is not the whole rule. The
+    next backtick has no answer when NO backtick follows the occurrence ANYWHERE IN THE REST OF THE FILE —
+    not merely in its sentence, which is the trigger a reader most often mistakes it for, and why no doc
+    this repo ships reaches the branch at all. There the window runs to the end of that PARAGRAPH, and to
+    the end of the FILE for the last paragraph, instead of collapsing to nothing. An empty window holds no
+    long option, so it would report nothing, and reporting nothing would EXEMPT the only two shapes that
+    have no later backtick: a copy inside a marked opener that never closes — the claim just above — and a
+    copy in a backtick-free tail. The cost of the floor is disclosed and it runs the other way: prose in
+    such a tail that names the script and then a long option is reported although it only explains the
+    flag. That trade is deliberate, because a false report costs one reworded sentence while the silence
+    would let a forgotten marker read as success.
+
     The occurrence is matched with `PROSE_TOKEN`, which requires a WHOLE FILE NAME on both sides. A bare
     substring scan reports a hypothetical `example-ci-status.py derive --pr 1` as a copy of THIS script,
     and a scan bounded on the left alone reports a hypothetical `ci-status.py.bak derive --pr 1` the same

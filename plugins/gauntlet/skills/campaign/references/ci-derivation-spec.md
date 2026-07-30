@@ -598,8 +598,12 @@ canonical string for that command. `doc-check` enforces four things and they are
 - **no runnable copy sits outside a marked block.** Prose may still NAME a command — `` `ci-status.py
   liveness` `` is a mention, and a reader who runs it verbatim is REFUSED by the tool, which fails closed.
   A `--flag` after the script name and before the closing backtick makes it a copy, and a copy belongs in a
-  block. To recap a command in prose, name it and point at its block; do not respell its flags. The script
-  name is matched as a WHOLE FILE NAME on both sides, so neither a longer name ending in it
+  block. That window has a FLOOR: when no backtick follows the name anywhere in the REST OF THE FILE, it
+  runs to the end of that paragraph — to the end of the file for the last one — rather than to nothing, so
+  a copy with no later backtick, whether inside an opener that never closes or in a backtick-free tail, is
+  still reported instead of exempted, at the disclosed cost of reporting prose in such a tail that only
+  explains a flag. To recap a command in prose, name it and point at its block; do not respell its flags.
+  The script name is matched as a WHOLE FILE NAME on both sides, so neither a longer name ending in it
   (`example-ci-status.py`) nor a different file beginning with it (`ci-status.py.bak`) is a copy of this
   one — this repo ships no script by either name — while a name written inside a code span, or after a
   `/`, still is.
