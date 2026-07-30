@@ -462,16 +462,15 @@
 - Apply `reviewer.md`'s external-review retry budget, then take `runtime-adapter.md`'s owned transition.
   The gate is unchanged; report reviewer routing and retry-profile use through
   `bailout-and-final-report.md`, "Final report". See "The reviewer".
-- **RUN `scripts/ci-status.py required-set --ledger <rundir>/state.jsonl` before CI derivation on every
-  heartbeat.** It groups nonterminal rows by `effective_base`, owns both declaration reads per **distinct
-  base**, their strict parse and union, and the atomic per-row ledger write. A settled group is reused; only
-  an `unknown` group is retried. See `stage-2-ci.md`, "WHAT WERE WE EXPECTING TO SEE?".
-- **DERIVE `ci` BY RUNNING `scripts/ci-status.py derive --pr <N> --head-sha <the ledger's> --rundir
-  <rundir> --ledger <rundir>/state.jsonl`, and by NOTHING ELSE.** It fetches, promotes, verifies and
+- **RUN the required-set command before CI derivation on every heartbeat**, exactly as `stage-2-ci.md`,
+  "WHAT WERE WE EXPECTING TO SEE?", spells it. It groups nonterminal rows by `effective_base`, owns both
+  declaration reads per **distinct base**, their strict parse and union, and the atomic per-row ledger
+  write. A settled group is reused; only an `unknown` group is retried.
+- **DERIVE `ci` BY RUNNING the derive command, and by NOTHING ELSE.** It fetches, promotes, verifies and
   decides, and prints the verdict, the `ci` value and the liveness `fingerprint` as JSON (`stage-2-ci.md`,
   "THE DERIVATION IS A COMMAND", which owns the exact invocation — **the required set is NAMED, never
-  defaulted**: `--ledger` resolves the row's `effective_required_set`; the evidence says what
-  showed up, and only the base branch's declared set says what was SUPPOSED to).  **NEVER derive `ci` by
+  defaulted**; the evidence says what showed up, and only the base branch's declared set says what was
+  SUPPOSED to).  **NEVER derive `ci` by
   READING the output of a command and judging it.** That is not a style preference: every rule below was already
   correct when a driver ran `gh pr checks`, saw that no checks were reported, and wrote **`ci = green`** —
   **zero evidence is not green**. A program cannot decide that "no checks" is close enough to "passing".

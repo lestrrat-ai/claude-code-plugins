@@ -21,7 +21,7 @@ campaign commit to the PR head resets the gate", below, through `scripts/ledger.
 
 **The heartbeat derives `ci` by RUNNING `scripts/ci-status.py`, and by nothing else:**
 
-```sh
+```sh gauntlet-cmd=derive
 python3 <skill>/scripts/ci-status.py derive --pr <N> --head-sha <the LEDGER's head_sha> --rundir <rundir> \
   --ledger <rundir>/state.jsonl
 ```
@@ -169,7 +169,7 @@ cannot see.**
 
 Run the required-set command before CI derivation on every heartbeat:
 
-```sh
+```sh gauntlet-cmd=required-set
 python3 <skill>/scripts/ci-status.py required-set --ledger <rundir>/state.jsonl [--repo <owner>/<repo>]
 ```
 
@@ -361,7 +361,7 @@ hold a **RUNNING** row, and that PR is still moving.
 
 ##### THE BOOKKEEPING IS A COMMAND — RUN IT. NEVER APPLY THE DERIVATION BLOCK BY HAND.
 
-```sh
+```sh gauntlet-cmd=liveness
 python3 <skill>/scripts/ci-status.py liveness --ledger <rundir>/state.jsonl --pr <N> \
   --derive-json <the JSON derive printed, saved to a file — or - for stdin> \
   --machine-action <due | in-flight | none>

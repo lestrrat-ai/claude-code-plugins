@@ -561,10 +561,36 @@ nothing was looking. Three checks close that, and **none is optional**:
   union, and the atomic ledger result.
 - **`ci-status.py doc-check` checks every `gh` INVOCATION in this file against the argv the code really
   issues** — *every copy of them*, not just the spec block (a recap that drops `,headRefOid` reconstructs a
-  fetch the MOVED-HEAD rule can never fire on; that copy had drifted, and this is what caught it). It sweeps
-  **every copy of the `ci-status.py derive` command across every skill doc** for a named required set
-  (`--ledger`, which resolves the row's `effective_required_set`, or an explicit `--required-set`), too — the
-  set that decides a merge must not be droppable by a recap.
+  fetch the MOVED-HEAD rule can never fire on; that copy had drifted, and this is what caught it). It holds
+  every **marked command block** across every skill doc to the tokens `DOCUMENTED_COMMANDS` requires of it,
+  too — the set that decides a merge must not be droppable by a recap. See "Marked command blocks", below.
+
+##### Marked command blocks — a runnable command copy is DECLARED, never guessed at
+
+**A runnable `ci-status.py` copy lives in a fenced block whose info string is `sh gauntlet-cmd=<id>`.**
+`<id>` keys `DOCUMENTED_COMMANDS` in `ci-status.py`, which owns what tokens that command must carry.
+`doc-check` enforces three things and they are not separable:
+
+- every marked block carries every token its id requires, and an id the table does not define is a failure
+  rather than an exemption;
+- every id the table defines has **at least one** block somewhere, so deleting the last copy of a command
+  goes red instead of quietly narrowing the check to nothing;
+- **no runnable copy sits outside a marked block.** Prose may still NAME a command — `` `ci-status.py
+  liveness` `` is a mention, and a reader who runs it verbatim is REFUSED by the tool, which fails closed.
+  A `--flag` after the script name and before the closing backtick makes it a copy, and a copy belongs in a
+  block. To recap a command in prose, name it and point at its block; do not respell its flags.
+
+**Why the marker, rather than a cleverer scan.** The check used to hunt runnable copies in free Markdown,
+which meant deciding — for arbitrary prose — whether a stretch of text was a command or a sentence about
+one. Three PRs grew hand-written CommonMark and shell-word-splitting subsets reaching for that answer, two
+died at their repair cap, and 793 lines of it were deleted unmerged. The marker moves the decision from the
+checker to the author, where it costs one info string and cannot be wrong. Forgetting it is LOUD: the
+unmarked copy is reported, not skipped.
+
+**Illustrating a violation:** use an INVENTED script name, never a real one. A doc that quotes a live line
+as its bad example turns itself into a false-positive generator — the next sweeper searches for the
+example, lands on the correct site, and condemns it. Write `example-tool.py derive --pr 1` (invented; it
+exists nowhere in this repo), not a real invocation.
 
 **TWO refusals are CROSS-SOURCE and no single-fetch filter can state them** — the rollup's `StatusContext`
 **coverage**, and the **AGREEMENT** of the two sources about a check they both report. One `jq` filter sees

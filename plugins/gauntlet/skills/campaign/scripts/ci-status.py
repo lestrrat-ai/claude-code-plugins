@@ -1896,7 +1896,10 @@ class DocError(Exception):
 
 
 def fenced_blocks(text: str) -> list[str]:
-    return re.findall(r"^```[a-z]*\n(.*?)^```", text, re.MULTILINE | re.DOTALL)
+    # The info string is `[^\n]*`, not `[a-z]*`: a marked command fence carries `sh gauntlet-cmd=<id>`, and
+    # an opener this regex cannot match is not skipped — it is swallowed, so the NEXT fence's closing ```
+    # terminates the wrong block and the owner blocks below stop being findable.
+    return re.findall(r"^```[^\n]*\n(.*?)^```", text, re.MULTILINE | re.DOTALL)
 
 
 def parse_enums(blocks: list[str]) -> dict[str, set[str]]:
@@ -2244,106 +2247,124 @@ def _has_long_option(command: str, option: str) -> bool:
     return re.search(rf"(?<![\w-]){re.escape(option)}(?=[=\s]|$)", command) is not None
 
 
-def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]:
-    """EVERY COPY OF THE DERIVE COMMAND, IN EVERY SKILL DOC — not just the one in the doc under test.
+# EVERY RUNNABLE COPY OF A `ci-status.py` COMMAND LIVES IN A MARKED BLOCK, AND THE CHECKER NEVER GUESSES
+# WHICH TEXT IS A COMMAND. A marked block opens with the info string ```sh gauntlet-cmd=<id>`; `<id>` keys
+# this table, whose value is every token that copy MUST carry. A nested tuple is an alternation — any one of
+# its members satisfies it. A `--flag` requirement is matched as a long option (argparse's `--name=value`
+# form included); anything else is matched as a plain substring.
+#
+# WHY THE MARKER EXISTS AT ALL. The checker used to hunt runnable copies in free Markdown, which meant
+# deciding, for arbitrary prose, whether a stretch of text was a command or a sentence about one. That
+# question has no small answer: three PRs grew hand-written CommonMark and shell-word subsets trying to
+# reach it, two of them died at their repair cap, and 793 lines of that parsing were deleted unmerged. The
+# marker moves the decision from the checker to the author, where it costs one info string and cannot be
+# wrong. What remains here recognizes fences and backticks, and nothing else about Markdown.
+DOCUMENTED_COMMANDS: dict[str, tuple[str | tuple[str, ...], ...]] = {
+    # The required set is what makes `green` mean *the required set passed*, and it is the ROW's
+    # `effective_required_set`: name it with `--ledger` (resolve the row's set — the production form) or
+    # with an explicit `--required-set`. A copy carrying NEITHER reconstructs an invocation the tool refuses.
+    "derive": ("ci-status.py", "derive", "--pr", "--head-sha", "--rundir", ("--ledger", "--required-set")),
+    # `--machine-action` is the one judgment the command asks of its caller. A reader who drops the question
+    # and invents a default strikes the very PR a fix is about to move.
+    "liveness": ("ci-status.py", "liveness", "--ledger", "--pr", "--machine-action"),
+    # The command must persist the value it read, so the copy names the run ledger it persists to.
+    "required-set": ("ci-status.py", "required-set", "--ledger", "state.jsonl"),
+}
 
-    THE FLAG THAT NAMES THE REQUIRED SET MUST NOT BE DROPPABLE BY A RECAP. The required set is what makes
-    `green` mean *the required set passed*, and it is now the ROW's `effective_required_set`: a copy names it
-    with `--ledger` (resolve the row's set — the production form) OR with an explicit `--required-set`. A copy
-    carrying NEITHER is a reader reconstructing an invocation the tool REFUSES. This repo has already paid for
-    the class TWICE: a fourth copy of a canonical command that had gone stale, and a doc recap that dropped
-    `,headRefOid` from the rollup fetch.
+MARKED_FENCE = re.compile(r"^```sh gauntlet-cmd=(?P<id>[a-z][a-z-]*)\n(?P<body>.*?)^```", re.M | re.S)
+LONG_OPTION = re.compile(r"(?<![\w-])--[a-z][a-z-]+")
+COMMAND_NAME = "ci-status.py"
 
-    A copy is any occurrence that RUNS the command (`ci-status.py derive` carrying `--pr`) — prose that
-    merely NAMES the command is not a copy, and is not checked. **THE UNIT IS THE COMMAND, NOT THE LINE**:
-    an invocation WRAPS (a shell `\\`, or plain prose reflow), and a line-by-line check would report the
-    continuation line as a violation of itself. So each copy is read to the end of its PARAGRAPH.
 
-    FINDING ZERO COPIES IS A FAILURE: the command is prescribed by at least `stage-2-ci.md` and
-    `critical-rules.md`, and a check that cannot find its subject never passes.
+def _requirement_met(body: str, want: str) -> bool:
+    return _has_long_option(body, want) if want.startswith("--") else want in body
+
+
+def _blank(text: str) -> str:
+    """Blank a span to spaces, KEEPING newlines — so every later offset still names its real line."""
+    return re.sub(r"[^\n]", " ", text)
+
+
+def check_marked_commands(root: Path | None = None) -> tuple[list[str], list[str]]:
+    """Every marked command block carries every token its `gauntlet-cmd` id requires.
+
+    Three ways to fail, and the third is the one a marker scheme invites: the block omits a required token;
+    an id is claimed that this table does not define; or an id this table defines has NO block anywhere.
+    That last one is what stops the marker from quietly narrowing the check — delete the only marked copy of
+    a command and the build goes red, exactly as it did when the checker hunted copies for itself.
+
+    A block also cannot lie about which command it is, because the script name and the subcommand are
+    ordinary required tokens: label a `liveness` block `gauntlet-cmd=derive` and it fails on `derive`.
     """
-    problems, copies = [], []
+    problems, found = [], []
+    seen: set[str] = set()
     for md in sorted((root or HERE.parent).rglob("*.md")):
         text = md.read_text(encoding="utf-8")
-        for m in re.finditer(r"ci-status\.py derive", text):
-            end = text.find("\n\n", m.start())
-            command = text[m.start(): end if end > 0 else len(text)]
-            if not _has_long_option(command, "--pr"):
-                continue  # prose that NAMES the command, not a copy of it
-            n = text.count("\n", 0, m.start()) + 1
-            copies.append(f"{md.name}:{n}")
-            if not _has_long_option(command, "--ledger") and not _has_long_option(command, "--required-set"):
+        for match in MARKED_FENCE.finditer(text):
+            cmd_id, body = match.group("id"), match.group("body")
+            line = text.count("\n", 0, match.start()) + 1
+            where = f"{md.name}:{line}"
+            wanted = DOCUMENTED_COMMANDS.get(cmd_id)
+            if wanted is None:
                 problems.append(
-                    f"{md.name}:{n} runs `ci-status.py derive` WITHOUT `--ledger` OR `--required-set` — the "
-                    f"flag that makes `green` mean the REQUIRED SET passed. A reader following this copy "
-                    f"issues a command the tool refuses; a reader who 'fixes' it by dropping the set gets a "
-                    f"verdict about the rows that showed up, which is the registration gap, reopened by a recap."
+                    f"{where} is marked `gauntlet-cmd={cmd_id}`, which DOCUMENTED_COMMANDS does not define "
+                    f"— known ids are {', '.join(sorted(DOCUMENTED_COMMANDS))}. An unknown id is checked "
+                    f"against nothing, so the marker would buy the block an exemption instead of a check."
                 )
-    if not copies:
+                continue
+            seen.add(cmd_id)
+            found.append(f"{where} ({cmd_id})")
+            for want in wanted:
+                alternatives: tuple[str, ...] = want if isinstance(want, tuple) else (want,)
+                if any(_requirement_met(body, alt) for alt in alternatives):
+                    continue
+                problems.append(
+                    f"{where} is marked `gauntlet-cmd={cmd_id}` but the block omits "
+                    f"{' or '.join(f'`{alt}`' for alt in alternatives)} — a reader runs what this block "
+                    f"says, and the tool refuses an invocation missing it."
+                )
+    for cmd_id in sorted(set(DOCUMENTED_COMMANDS) - seen):
         problems.append(
-            "ZERO copies of `ci-status.py derive` were found in the skill's docs — the command is "
-            "prescribed by stage-2-ci.md and critical-rules.md, so finding none means this check has lost "
-            "its subject, and a check that finds nothing must never pass"
+            f"ZERO blocks marked `gauntlet-cmd={cmd_id}` were found in the skill's docs — the command is "
+            f"prescribed, so finding none means this check has lost its subject, and a check that finds "
+            f"nothing must never pass"
         )
-    return problems, copies
+    return problems, found
 
 
-def check_liveness_copies(root: Path | None = None) -> tuple[list[str], list[str]]:
-    """Every runnable liveness copy carries `--machine-action` — the judgment flag a recap must not drop.
+def check_unmarked_commands(root: Path | None = None) -> list[str]:
+    """No RUNNABLE `ci-status.py` copy may sit outside a marked block. Prose may still NAME the command.
 
-    Same class as `check_derive_copies`: a copy without the flag is a command the tool refuses, and a
-    reader who "fixes" it by inventing a default answers the one question the tool deliberately asks.
+    The discrimination is the whole design, and it is one character wide: read from the script name to the
+    next backtick, and ask whether a long option appears in that window. `` `ci-status.py liveness` `` is a
+    mention — it names the command, and a reader who runs it verbatim is REFUSED by the tool, which fails
+    closed. `` `ci-status.py liveness --ledger …` `` is a copy, and a copy that has drifted is a reader
+    running the wrong thing and believing the answer.
+
+    Marked blocks are blanked first, so their contents are exempt. Every OTHER fence is not: an unmarked
+    fenced command has no backtick before the closing fence, so its flags land in the window and it is
+    reported — which is what makes forgetting the marker loud instead of silently unchecked.
     """
-    problems, copies = [], []
+    problems: list[str] = []
     for md in sorted((root or HERE.parent).rglob("*.md")):
-        text = md.read_text(encoding="utf-8")
-        for match in re.finditer(r"ci-status\.py liveness", text):
-            end = text.find("\n\n", match.start())
-            command = text[match.start(): end if end > 0 else len(text)]
-            # `--ledger`, not `--pr`, is the runnable-copy gate here: prose about liveness routinely sits
-            # in the same paragraph as a `ledger.py … set --pr` command, and `--pr` alone would condemn
-            # every such mention as a flagless invocation.
-            if not _has_long_option(command, "--ledger"):
-                continue  # prose that names the subcommand, not a runnable copy
+        text = MARKED_FENCE.sub(lambda m: _blank(m.group(0)), md.read_text(encoding="utf-8"))
+        for match in re.finditer(re.escape(COMMAND_NAME), text):
+            tick = text.find("`", match.end())
+            if tick < 0:  # unbackticked tail: fall back to the paragraph, never to an empty window
+                para = text.find("\n\n", match.end())
+                tick = para if para > 0 else len(text)
+            window = text[match.end():tick]
+            option = LONG_OPTION.search(window)
+            if not option:
+                continue  # prose NAMING the command, which the tool refuses if run verbatim
             line = text.count("\n", 0, match.start()) + 1
-            copies.append(f"{md.name}:{line}")
-            if not _has_long_option(command, "--machine-action"):
-                problems.append(
-                    f"{md.name}:{line} runs `ci-status.py liveness` WITHOUT `--machine-action` — the one "
-                    f"judgment the command asks of its caller. The tool refuses the invocation; a reader "
-                    f"who drops the flag's question strikes the very PR a fix is about to move."
-                )
-    if not copies:
-        problems.append(
-            "ZERO runnable copies of `ci-status.py liveness` were found in the skill's docs — the command "
-            "is prescribed by stage-2-ci.md, so finding none means this check has lost its subject"
-        )
-    return problems, copies
-
-
-def check_required_set_copies(root: Path | None = None) -> tuple[list[str], list[str]]:
-    """Every runnable required-set copy names the ledger whose per-row required sets the command persists."""
-    problems, copies = [], []
-    for md in sorted((root or HERE.parent).rglob("*.md")):
-        text = md.read_text(encoding="utf-8")
-        for match in re.finditer(r"ci-status\.py required-set", text):
-            end = text.find("\n\n", match.start())
-            command = text[match.start(): end if end > 0 else len(text)]
-            if not _has_long_option(command, "--ledger"):
-                continue  # prose that names the subcommand, not a runnable copy
-            line = text.count("\n", 0, match.start()) + 1
-            copies.append(f"{md.name}:{line}")
-            if "state.jsonl" not in command:
-                problems.append(
-                    f"{md.name}:{line} runs `ci-status.py required-set` without the run ledger's "
-                    f"`state.jsonl` — the command must persist the value it read before the value exists"
-                )
-    if not copies:
-        problems.append(
-            "ZERO runnable copies of `ci-status.py required-set` were found in the skill's docs — finding "
-            "nothing means this check has lost its subject"
-        )
-    return problems, copies
+            problems.append(
+                f"{md.name}:{line} runs `{COMMAND_NAME} {' '.join(window.split())[:40]}…` outside a marked "
+                f"block — a runnable copy carrying `{option.group(0)}`. Move it into a fenced block opening "
+                f"```sh gauntlet-cmd=<id>` (ids: {', '.join(sorted(DOCUMENTED_COMMANDS))}), or reword the "
+                f"prose to NAME the command without its flags."
+            )
+    return problems
 
 
 def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) -> int:
@@ -2362,7 +2383,8 @@ def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) 
          paragraphs. A value in a hole matches NO branch: not green, not red, not pending — the PR can never
          resolve, and it WEDGES. This is the check that catches that, and nothing else in the repo does.
       5. the doc's `gh` INVOCATIONS, in every copy of them, against the argv the code really issues — plus
-         every copy of the derive and required-set commands and their required ledger inputs.
+         every MARKED `ci-status.py` command block against the tokens `DOCUMENTED_COMMANDS` requires of it,
+         and that no runnable copy sits OUTSIDE such a block (prose may NAME a command, never run one).
       6. the moved-head owner block says the old-head artifact is retained for audit but contributes no
          current-PR verdict, fingerprint, or buckets; and the liveness owner block says that final
          untrusted result increments the refetch counter while trusted current-head evidence resets it.
@@ -2504,22 +2526,18 @@ def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) 
         held.append(f"{'the gh invocations':32} every copy in the doc: --paginate --slurp, "
                     f"--json {json_fields}, and REPO-SCOPED")
 
-    # AND EVERY COPY OF THE DERIVE COMMAND ITSELF, ACROSS EVERY SKILL DOC — the class, not the instance.
-    derive_problems, derive_copies = check_derive_copies()
-    problems += derive_problems
-    if not derive_problems:
-        held.append(f"{'the derive invocations':32} {len(derive_copies)} copies across the skill's docs, "
-                    f"every one naming the required set (--ledger or --required-set)")
-    required_problems, required_copies = check_required_set_copies()
-    problems += required_problems
-    if not required_problems:
-        held.append(f"{'the required-set invocations':32} {len(required_copies)} runnable copies, every one "
-                    f"persisting to state.jsonl")
-    liveness_problems, liveness_copies = check_liveness_copies()
-    problems += liveness_problems
-    if not liveness_problems:
-        held.append(f"{'the liveness invocations':32} {len(liveness_copies)} runnable copies, every one "
-                    f"answering --machine-action")
+    # AND EVERY MARKED COMMAND BLOCK, ACROSS EVERY SKILL DOC — the class, not the instance.
+    marked_problems, marked_blocks = check_marked_commands()
+    problems += marked_problems
+    if not marked_problems:
+        held.append(f"{'the marked command blocks':32} {len(marked_blocks)} blocks across the skill's docs, "
+                    f"every one carrying every token its gauntlet-cmd id requires")
+    # AND THAT NO RUNNABLE COPY ESCAPED THE MARKER — the check that keeps a forgotten marker LOUD.
+    unmarked_problems = check_unmarked_commands()
+    problems += unmarked_problems
+    if not unmarked_problems:
+        held.append(f"{'no unmarked command copies':32} every runnable {COMMAND_NAME} copy sits in a marked "
+                    f"block; prose only NAMES the command")
     for line in held:
         print(f"ok       {line}")
     for problem in problems:
@@ -2533,7 +2551,8 @@ def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) 
         return 1
     print(f"{len(checks) + len(held)} checks: {spec_doc.name}, {driver_doc.name}, ci-snapshot.py and "
           f"ci-status.py agree — enums, CLASSIFY buckets, TOTALITY, the DECIDE order, the caps, the "
-          f"FINGERPRINT lines, moved-head and liveness contracts, and every copy of every command.")
+          f"FINGERPRINT lines, moved-head and liveness contracts, every `gh` copy, and every marked "
+          f"command block with no runnable copy outside one.")
     return 0
 
 

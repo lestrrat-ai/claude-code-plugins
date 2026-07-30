@@ -130,8 +130,8 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
    adapter's advisory inspections (`references/runtime-adapter.md`, "Session watchdog nudge") and runs the
    health pass only when one of those normal triggers applies; it never decides the primary re-arm —
    `references/loop-control.md`, "Primary continuity", owns continuing the loop.
-9. `ci-status.py required-set --ledger <rundir>/state.jsonl`: refresh the required set before any CI
-   derivation this heartbeat.
+9. The required-set command (`references/stage-2-ci.md`, "WHAT WERE WE EXPECTING TO SEE?", owns the exact
+   invocation): refresh the required set before any CI derivation this heartbeat.
 10. Mutating action due on a PR -> `ledger.py … dispatch-check --pr <N>`: run before ANY action that
     mutates a PR. It is an ALLOW-LIST — only an `in_review` row exits zero; HELD, terminal and
     unrecognised rows all refuse, and the refusal says which (`references/files-and-ledger.md`,

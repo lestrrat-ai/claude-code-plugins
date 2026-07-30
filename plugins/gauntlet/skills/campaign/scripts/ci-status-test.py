@@ -1354,93 +1354,102 @@ def verdict_doc_cases(ci) -> list[str]:
     return problems
 
 
-def documentation_option_form_cases(ci, tmp: Path) -> list[str]:
-    """Pin standalone and ``--name=value`` forms in all three documentation validators."""
+FULL_COMMANDS = {
+    "derive": "python3 s/ci-status.py derive --pr 1 --head-sha abc --rundir run --ledger run/state.jsonl",
+    "liveness": "python3 s/ci-status.py liveness --ledger run/state.jsonl --pr 1 --machine-action none",
+    "required-set": "python3 s/ci-status.py required-set --ledger run/state.jsonl",
+}
+
+
+def _docs(tmp: Path, slug: str, body: str) -> Path:
+    root = tmp / f"marked-commands-{slug}"
+    root.mkdir()
+    (root / "commands.md").write_text(body, encoding="utf-8")
+    return root
+
+
+def _marked(cmd_id: str, command: str) -> str:
+    return f"```sh gauntlet-cmd={cmd_id}\n{command}\n```\n"
+
+
+def _every_command_marked(**override: str) -> str:
+    """Every id gets a block, so the has-at-least-one-block rule never fires for an unrelated reason."""
+    return "\n".join(_marked(i, override.get(i, c)) for i, c in FULL_COMMANDS.items())
+
+
+def marked_command_cases(ci, tmp: Path) -> list[str]:
+    """Pin the marker contract: what a block must carry, and what may not sit outside one.
+
+    The third group is the one this scheme lives or dies on. A marker that only checks what was MARKED is
+    strictly worse than the copy-hunting it replaced, because a forgotten marker reads as success — so the
+    unmarked-copy rule is pinned in both directions, including the fenced-but-unmarked shape.
+    """
     problems: list[str] = []
-    cases = [
-        (
-            "derive",
-            ci.check_derive_copies,
-            "ci-status.py derive --pr=1 --required-set=unknown",
-            "ci-status.py derive --pr=1",
-            "--practical",
-            (
-                "--pr/foo=1",
-                "--pr:1",
-                "--pr=1 --required-set/foo=unknown",
-                "--pr=1 --required-set:unknown",
-            ),
-        ),
-        (
-            "liveness",
-            ci.check_liveness_copies,
-            "ci-status.py liveness --ledger=run/state.jsonl --pr=1 --machine-action=none",
-            "ci-status.py liveness --ledger=run/state.jsonl --pr=1",
-            "--ledger-file",
-            (
-                "--ledger/run/state.jsonl --pr=1 --machine-action=none",
-                "--ledger:run/state.jsonl --pr=1 --machine-action=none",
-                "--ledger=run/state.jsonl --pr=1 --machine-action/foo=none",
-                "--ledger=run/state.jsonl --pr=1 --machine-action:none",
-            ),
-        ),
-        (
-            "required-set",
-            ci.check_required_set_copies,
-            "ci-status.py required-set --ledger=run/state.jsonl",
-            "ci-status.py required-set --ledger=",
-            "--ledger-file",
-            (
-                "--ledger/run/state.jsonl",
-                "--ledger:run/state.jsonl",
-            ),
-        ),
-    ]
-    for name, check, valid, missing, lookalike, invalid_forms in cases:
-        valid_root = tmp / f"documentation-options-{name}-valid"
-        valid_root.mkdir()
-        (valid_root / "commands.md").write_text(f"`{valid}`\n", encoding="utf-8")
-        found, copies = check(valid_root)
-        if found or copies != ["commands.md:1"]:
+
+    def expect(slug: str, body: str, want_marked: int, want_unmarked: int, why: str) -> None:
+        root = _docs(tmp, slug, body)
+        marked, _blocks = ci.check_marked_commands(root)
+        unmarked = ci.check_unmarked_commands(root)
+        if len(marked) != want_marked or len(unmarked) != want_unmarked:
             problems.append(
-                f"[documentation options {name}:valid] expected one accepted copy; "
-                f"got copies={copies!r}, problems={found!r}"
+                f"[marked commands {slug}] {why}: expected {want_marked} marked-block problem(s) and "
+                f"{want_unmarked} unmarked-copy problem(s); got marked={marked!r}, unmarked={unmarked!r}"
             )
 
-        missing_root = tmp / f"documentation-options-{name}-missing"
-        missing_root.mkdir()
-        (missing_root / "commands.md").write_text(f"`{missing}`\n", encoding="utf-8")
-        found, copies = check(missing_root)
-        if len(found) != 1 or copies != ["commands.md:1"]:
-            problems.append(
-                f"[documentation options {name}:missing] expected one reported copy; "
-                f"got copies={copies!r}, problems={found!r}"
-            )
+    expect("all-present", _every_command_marked(), 0, 0,
+           "a marked block per id, each carrying every required token, is clean")
 
-        lookalike_root = tmp / f"documentation-options-{name}-lookalike"
-        lookalike_root.mkdir()
-        (lookalike_root / "commands.md").write_text(
-            f"`ci-status.py {name} {lookalike}=value`\n", encoding="utf-8"
+    # WHAT A BLOCK MUST CARRY — one omission per id, and the `--name=value` form counts as present.
+    for cmd_id, command in FULL_COMMANDS.items():
+        dropped = " ".join(t for t in command.split() if not t.startswith("--machine-action")
+                           and not (cmd_id == "derive" and t == "--ledger")
+                           and not (cmd_id == "required-set" and t == "--ledger"))
+        if dropped != command:
+            expect(f"omits-{cmd_id}", _every_command_marked(**{cmd_id: dropped}), 1, 0,
+                   f"a {cmd_id} block missing a required token is reported")
+    equals = {i: c.replace(" --ledger ", " --ledger=").replace(" --pr ", " --pr=")
+              for i, c in FULL_COMMANDS.items()}
+    expect("equals-form", _every_command_marked(**equals), 0, 0,
+           "argparse's --name=value form satisfies a long-option requirement")
+
+    # `derive` alone accepts either flag for the required set — pin BOTH members of the alternation.
+    alt = FULL_COMMANDS["derive"].replace("--ledger run/state.jsonl", "--required-set unknown")
+    expect("derive-alternation", _every_command_marked(derive=alt), 0, 0,
+           "an explicit --required-set satisfies derive's alternation")
+    neither = FULL_COMMANDS["derive"].replace(" --ledger run/state.jsonl", "")
+    expect("derive-neither", _every_command_marked(derive=neither), 1, 0,
+           "derive naming NEITHER --ledger nor --required-set is reported")
+
+    # A LABEL CANNOT LIE: the script name and subcommand are ordinary required tokens. Assert the SUBCOMMAND
+    # is among what is reported rather than a total — a mislabelled block also misses that id's other flags,
+    # and pinning the count would just re-pin DOCUMENTED_COMMANDS' length in a second place.
+    mislabelled = _docs(tmp, "mislabelled", _every_command_marked()
+                        + _marked("derive", FULL_COMMANDS["liveness"]))
+    marked, _blocks = ci.check_marked_commands(mislabelled)
+    if not any("omits `derive`" in problem for problem in marked):
+        problems.append(
+            f"[marked commands mislabelled] a liveness command marked gauntlet-cmd=derive must fail on the "
+            f"SUBCOMMAND token, so a block cannot lie about which command it is; got {marked!r}"
         )
-        found, copies = check(lookalike_root)
-        if len(found) != 1 or copies:
-            problems.append(
-                f"[documentation options {name}:lookalike] expected no accepted copy; "
-                f"got copies={copies!r}, problems={found!r}"
-            )
+    expect("unknown-id", _every_command_marked() + _marked("nonesuch", FULL_COMMANDS["derive"]), 1, 0,
+           "an id DOCUMENTED_COMMANDS does not define is a failure, never an exemption")
 
-        for invalid in invalid_forms:
-            invalid_root = tmp / f"documentation-options-{name}-{invalid.replace('/', '-')}"
-            invalid_root.mkdir()
-            (invalid_root / "commands.md").write_text(
-                f"`ci-status.py {name} {invalid}`\n", encoding="utf-8"
-            )
-            found, copies = check(invalid_root)
-            if not found:
-                problems.append(
-                    f"[documentation options {name}:invalid-boundary {invalid!r}] expected the "
-                    f"punctuation-separated form to be rejected; got copies={copies!r}, problems={found!r}"
-                )
+    # A CHECK THAT FINDS NOTHING MUST NEVER PASS.
+    expect("no-blocks", "nothing here\n", len(ci.DOCUMENTED_COMMANDS), 0,
+           "every id with zero blocks is reported")
+
+    # WHAT MAY SIT OUTSIDE A BLOCK. Prose NAMING a command is fine; a runnable copy is not.
+    expect("prose-mention", _every_command_marked() + "\nWritten by `ci-status.py liveness`.\n", 0, 0,
+           "prose naming the command without a flag is a mention, not a copy")
+    expect("prose-copy", _every_command_marked() + "\nRun `ci-status.py required-set --ledger x`.\n", 0, 1,
+           "a flag before the closing backtick makes it a runnable copy outside a block")
+    expect("fenced-unmarked", _every_command_marked() + "\n```sh\n" + FULL_COMMANDS["derive"] + "\n```\n",
+           0, 1, "a fenced block WITHOUT the marker is reported, not silently skipped")
+    wrapped = "\nRun `scripts/ci-status.py\nrequired-set --ledger run/state.jsonl`.\n"
+    expect("prose-copy-wrapped", _every_command_marked() + wrapped, 0, 1,
+           "a copy WRAPPED across two lines is still a copy — the window ends at the backtick, not the line")
+    expect("flag-after-span", _every_command_marked() + "\n`ci-status.py derive` needs `--ledger`.\n", 0, 0,
+           "a flag in a LATER code span does not make an earlier mention a copy")
     return problems
 
 
@@ -1519,13 +1528,13 @@ def run(ci, tmp: Path) -> int:
         print(f"ok       {'DECIDE verdict terminology':32} -> UNUSABLE and UNVERIFIABLE both remain explicit "
               f"before liveness groups them")
 
-    documentation_option_problems = documentation_option_form_cases(ci, tmp)
-    for problem in documentation_option_problems:
+    marked_command_problems = marked_command_cases(ci, tmp)
+    for problem in marked_command_problems:
         failures += 1
         print(f"FAIL     {problem}")
-    if not documentation_option_problems:
-        print(f"ok       {'documentation option forms':32} -> standalone and --name=value forms are "
-              f"recognized without accepting option-name lookalikes")
+    if not marked_command_problems:
+        print(f"ok       {'marked command blocks':32} -> a block carries every token its id requires, an id "
+              f"with no block fails, and no runnable copy may sit outside a marked block")
 
     print()
     print(f"--- doc-check: {ci.SPEC_DOC.name} + {ci.DRIVER_DOC.name} vs the code that runs ---")

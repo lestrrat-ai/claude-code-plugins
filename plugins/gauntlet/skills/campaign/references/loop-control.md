@@ -255,9 +255,9 @@ rules keep their own wording; these are illustrations of them, not a second copy
    site skipped its relabel: fix the label here, and treat it as a bug in that site, not as normal
    operation.
 
-   **Settle the base branch's required-check set before any CI derivation:** run `scripts/ci-status.py
-   required-set --ledger <rundir>/state.jsonl`. Run it every heartbeat; the command reuses a settled value and
-   only retries `unknown`. `stage-2-ci.md`, "WHAT WERE WE EXPECTING TO SEE?", owns its states and behavior.
+   **Settle the base branch's required-check set before any CI derivation:** run the required-set command
+   as `stage-2-ci.md`, "WHAT WERE WE EXPECTING TO SEE?", spells it. Run it every heartbeat; the command
+   reuses a settled value and only retries `unknown`. That section owns its states and behavior.
 ### Step 2 — Fold in completions
 
 2. **Fold in completions.** For any background task that finished (CI watch → **a HEARTBEAT, not an artifact**:
