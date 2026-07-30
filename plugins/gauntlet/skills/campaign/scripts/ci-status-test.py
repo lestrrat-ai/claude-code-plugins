@@ -1436,11 +1436,14 @@ def documented_commands_agree_with_argparse(ci) -> list[str]:
 
 
 def marked_command_cases(ci, tmp: Path) -> list[str]:
-    """Pin the marker contract: what a block must carry, and what may not sit outside one.
+    """Pin the marker contract: what a block's COMMAND must carry, and what may not sit outside one.
 
-    The third group is the one this scheme lives or dies on. A marker that only checks what was MARKED is
-    strictly worse than the copy-hunting it replaced, because a forgotten marker reads as success — so the
-    unmarked-copy rule is pinned in both directions, including the fenced-but-unmarked shape.
+    The unmarked-copy group is the one this scheme lives or dies on. A marker that only checks what was
+    MARKED is strictly worse than the copy-hunting it replaced, because a forgotten marker reads as success
+    — so that rule is pinned in both directions, including the fenced-but-unmarked shape.
+
+    The scope group is the second: the requirements are read from the invocation, so a fenced body cannot
+    hand a mislabelled block the tokens its real command lacks, and a wrapped command stays one command.
     """
     problems: list[str] = []
 
@@ -1455,7 +1458,7 @@ def marked_command_cases(ci, tmp: Path) -> list[str]:
             )
 
     expect("all-present", _every_command_marked(), 0, 0,
-           "a marked block per id, each carrying every required token, is clean")
+           "a marked block per id, each RUNNING a command that carries every required token, is clean")
 
     # WHAT A BLOCK MUST CARRY — EVERY entry of EVERY table row, not the one a hand-written case happened to
     # drop. Driving the table itself is what makes adding a requirement to DOCUMENTED_COMMANDS self-covering:
@@ -1503,10 +1506,46 @@ def marked_command_cases(ci, tmp: Path) -> list[str]:
     expect_omissions("mislabelled", _marked("derive", FULL_COMMANDS["liveness"]), ("derive",),
                      "a liveness command marked gauntlet-cmd=derive must fail on the SUBCOMMAND token")
     # ...AND CANNOT LIE BY PREFIXING EITHER. A plain substring test accepts a longer word that merely CONTAINS
-    # the required token, so a block naming neither the real script nor the real subcommand passed clean.
-    lying = "python3 s/not-ci-status.py rederive --pr 1 --head-sha abc --rundir run --ledger run/state.jsonl"
-    expect_omissions("prefixed", _marked("derive", lying), ("ci-status.py", "derive"),
+    # the required token, so a block whose subcommand only ENDS in the required one passed clean. The script
+    # name is checked the same way, one layer earlier: `example-tool.py` (invented — it appears nowhere in
+    # this repo) opens no invocation window at all, which the no-invocation case below pins.
+    lying = "python3 s/ci-status.py rederive --pr 1 --head-sha abc --rundir run --ledger run/state.jsonl"
+    expect_omissions("prefixed", _marked("derive", lying), ("derive",),
                      "a token that is only a SUFFIX of a longer word satisfies nothing")
+
+    # THE TOKENS ARE REQUIRED OF THE COMMAND, NOT OF THE FENCED BODY. Any other line in the block can spell
+    # the tokens the real invocation lacks, and a whole-body search then reads a mislabel as complete. Both
+    # carriers are pinned because a comment-stripping fix would pass the first case and fail the second —
+    # neither needs Markdown of any kind, they are just more lines inside the fence.
+    masked = ("# the derive step takes --head-sha <sha> --rundir <dir> ; see above\n"
+              + FULL_COMMANDS["liveness"])
+    expect_omissions("scope-comment", _marked("derive", masked), ("derive", "--head-sha", "--rundir"),
+                     "a COMMENT in the block must not supply tokens the invocation omits")
+    second_line = FULL_COMMANDS["liveness"] + "\ngrep derive --head-sha --rundir notes.txt"
+    expect_omissions("scope-second-line", _marked("derive", second_line),
+                     ("derive", "--head-sha", "--rundir"),
+                     "a second COMMAND LINE in the block must not supply them either")
+
+    # A CONTINUED COMMAND IS ONE COMMAND. The live derive and liveness copies wrap, and a window that ended
+    # at the newline would lose `--ledger` from one and `--derive-json`/`--machine-action` from the other —
+    # turning correct blocks red, which is how a check gets deleted by the next person in a hurry.
+    wrapped_commands = {i: c.replace(" --ledger ", " \\\n    --ledger ") for i, c in FULL_COMMANDS.items()}
+    expect("continuation", _every_command_marked(**wrapped_commands), 0, 0,
+           "a backslash continuation keeps the flags on later lines inside the same invocation")
+
+    # A BLOCK THAT RUNS NOTHING IS NOT A CHECKED BLOCK — and THE LOCATOR IS WHOLE-TOKEN TOO. This body is a
+    # complete, correct derive invocation of a DIFFERENT script (`example-ci-status.py` is invented; it
+    # exists nowhere in this repo). A substring locator would open a window at the script-name SUFFIX and
+    # then find every required token inside it, which is round-1's defect returning one layer up.
+    no_command = _marked("derive", "python3 s/example-ci-status.py derive --pr 1 --head-sha abc "
+                                   "--rundir run --ledger run/state.jsonl")
+    no_invocation = ci.check_marked_commands(_docs(tmp, "no-invocation",
+                                                   _every_command_marked() + no_command))[0]
+    if not any("RUNS no `ci-status.py` command" in problem for problem in no_invocation):
+        problems.append(
+            f"[marked commands no-invocation] a block whose body runs no ci-status.py command must say so "
+            f"plainly; got {no_invocation!r}"
+        )
 
     # AN UNKNOWN ID IS REPORTED WHATEVER ITS SPELLING. The id pattern must not decide which ids exist: an id
     # the pattern REJECTS is not a marked block at all, so this branch never fires and the author is instead
@@ -1624,8 +1663,8 @@ def run(ci, tmp: Path) -> int:
         failures += 1
         print(f"FAIL     {problem}")
     if not marked_command_problems:
-        print(f"ok       {'marked command blocks':32} -> a block carries every token its id requires, an id "
-              f"with no block fails, and no runnable copy may sit outside a marked block")
+        print(f"ok       {'marked command blocks':32} -> the command a block RUNS carries every token its id "
+              f"requires, an id with no block fails, and no runnable copy may sit outside a marked block")
 
     print()
     print(f"--- doc-check: {ci.SPEC_DOC.name} + {ci.DRIVER_DOC.name} vs the code that runs ---")

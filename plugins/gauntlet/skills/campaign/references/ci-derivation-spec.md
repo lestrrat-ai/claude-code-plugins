@@ -562,8 +562,9 @@ nothing was looking. Three checks close that, and **none is optional**:
 - **`ci-status.py doc-check` checks every `gh` INVOCATION in this file against the argv the code really
   issues** — *every copy of them*, not just the spec block (a recap that drops `,headRefOid` reconstructs a
   fetch the MOVED-HEAD rule can never fire on; that copy had drifted, and this is what caught it). It holds
-  every **marked command block** across every skill doc to the tokens `DOCUMENTED_COMMANDS` requires of it,
-  too — the set that decides a merge must not be droppable by a recap. See "Marked command blocks", below.
+  the command every **marked command block** across every skill doc RUNS to the tokens
+  `DOCUMENTED_COMMANDS` requires of it, too — the set that decides a merge must not be droppable by a
+  recap. See "Marked command blocks", below.
 
 ##### Marked command blocks — a runnable command copy is DECLARED, never guessed at
 
@@ -571,8 +572,11 @@ nothing was looking. Three checks close that, and **none is optional**:
 `<id>` keys `DOCUMENTED_COMMANDS` in `ci-status.py`, which owns what tokens that command must carry.
 `doc-check` enforces three things and they are not separable:
 
-- every marked block carries every token its id requires, and an id the table does not define is a failure
-  rather than an exemption;
+- the **command a marked block RUNS** carries every token its id requires, and an id the table does not
+  define is a failure rather than an exemption. The tokens are required of the invocation — the script
+  name to the end of its backslash-continued command line — never of the fenced body around it, so a
+  comment or a second command line in the block cannot supply what the invocation itself lacks. A block
+  that runs no `ci-status.py` command at all is reported as such;
 - every id the table defines has **at least one** block somewhere, so deleting the last copy of a command
   goes red instead of quietly narrowing the check to nothing;
 - **no runnable copy sits outside a marked block.** Prose may still NAME a command — `` `ci-status.py
