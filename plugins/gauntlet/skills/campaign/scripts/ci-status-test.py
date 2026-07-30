@@ -1438,6 +1438,11 @@ def marked_command_cases(ci, tmp: Path) -> list[str]:
     written out as ten near-identical cases. The table is kept in full anyway — it is the record of what
     this check has already been broken by, and a future relaxation has to walk past every row of it.
 
+    WHERE THE BLOCK ENDS IS PART OF THE COMPARISON, so the fence group is pinned beside the carriers. The
+    body compared has to be the body the RENDERER shows: a delimiter looser than the rendered block lets
+    text sit inside a checked block without ever reaching the equality, which is the same escape the
+    carriers buy by other means.
+
     The unmarked-copy group is the one this scheme lives or dies on. A marker that only checks what was
     MARKED is strictly worse than the copy-hunting it replaced, because a forgotten marker reads as success
     — so that rule is pinned in both directions, including the fenced-but-unmarked shape. Its boundary is
@@ -1552,6 +1557,30 @@ def marked_command_cases(ci, tmp: Path) -> list[str]:
     # A CHECK THAT FINDS NOTHING MUST NEVER PASS.
     expect("no-blocks", "nothing here\n", len(ci.DOCUMENTED_COMMANDS), 0,
            "every id with zero blocks is reported")
+
+    # WHERE THE BLOCK ENDS IS PART OF THE COMPARISON, because the body is whatever the RENDERER puts inside
+    # the fence. A close ending at the first line merely STARTING with backticks would hand the author the
+    # one carrier equality cannot refuse: text after such a line renders inside the block and never reaches
+    # the comparison, and an opener with no close at all vanishes from the checker entirely while the
+    # renderer swallows the rest of the file into it. Both shapes are the SAME defect — a delimiter looser
+    # than the rendered block — so both are pinned here, against the one positive rule that fixes them.
+    hidden = _marked("derive", derive).replace("\n```\n", "\n``` x\nand this line renders inside it\n```\n")
+    expect("close-trailing-info", every() + hidden, 1, 0,
+           "a line with anything after the backticks is BODY, so the text it hides is part of the comparison")
+    expect("close-trailing-spaces", every().replace("\n```\n", "\n```   \n"), 0, 0,
+           "spaces and tabs after the backticks are all a conforming close may carry, and it still closes")
+    expect("unterminated-opener", every() + f"```sh gauntlet-cmd=derive\n{derive}\n", 1, 1,
+           "an opener with no close is reported, and exempts nothing behind it from the unmarked-copy rule")
+    # THE SHARP ONE: an unterminated block holding an INCOMPLETE invocation. Its body carries no long
+    # option, so the unmarked-copy heuristic is silent by design, and before the opener-anchored scan the
+    # marked check was silent too — a documented command that does not run, inside a block claiming to be
+    # checked, reported by nothing at all.
+    incomplete = f"{ci.COMMAND_PREFIX} derive"
+    expect("unterminated-no-long-option", every() + f"```sh gauntlet-cmd=derive\n{incomplete}\n", 1, 0,
+           "the broken fence is reported on its own, without help from the flag heuristic")
+    others = "\n".join(_marked(i, c) for i, c in canon.items() if i != "derive")
+    expect("unterminated-only-block", others + f"```sh gauntlet-cmd=derive\n{incomplete}\n", 2, 0,
+           "a block the checker never read cannot credit its id, so zero-blocks fires beside the broken fence")
 
     # WHAT MAY SIT OUTSIDE A BLOCK. Prose NAMING a command is fine; a runnable copy is not.
     expect("prose-mention", every() + "\nWritten by `ci-status.py liveness`.\n", 0, 0,
@@ -1674,8 +1703,9 @@ def run(ci, tmp: Path) -> int:
         print(f"FAIL     {problem}")
     if not marked_command_problems:
         print(f"ok       {'marked command blocks':32} -> a block's body EQUALS the command generated for its "
-              f"id, every carrier that ever broke this check is refused, an id with no block fails, and no "
-              f"runnable copy may sit outside a marked block while another script's command is not one")
+              f"id, every carrier that ever broke this check is refused, only a conforming close ends the "
+              f"body and an opener without one is reported, an id with no block fails, and no runnable copy "
+              f"may sit outside a marked block while another script's command is not one")
 
     print()
     print(f"--- doc-check: {ci.SPEC_DOC.name} + {ci.DRIVER_DOC.name} vs the code that runs ---")

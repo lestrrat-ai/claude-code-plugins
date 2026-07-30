@@ -2245,8 +2245,9 @@ def check_gh_invocations(text: str, argv: dict[str, list[str]]) -> list[str]:
 
 
 # EVERY RUNNABLE COPY OF A `ci-status.py` COMMAND LIVES IN A MARKED BLOCK, AND THE CHECKER NEVER GUESSES
-# WHICH TEXT IS A COMMAND. A marked block opens with the info string ```sh gauntlet-cmd=<id>`; `<id>` keys
-# this table, and the block's body must BE the string `canonical_command()` GENERATES for that id.
+# WHICH TEXT IS A COMMAND. A marked block opens with the info string ```sh gauntlet-cmd=<id>` and ends
+# where `MARKED_CLOSE` says it ends; `<id>` keys this table, and the block's body must BE the string
+# `canonical_command()` GENERATES for that id.
 #
 # **THE REFERENCE IS GENERATED, SO NO CODE PATH JUDGES A COMMAND LINE BY SEARCHING IT.** Four rounds asked
 # instead whether a documented line CARRIED the tokens its id requires, and every one of them died to text
@@ -2340,7 +2341,60 @@ def canonical_command(cmd_id: str) -> str:
 # DOCUMENTED_COMMANDS be the only thing that decides which ids exist. Trailing spaces are dropped because
 # CommonMark drops them from the info string, so a fence this checker rejected over one would be a fence the
 # renderer accepted.
-MARKED_FENCE = re.compile(r"^```sh gauntlet-cmd=(?P<id>[^\n]+?)[ \t]*\n(?P<body>.*?)^```", re.M | re.S)
+MARKED_OPENER = re.compile(r"^```sh gauntlet-cmd=(?P<id>[^\n]+?)[ \t]*\n", re.M)
+# THE CLOSE IS HALF THE DEFINITION OF THE BODY, SO IT IS AS STRICT AS THE EQUALITY IS. A closing fence is a
+# line AT COLUMN 0 of three or more backticks carrying nothing but optional spaces or tabs. Any other line
+# is BODY — including one that merely STARTS with backticks, which CommonMark also treats as body because
+# it forbids an info string on a closing fence. A close that ended at `^```` would hand the author the
+# carrier the equality exists to refuse: write ```` ``` anything ```` and every line after it renders inside
+# the block while none of it reaches the comparison. This is stated as ONE POSITIVE RULE and must stay one:
+# a list of the malformed spellings that are NOT a close is the enumeration that has no fixed point.
+#
+# COLUMN 0 IS DELIBERATE AND FAIL-CLOSED. CommonMark permits up to three spaces of indent on a closing
+# fence; this checker does not, so an indented close reads as an opener that never closes and is REPORTED.
+# The scheme recognizes a marked fence written at column 0 and its conforming close, and nothing else about
+# fence placement — being told to unindent is the correct outcome, never a false pass.
+MARKED_CLOSE = re.compile(r"^```+[ \t]*$", re.M)
+
+
+class MarkedBlock(NamedTuple):
+    """One marked opener and the span it delimits. `body` is None when the opener NEVER closes."""
+
+    cmd_id: str
+    body: str | None
+    line: int
+    start: int
+    end: int
+
+
+def marked_blocks(text: str) -> list[MarkedBlock]:
+    """Every marked opener in `text`, paired with the body its conforming close delimits.
+
+    **THE OPENER IS THE ANCHOR, NOT THE PAIR.** One regex spanning opener-to-close cannot report what it
+    cannot match: an opener with no conforming close simply fails to match, and the whole block DISAPPEARS
+    from every caller — no comparison, no unknown-id complaint, and (when another block already covers the
+    id) no zero-blocks complaint either. To the renderer that same opener swallows the REST OF THE FILE into
+    a marked block, so a document could hold an incomplete invocation, inside a block that claims to be
+    checked, and pass. Scanning FROM the opener makes the missing close a reportable fact instead of a
+    silent non-match.
+
+    An unterminated opener is always the LAST block: everything after it is inside its body, so there is
+    nothing further to find.
+    """
+    blocks: list[MarkedBlock] = []
+    pos = 0
+    while (opener := MARKED_OPENER.search(text, pos)) is not None:
+        line = text.count("\n", 0, opener.start()) + 1
+        close = MARKED_CLOSE.search(text, opener.end())
+        if close is None:
+            blocks.append(MarkedBlock(opener.group("id"), None, line, opener.start(), len(text)))
+            break
+        blocks.append(MarkedBlock(opener.group("id"), text[opener.end():close.start()], line,
+                                  opener.start(), close.end()))
+        pos = close.end()
+    return blocks
+
+
 LONG_OPTION = re.compile(r"(?<![\w-])--[a-z][a-z-]+")
 # A prose occurrence of the script name, for the copies that must sit OUTSIDE a marked block. The boundary
 # is a WHOLE FILE NAME ON BOTH SIDES, and both halves are load-bearing in opposite directions. Without the
@@ -2401,10 +2455,14 @@ def check_marked_commands(root: Path | None = None) -> tuple[list[str], list[str
     """Every marked block's body EQUALS the command `canonical_command()` generates for its `gauntlet-cmd`
     id.
 
-    Three ways to fail: the body is not that command; an id is claimed that `DOCUMENTED_COMMANDS` does not
-    define; or an id it does define has NO block anywhere. That last one is what stops the marker from
-    quietly narrowing the check — delete the only marked copy of a command and the build goes red, exactly
-    as it did when the checker hunted copies for itself.
+    Four ways to fail: the body is not that command; an id is claimed that `DOCUMENTED_COMMANDS` does not
+    define; a marked opener never closes; or an id the table defines has NO block anywhere. That last one is
+    what stops the marker from quietly narrowing the check — delete the only marked copy of a command and
+    the build goes red, exactly as it did when the checker hunted copies for itself.
+
+    AN UNTERMINATED OPENER CREDITS NOTHING. It is reported and its id is NOT marked as seen, so when the
+    broken block is the only one claiming that id the zero-blocks failure fires beside it: a block whose
+    body the checker never read must never be the reason a command counts as documented.
 
     **THE COMPARISON IS EQUALITY, AND THAT IS THE WHOLE DESIGN.** It does not locate the command inside the
     body, subtract text it dislikes, or reason about shell. A body holding anything besides the generated
@@ -2421,10 +2479,19 @@ def check_marked_commands(root: Path | None = None) -> tuple[list[str], list[str
     seen: set[str] = set()
     for md in sorted((root or HERE.parent).rglob("*.md")):
         text = md.read_text(encoding="utf-8")
-        for match in MARKED_FENCE.finditer(text):
-            cmd_id, body = match.group("id"), match.group("body")
-            line = text.count("\n", 0, match.start()) + 1
-            where = f"{md.name}:{line}"
+        for block in marked_blocks(text):
+            cmd_id, body = block.cmd_id, block.body
+            where = f"{md.name}:{block.line}"
+            if body is None:
+                problems.append(
+                    f"{where} opens `gauntlet-cmd={cmd_id}` and NEVER CLOSES — no line of three or more "
+                    f"backticks, at column 0 and carrying nothing but optional spaces or tabs, follows it. "
+                    f"The renderer swallows the rest of the file into this block, so text that never "
+                    f"reaches the comparison renders inside a block that claims to be checked. Close the "
+                    f"fence with a line reading exactly ```` ``` ````, and remember that a closing fence "
+                    f"may not be indented or carry an info string."
+                )
+                continue
             if cmd_id not in DOCUMENTED_COMMANDS:
                 problems.append(
                     f"{where} is marked `gauntlet-cmd={cmd_id}`, which DOCUMENTED_COMMANDS does not define "
@@ -2466,9 +2533,11 @@ def check_unmarked_commands(root: Path | None = None) -> list[str]:
     closed. `` `ci-status.py liveness --ledger …` `` is a copy, and a copy that has drifted is a reader
     running the wrong thing and believing the answer.
 
-    Marked blocks are blanked first, so their contents are exempt. Every OTHER fence is not: an unmarked
-    fenced command has no backtick before the closing fence, so its flags land in the window and it is
-    reported — which is what makes forgetting the marker loud instead of silently unchecked.
+    CLOSED marked blocks are blanked first, so their contents are exempt. Every OTHER fence is not: an
+    unmarked fenced command has no backtick before the closing fence, so its flags land in the window and
+    it is reported — which is what makes forgetting the marker loud instead of silently unchecked. An
+    opener that never closes buys no exemption either: `check_marked_commands` reports the broken fence,
+    and nothing behind it is blanked, so a runnable copy sitting inside it is still reported here.
 
     The occurrence is matched with `PROSE_TOKEN`, which requires a WHOLE FILE NAME on both sides. A bare
     substring scan reports a hypothetical `example-ci-status.py derive --pr 1` as a copy of THIS script,
@@ -2481,7 +2550,16 @@ def check_unmarked_commands(root: Path | None = None) -> list[str]:
     """
     problems: list[str] = []
     for md in sorted((root or HERE.parent).rglob("*.md")):
-        text = MARKED_FENCE.sub(lambda m: _blank(m.group(0)), md.read_text(encoding="utf-8"))
+        raw = md.read_text(encoding="utf-8")
+        kept: list[str] = []
+        pos = 0
+        for block in marked_blocks(raw):
+            if block.body is None:
+                continue  # never closed: not a block, so not exempt
+            kept += [raw[pos:block.start], _blank(raw[block.start:block.end])]
+            pos = block.end
+        kept.append(raw[pos:])
+        text = "".join(kept)
         for match in PROSE_TOKEN.finditer(text):
             tick = text.find("`", match.end())
             if tick < 0:  # unbackticked tail: fall back to the paragraph, never to an empty window
@@ -2518,8 +2596,8 @@ def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) 
          resolve, and it WEDGES. This is the check that catches that, and nothing else in the repo does.
       5. the doc's `gh` INVOCATIONS, in every copy of them, against the argv the code really issues — plus
          every MARKED `ci-status.py` block against the command `canonical_command()` generates for its id,
-         which its body must EQUAL, and that no runnable copy sits OUTSIDE such a block (prose may NAME a
-         command, never run one).
+         which its body must EQUAL, that every marked opener has a conforming CLOSE, and that no runnable
+         copy sits OUTSIDE such a block (prose may NAME a command, never run one).
       6. the moved-head owner block says the old-head artifact is retained for audit but contributes no
          current-PR verdict, fingerprint, or buckets; and the liveness owner block says that final
          untrusted result increments the refetch counter while trusted current-head evidence resets it.
@@ -2662,11 +2740,11 @@ def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) 
                     f"--json {json_fields}, and REPO-SCOPED")
 
     # AND EVERY MARKED COMMAND BLOCK, ACROSS EVERY SKILL DOC — the class, not the instance.
-    marked_problems, marked_blocks = check_marked_commands()
+    marked_problems, marked_found = check_marked_commands()
     problems += marked_problems
     if not marked_problems:
-        held.append(f"{'the marked command blocks':32} {len(marked_blocks)} blocks across the skill's docs, "
-                    f"every body EQUAL to the command generated for its gauntlet-cmd id")
+        held.append(f"{'the marked command blocks':32} {len(marked_found)} blocks across the skill's docs, "
+                    f"every one CLOSED and its body EQUAL to the command generated for its gauntlet-cmd id")
     # AND THAT NO RUNNABLE COPY ESCAPED THE MARKER — the check that keeps a forgotten marker LOUD.
     unmarked_problems = check_unmarked_commands()
     problems += unmarked_problems
