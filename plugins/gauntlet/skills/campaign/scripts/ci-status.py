@@ -119,8 +119,9 @@ one a reader believed. `doc-check` PARSES the doc's own enum block, its two CLAS
 bullet order, and asserts they agree with the sets `ci-snapshot.py` actually classifies with — and that the
 classification is TOTAL over the enums the doc declares. It also checks every copy of a `gh` command the doc
 prints against the argv this code really issues, the command every MARKED `ci-status.py` block RUNS against
-the tokens its `gauntlet-cmd` id requires — with no runnable copy sitting OUTSIDE such a block — and the
-moved-head owner block's retained-artifact/trust/result contract. Drift is a RED BUILD, not a discovery.
+the tokens its `gauntlet-cmd` id requires — carrying nothing on that line but the invocation, and with no
+runnable copy sitting OUTSIDE such a block — and the moved-head owner block's retained-artifact/trust/result
+contract. Drift is a RED BUILD, not a discovery.
 
 **A check that finds nothing MUST NOT PASS.** If the doc cannot be found, or a block cannot be parsed, or
 zero rules are extracted, `doc-check` FAILS. An extractor that silently matches nothing and reports success
@@ -2253,8 +2254,9 @@ def _has_long_option(command: str, option: str) -> bool:
 # this table, whose value is every token that copy MUST carry. A nested tuple is an alternation — any one of
 # its members satisfies it. A `--flag` requirement is matched as a long option (argparse's `--name=value`
 # form included); anything else must appear as a WHOLE command token — see `_requirement_met`. The tokens
-# are required of the block's `ci-status.py` INVOCATION, never merely of its fenced body — see
-# `_invocations`, which is what stops other text in the block from supplying them.
+# are required of the block's `ci-status.py` INVOCATION, never merely of its fenced body: `_invocations`
+# scopes the search to a command line and `_extraneous` refuses a command line carrying anything but the
+# command, and it takes both to stop other text in the block from supplying them.
 #
 # A ROW IS NOT HAND-MAINTAINED AGAINST THE CLI. Every fixture that drives this table is blind to a row that
 # is INCOMPLETE, because the omission deletes the case that would have caught it — so the suite reconciles
@@ -2287,6 +2289,13 @@ DOCUMENTED_COMMANDS: dict[str, tuple[str | tuple[str, ...], ...]] = {
 # CommonMark drops them from the info string, so a fence this checker rejected over one would be a fence the
 # renderer accepted.
 MARKED_FENCE = re.compile(r"^```sh gauntlet-cmd=(?P<id>[^\n]+?)[ \t]*\n(?P<body>.*?)^```", re.M | re.S)
+# A `<…>` PLACEHOLDER IS PROSE, NOT SHELL — this doc set's own convention for a value the reader supplies
+# (`<rundir>`, `<the LEDGER's head_sha>`, `--machine-action <due | in-flight | none>`). `_extraneous` blanks
+# them before it looks for shell, or that documented choice would read as a pipe.
+PLACEHOLDER = re.compile(r"<[^<>\n]*>")
+# The shell this checker refuses to read: a comment, a chain, a pipe, a background/`&&` chain, and the two
+# substitution forms. See `_extraneous` for why the answer is refusal rather than parsing.
+NOT_INVOCATION = ("#", ";", "|", "&", "`", "$(")
 LONG_OPTION = re.compile(r"(?<![\w-])--[a-z][a-z-]+")
 COMMAND_NAME = "ci-status.py"
 # The SAME whole-token rule `_requirement_met` applies, used to LOCATE the invocation. A substring locator
@@ -2305,10 +2314,10 @@ def _requirement_met(command: str, want: str) -> bool:
     the path-SUFFIX requirements working: `--ledger <rundir>/state.jsonl` satisfies `state.jsonl`, and
     `python3 <skill>/scripts/ci-status.py` satisfies `ci-status.py`.
 
-    WHERE a token may be found is a separate question, answered by `_invocations`: this decides only WHAT
-    counts as one. Both are load-bearing — whole-token matching over a whole fenced body still accepts a
-    comment that spells the missing tokens, and an invocation-scoped substring match still accepts a
-    subcommand that merely ENDS in the required one.
+    WHERE a token may be found is a separate question, answered by `_invocations` and `_extraneous`: this
+    decides only WHAT counts as one. Both are load-bearing — whole-token matching over a whole fenced body
+    still accepts a comment that spells the missing tokens, and an invocation-scoped substring match still
+    accepts a subcommand that merely ENDS in the required one.
     """
     if want.startswith("--"):
         return _has_long_option(command, want)
@@ -2335,7 +2344,10 @@ def _invocations(body: str) -> list[str]:
       this repo) must not open a window; a substring locator would let it, and the mislabel it was meant to
       catch would then be checked against the wrong text.
 
-    Comment lines are dropped before any of that, because a comment is text the block does not run.
+    WHOLE comment LINES are dropped before any of that, because a comment is text the block does not run.
+    That is only half the carrier: a comment on the same line as the command is INSIDE the window this
+    returns, and so are `;`, `|`, `&&` and `$(…)`. `_extraneous` refuses those rather than parse them, and
+    this function must not try to — deciding where a shell command ends is the parsing this scheme replaced.
     """
     text = "\n".join("" if line.lstrip().startswith("#") else line for line in body.splitlines())
     windows: list[str] = []
@@ -2370,20 +2382,50 @@ def _blank(text: str) -> str:
     return re.sub(r"[^\n]", " ", text)
 
 
+def _extraneous(window: str) -> str | None:
+    """The first mark of text an invocation does not CONSIST of, or `None`. REFUSE it; never parse it.
+
+    `_invocations` decides where a command STARTS. Nothing decided where it stops being ONE command, and a
+    window runs to the end of the backslash-continued command LINE — so everything a shell would treat as a
+    separate thing on that line is still inside it. A trailing `# …` comment, a `; …` chain, a `| …` pipe, a
+    `&& …` chain and a `$(…)` substitution are all the same carrier, and each one breaks the anti-lie
+    property rather than merely relaxing the check: mark a block `gauntlet-cmd=derive`, run
+    `ci-status.py liveness …` in it, append `# derive --head-sha … --rundir …` to that same line, and the
+    mislabel passes clean. Cutting each line at an unquoted `#` closes the comment and none of the rest.
+
+    SO THE BLOCK IS REFUSED, NOT PARSED. Telling the invocation from the text after it means splitting shell
+    words, and that is the exact spiral this scheme exists to end (see `DOCUMENTED_COMMANDS`, "WHY THE
+    MARKER EXISTS AT ALL"). `shlex` is not the escape hatch: `shlex.split` raises `ValueError: No closing
+    quotation` on the live `<the LEDGER's head_sha>` placeholder, and `shlex.shlex(punctuation_chars=True)`
+    shreds `<rundir>` into three tokens. A documented command line has no need of shell syntax, so requiring
+    it to carry NONE is a rule an author can satisfy and this checker can enforce with no parser at all.
+
+    Placeholders are blanked first because they are prose, not shell: the live `liveness` copy documents
+    `--machine-action <due | in-flight | none>`, whose `|` is a choice offered to the reader. Requirements
+    are still matched against the ORIGINAL window (`check_marked_commands`), so `--ledger
+    <rundir>/state.jsonl` goes on satisfying the `state.jsonl` path suffix.
+    """
+    bare = PLACEHOLDER.sub(lambda match: _blank(match.group()), window)
+    found = [(bare.find(mark), mark) for mark in NOT_INVOCATION if mark in bare]
+    return min(found)[1] if found else None
+
+
 def check_marked_commands(root: Path | None = None) -> tuple[list[str], list[str]]:
     """Every marked block runs an INVOCATION carrying every token its `gauntlet-cmd` id requires.
 
-    Four ways to fail, and the last two are the ones a marker scheme invites: an invocation omits a required
-    token; the block runs no `ci-status.py` command at all; an id is claimed that this table does not
-    define; or an id this table defines has NO block anywhere. That last one is what stops the marker from
-    quietly narrowing the check — delete the only marked copy of a command and the build goes red, exactly
-    as it did when the checker hunted copies for itself.
+    Five ways to fail, and the last two are the ones a marker scheme invites: an invocation omits a required
+    token; the command line carries text that is not part of the invocation (`_extraneous`); the block runs
+    no `ci-status.py` command at all; an id is claimed that this table does not define; or an id this table
+    defines has NO block anywhere. That last one is what stops the marker from quietly narrowing the check —
+    delete the only marked copy of a command and the build goes red, exactly as it did when the checker
+    hunted copies for itself.
 
     A block also cannot lie about which command it is, because the script name and the subcommand are
     ordinary required tokens: label a `liveness` block `gauntlet-cmd=derive` and it fails on `derive`. That
-    holds only because the tokens are looked for in the COMMAND (`_invocations`) rather than anywhere in the
-    fenced body — a comment or a second line elsewhere in the block would otherwise hand the mislabel the
-    tokens its real invocation does not have.
+    holds only because the tokens are looked for in the COMMAND rather than anywhere in the fenced body,
+    which takes BOTH halves: `_invocations` scopes the search to a command line, and `_extraneous` refuses a
+    command line that carries anything besides the command. Drop either and a comment or a second line hands
+    the mislabel the tokens its real invocation does not have.
     """
     problems, found = [], []
     seen: set[str] = set()
@@ -2409,6 +2451,18 @@ def check_marked_commands(root: Path | None = None) -> tuple[list[str], list[str
                     f"{where} is marked `gauntlet-cmd={cmd_id}` but the block RUNS no `{COMMAND_NAME}` "
                     f"command — the marker promises a copy a reader can run, and there is none to check, "
                     f"so every token the id requires would be looked for in text nobody executes."
+                )
+                continue
+            # THE WINDOW CAN HOLD TEXT THE INVOCATION DOES NOT CONSIST OF. Reported BEFORE the token check
+            # and instead of it: the tokens such a line supplies are the whole reason it is refused, so
+            # naming what it "omits" would describe the wrong defect and invite the wrong repair.
+            if marks := [mark for window in windows if (mark := _extraneous(window))]:
+                problems.append(
+                    f"{where} is marked `gauntlet-cmd={cmd_id}` but its command line carries `{marks[0]}` "
+                    f"— text the invocation does not consist of. This checker refuses shell it does not "
+                    f"parse, because a comment, a chain, a pipe or a substitution ON the command line hands "
+                    f"the block tokens the command a reader RUNS does not carry. Move the comment outside "
+                    f"the fence, or give the second command its own line."
                 )
                 continue
             # A block passes when ONE of its invocations carries everything, and is reported against the
@@ -2480,8 +2534,8 @@ def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) 
          resolve, and it WEDGES. This is the check that catches that, and nothing else in the repo does.
       5. the doc's `gh` INVOCATIONS, in every copy of them, against the argv the code really issues — plus
          the command every MARKED `ci-status.py` block RUNS against the tokens `DOCUMENTED_COMMANDS`
-         requires of that id, and that no runnable copy sits OUTSIDE such a block (prose may NAME a
-         command, never run one).
+         requires of that id, that its command line carries nothing but that invocation, and that no
+         runnable copy sits OUTSIDE such a block (prose may NAME a command, never run one).
       6. the moved-head owner block says the old-head artifact is retained for audit but contributes no
          current-PR verdict, fingerprint, or buckets; and the liveness owner block says that final
          untrusted result increments the refetch counter while trusted current-head evidence resets it.
@@ -2628,7 +2682,8 @@ def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) 
     problems += marked_problems
     if not marked_problems:
         held.append(f"{'the marked command blocks':32} {len(marked_blocks)} blocks across the skill's docs, "
-                    f"every one RUNNING a command that carries every token its gauntlet-cmd id requires")
+                    f"every one RUNNING a command line that carries every token its gauntlet-cmd id "
+                    f"requires and nothing besides the invocation")
     # AND THAT NO RUNNABLE COPY ESCAPED THE MARKER — the check that keeps a forgotten marker LOUD.
     unmarked_problems = check_unmarked_commands()
     problems += unmarked_problems

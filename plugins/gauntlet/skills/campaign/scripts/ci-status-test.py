@@ -1442,8 +1442,10 @@ def marked_command_cases(ci, tmp: Path) -> list[str]:
     MARKED is strictly worse than the copy-hunting it replaced, because a forgotten marker reads as success
     — so that rule is pinned in both directions, including the fenced-but-unmarked shape.
 
-    The scope group is the second: the requirements are read from the invocation, so a fenced body cannot
-    hand a mislabelled block the tokens its real command lacks, and a wrapped command stays one command.
+    The scope group is the second, and it has two halves because scoping to the command LINE is not scoping
+    to the COMMAND: the requirements are read from the invocation, so no other line of the fenced body may
+    hand a mislabelled block the tokens its real command lacks, AND a command line carrying anything besides
+    the command is refused outright instead of parsed. A wrapped command still stays one command.
     """
     problems: list[str] = []
 
@@ -1515,8 +1517,9 @@ def marked_command_cases(ci, tmp: Path) -> list[str]:
 
     # THE TOKENS ARE REQUIRED OF THE COMMAND, NOT OF THE FENCED BODY. Any other line in the block can spell
     # the tokens the real invocation lacks, and a whole-body search then reads a mislabel as complete. Both
-    # carriers are pinned because a comment-stripping fix would pass the first case and fail the second —
-    # neither needs Markdown of any kind, they are just more lines inside the fence.
+    # SEPARATE-LINE carriers are pinned here because a comment-stripping fix would pass the first case and
+    # fail the second — neither needs Markdown of any kind, they are just more lines inside the fence. The
+    # same-LINE carriers are the group below, and they are refused rather than reported as an omission.
     masked = ("# the derive step takes --head-sha <sha> --rundir <dir> ; see above\n"
               + FULL_COMMANDS["liveness"])
     expect_omissions("scope-comment", _marked("derive", masked), ("derive", "--head-sha", "--rundir"),
@@ -1525,6 +1528,38 @@ def marked_command_cases(ci, tmp: Path) -> list[str]:
     expect_omissions("scope-second-line", _marked("derive", second_line),
                      ("derive", "--head-sha", "--rundir"),
                      "a second COMMAND LINE in the block must not supply them either")
+
+    # ...AND THE SAME LINE IS A CARRIER TOO, which is why the block is REFUSED rather than dissected. Scoping
+    # to the command line is not scoping to the command: a trailing comment and a `;` chain both sit inside
+    # the window, and both handed a `gauntlet-cmd=derive` block marked over a `liveness` invocation the
+    # tokens it lacks. Cutting each line at an unquoted `#` closes the first carrier and leaves the second,
+    # so what is pinned is the REFUSAL — these blocks must not be reported as merely omitting a token, or the
+    # author is told to add flags to a line that has to lose its tail instead.
+    def expect_extraneous(slug: str, block: str, why: str) -> None:
+        marked, _blocks = ci.check_marked_commands(_docs(tmp, slug, _every_command_marked() + block))
+        if not any("text the invocation does not consist of" in problem for problem in marked):
+            problems.append(
+                f"[marked commands {slug}] {why}: expected the extraneous-text refusal; got {marked!r}"
+            )
+
+    trailing = FULL_COMMANDS["liveness"] + "   # derive --head-sha abc --rundir run"
+    expect_extraneous("scope-trailing-comment", _marked("derive", trailing),
+                      "a comment on the COMMAND LINE is refused, never read as part of the invocation")
+    chained = FULL_COMMANDS["liveness"] + " ; echo derive --head-sha abc --rundir run"
+    expect_extraneous("scope-chained-command", _marked("derive", chained),
+                      "a second command chained onto the same line is refused too")
+
+    # A `<…>` PLACEHOLDER IS PROSE, NOT SHELL. The live `liveness` copy documents `--machine-action <due |
+    # in-flight | none>`, so a refusal reading that `|` as a pipe would condemn a correct block — which is
+    # why `_extraneous` blanks placeholders first, and why the blanking must stay LOCAL to it. Requirements
+    # are read from the original window, so `--ledger <rundir>/state.jsonl` keeps its `state.jsonl` suffix.
+    placeheld = {
+        "liveness": FULL_COMMANDS["liveness"].replace("--machine-action none",
+                                                      "--machine-action <due | in-flight | none>"),
+        "required-set": "python3 s/ci-status.py required-set --ledger <rundir>/state.jsonl",
+    }
+    expect("placeholder", _every_command_marked(**placeheld), 0, 0,
+           "a `|` inside a placeholder is a documented choice, and a placeholder path keeps its suffix")
 
     # A CONTINUED COMMAND IS ONE COMMAND. The live derive and liveness copies wrap, and a window that ended
     # at the newline would lose `--ledger` from one and `--derive-json`/`--machine-action` from the other —
@@ -1664,7 +1699,8 @@ def run(ci, tmp: Path) -> int:
         print(f"FAIL     {problem}")
     if not marked_command_problems:
         print(f"ok       {'marked command blocks':32} -> the command a block RUNS carries every token its id "
-              f"requires, an id with no block fails, and no runnable copy may sit outside a marked block")
+              f"requires and nothing besides the invocation, an id with no block fails, and no runnable copy "
+              f"may sit outside a marked block")
 
     print()
     print(f"--- doc-check: {ci.SPEC_DOC.name} + {ci.DRIVER_DOC.name} vs the code that runs ---")

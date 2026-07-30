@@ -575,8 +575,11 @@ nothing was looking. Three checks close that, and **none is optional**:
 - the **command a marked block RUNS** carries every token its id requires, and an id the table does not
   define is a failure rather than an exemption. The tokens are required of the invocation — the script
   name to the end of its backslash-continued command line — never of the fenced body around it, so a
-  comment or a second command line in the block cannot supply what the invocation itself lacks. A block
-  that runs no `ci-status.py` command at all is reported as such;
+  comment or a second command line in the block cannot supply what the invocation itself lacks. **A marked
+  block's command line may carry only the invocation**, so a comment, a chain, a pipe or a substitution ON
+  that line is refused rather than parsed: it sits inside the invocation's own line, which is how it would
+  otherwise supply the missing tokens. Put the comment outside the fence and give a second command its own
+  line. A block that runs no `ci-status.py` command at all is reported as such;
 - every id the table defines has **at least one** block somewhere, so deleting the last copy of a command
   goes red instead of quietly narrowing the check to nothing;
 - **no runnable copy sits outside a marked block.** Prose may still NAME a command — `` `ci-status.py
