@@ -1354,14 +1354,6 @@ def verdict_doc_cases(ci) -> list[str]:
     return problems
 
 
-FULL_COMMANDS = {
-    "derive": "python3 s/ci-status.py derive --pr 1 --head-sha abc --rundir run --ledger run/state.jsonl",
-    "liveness": ("python3 s/ci-status.py liveness --ledger run/state.jsonl --pr 1 "
-                 "--derive-json out.json --machine-action none"),
-    "required-set": "python3 s/ci-status.py required-set --ledger run/state.jsonl",
-}
-
-
 def _docs(tmp: Path, slug: str, body: str) -> Path:
     root = tmp / f"marked-commands-{slug}"
     root.mkdir()
@@ -1373,35 +1365,23 @@ def _marked(cmd_id: str, command: str) -> str:
     return f"```sh gauntlet-cmd={cmd_id}\n{command}\n```\n"
 
 
-def _without(command: str, tokens: tuple[str, ...]) -> str:
-    """Drop the tokens that satisfy ONE requirement, keeping every value the command spelled.
-
-    Keeping values is what isolates the omission: `--ledger` and `run/state.jsonl` satisfy two DIFFERENT
-    requirements of `required-set`, so dropping a flag together with its value would remove two at once and
-    the fixture could no longer say which one the checker actually caught.
-    """
-    def drop(token: str) -> bool:
-        return any(token == t or token.endswith(f"/{t}") or token.startswith(f"{t}=") for t in tokens)
-
-    return " ".join(token for token in command.split() if not drop(token))
-
-
-def _every_command_marked(**override: str) -> str:
-    """Every id gets a block, so the has-at-least-one-block rule never fires for an unrelated reason."""
-    return "\n".join(_marked(i, override.get(i, c)) for i, c in FULL_COMMANDS.items())
-
-
 def documented_commands_agree_with_argparse(ci) -> list[str]:
     """`DOCUMENTED_COMMANDS` and the real CLI parser state ONE contract — reconcile them, never restate them.
 
     Every fixture below drives the table, so not one of them can notice that the table is INCOMPLETE: drop a
-    requirement from a row and the case that would have caught it disappears with it. That gap is the defect
-    this pins. The `liveness` row once omitted `--derive-json` — a flag argparse REQUIRES — so `doc-check`
-    reported the documented invocation as carrying every token it needs, and running it exited 2.
+    flag from a row and the case that would have caught it disappears with it. That gap is the defect this
+    pins. The `liveness` row once omitted `--derive-json` — a flag argparse REQUIRES — so `doc-check`
+    reported the documented invocation as complete, and running it exited 2.
 
-    Both directions matter. A required flag missing from a row is a documented copy the tool refuses; a
-    `--flag` in a row that the parser does not define is a token the doc makes authors write and the tool
-    rejects. Only the parser knows either answer, so ask it rather than writing the answer down twice.
+    ARGPARSE'S ROLE IS SMALL AND ONE-DIRECTIONAL, and the direction is the point. It answers two questions:
+    does every flag the canonical copy SPELLS exist, and is every flag the parser REQUIRES spelled? It does
+    NOT get to say which OPTIONAL flags a documented copy carries — generating every optional the parser
+    defines would make `derive`'s canonical copy spell `--repo`, `--ledger` and `--required-set` at once,
+    an invocation the tool itself rejects. The ROW decides that, and only the parser knows the other two
+    answers, so ask it rather than writing them down twice.
+
+    A flag reachable only as an alternation's LATER member is checked for existence but never emitted, so
+    it is held to the parser without being put in front of a reader.
     """
     problems: list[str] = []
     # `_actions` because argparse exposes no public accessor for its actions or its subparser map — the
@@ -1412,45 +1392,72 @@ def documented_commands_agree_with_argparse(ci) -> list[str]:
         return ["[documented commands] build_parser() exposed no subcommands — the reconciliation below "
                 "would then pass by asking nothing, which is this suite's founding defect"]
 
+    # A SLOT NO ROW NAMES IS A DEAD CONSTANT, and a row naming a flag with no slot is a table the generator
+    # cannot render (`KeyError`, from a doc-check that should have reported it). Reconcile the two sets.
+    named = {alt for wanted in ci.DOCUMENTED_COMMANDS.values() for want in wanted
+             for alt in (want if isinstance(want, tuple) else (want,))}
+    if unslotted := sorted(named - set(ci.FLAG_VALUES)):
+        problems.append(f"[documented commands] DOCUMENTED_COMMANDS names {unslotted}, which FLAG_VALUES "
+                        f"gives no value slot — canonical_command() cannot render that row")
+    if unused := sorted(set(ci.FLAG_VALUES) - named):
+        problems.append(f"[documented commands] FLAG_VALUES holds a slot for {unused}, which no row names "
+                        f"— a value nobody can read is a constant that rots unnoticed")
+
     for cmd_id, wanted in ci.DOCUMENTED_COMMANDS.items():
         parser = subcommands.get(cmd_id)
         if parser is None:
             problems.append(f"[documented commands {cmd_id}] DOCUMENTED_COMMANDS names an id that is not a "
-                            f"subcommand of ci-status.py — known: {sorted(subcommands)}")
+                            f"subcommand of ci-status.py — known: {sorted(subcommands)}. The id IS the "
+                            f"subcommand canonical_command() emits, so the generated copy would not run")
             continue
         documented = {alt for want in wanted for alt in (want if isinstance(want, tuple) else (want,))}
+        spelled = set(ci.canonical_flags(cmd_id))
         defined = {opt for action in parser._actions for opt in action.option_strings}
         required = {action.option_strings[0] for action in parser._actions
                     if action.required and action.option_strings}
-        if missing := sorted(required - documented):
+        if missing := sorted(required - spelled):
             problems.append(
-                f"[documented commands {cmd_id}] argparse REQUIRES {missing}, which no DOCUMENTED_COMMANDS "
-                f"entry names — a documented copy without it passes doc-check and the tool refuses to run it"
+                f"[documented commands {cmd_id}] argparse REQUIRES {missing}, which the canonical copy does "
+                f"not spell — doc-check would call that copy correct and the tool would refuse to run it"
             )
         if unknown := sorted(flag for flag in documented if flag.startswith("--") and flag not in defined):
             problems.append(
-                f"[documented commands {cmd_id}] DOCUMENTED_COMMANDS requires {unknown}, which the "
+                f"[documented commands {cmd_id}] DOCUMENTED_COMMANDS names {unknown}, which the "
                 f"{cmd_id} parser does not define — the doc would make every copy carry a rejected flag"
             )
     return problems
 
 
 def marked_command_cases(ci, tmp: Path) -> list[str]:
-    """Pin the marker contract: what a block's COMMAND must carry, and what may not sit outside one.
+    """Pin the marker contract: a marked block's body IS the generated command, and what may sit outside one.
+
+    THE MECHANISM IS ONE COMPARISON, SO IT IS PINNED ONCE AND THE CARRIERS ARE A TABLE. Four earlier rounds
+    asked whether a block's command CARRIED the tokens its id requires, and each died to a different piece
+    of text the author put beside it. Under equality none of those is a separate mechanism: every one of
+    them is simply a body that differs from the generated string, so they are listed as data rather than
+    written out as ten near-identical cases. The table is kept in full anyway — it is the record of what
+    this check has already been broken by, and a future relaxation has to walk past every row of it.
 
     The unmarked-copy group is the one this scheme lives or dies on. A marker that only checks what was
     MARKED is strictly worse than the copy-hunting it replaced, because a forgotten marker reads as success
-    — so that rule is pinned in both directions, including the fenced-but-unmarked shape. It is pinned
-    against a false positive too: a boundary loose enough to call an invented `example-ci-status.py` a copy
-    of this script sends authors to move someone else's command, and the obvious tightening (reusing the
-    locator's `[\\s/=]` left boundary) excludes the backtick and silences the real check instead.
-
-    The BLOCK-IS-ONE-INVOCATION group is the second, and it is a group rather than a case because every
-    round of this check died to a different piece of surrounding text: another line, a comment, a tail on
-    the command's own line, and then text to the LEFT of the command. A block does not CONTAIN its command,
-    it IS its command — a wrapped one still being a single command.
+    — so that rule is pinned in both directions, including the fenced-but-unmarked shape. Its boundary is
+    pinned in both directions too, and the three cases must hold TOGETHER: a boundary loose on the left
+    calls `example-ci-status.py` a copy of this script, a boundary loose on the right calls
+    `ci-status.py.bak` one (this repo ships no script by either name), and the obvious tightening — a
+    shell-token boundary excluding the backtick — silences the code-span copies that are nearly all the
+    real ones. The backticked case is what proves the other two were not bought by silencing the check.
     """
     problems: list[str] = []
+    # THE FIXTURES ARE GENERATED FROM THE TABLE, exactly as the docs are held to be. A hand-written copy
+    # here would be a fourth statement of the command, free to drift from the three the tool already
+    # reconciles. That the generated string is the one the LIVE docs hold is `doc-check`'s job, run by this
+    # same self-test over the real doc tree — so these cases are not comparing the generator to itself.
+    canon = {cmd_id: ci.canonical_command(cmd_id) for cmd_id in ci.DOCUMENTED_COMMANDS}
+    derive, liveness = canon["derive"], canon["liveness"]
+
+    def every(**override: str) -> str:
+        """Every id gets a block, so the has-at-least-one-block rule never fires for an unrelated reason."""
+        return "\n".join(_marked(i, override[i] if i in override else c) for i, c in canon.items())
 
     def expect(slug: str, body: str, want_marked: int, want_unmarked: int, why: str) -> None:
         root = _docs(tmp, slug, body)
@@ -1462,147 +1469,84 @@ def marked_command_cases(ci, tmp: Path) -> list[str]:
                 f"{want_unmarked} unmarked-copy problem(s); got marked={marked!r}, unmarked={unmarked!r}"
             )
 
-    expect("all-present", _every_command_marked(), 0, 0,
-           "a marked block per id, each RUNNING a command that carries every required token, is clean")
+    # THE MECHANISM: the generated command passes, and the ONLY latitude is whitespace.
+    expect("all-present", every(), 0, 0,
+           "a marked block per id, each body EQUAL to that id's generated command, is clean")
 
-    # WHAT A BLOCK MUST CARRY — EVERY entry of EVERY table row, not the one a hand-written case happened to
-    # drop. Driving the table itself is what makes adding a requirement to DOCUMENTED_COMMANDS self-covering:
-    # a row entry the checker does not really enforce fails here the day it is added, with no fixture edit.
-    for cmd_id, wanted in ci.DOCUMENTED_COMMANDS.items():
-        for want in wanted:
-            alternatives = want if isinstance(want, tuple) else (want,)
-            slug = "-".join(alt.lstrip("-") for alt in alternatives)
-            expect(f"omits-{cmd_id}-{slug}",
-                   _every_command_marked(**{cmd_id: _without(FULL_COMMANDS[cmd_id], alternatives)}), 1, 0,
-                   f"a {cmd_id} block missing {' / '.join(alternatives)} is reported")
-    equals = {i: c.replace(" --ledger ", " --ledger=").replace(" --pr ", " --pr=")
-              for i, c in FULL_COMMANDS.items()}
-    expect("equals-form", _every_command_marked(**equals), 0, 0,
-           "argparse's --name=value form satisfies a long-option requirement")
-
-    # `derive` alone accepts either flag for the required set — the drop loop above pins that NEITHER fails,
-    # so pin the other member of the alternation here.
-    alt = FULL_COMMANDS["derive"].replace("--ledger run/state.jsonl", "--required-set unknown")
-    expect("derive-alternation", _every_command_marked(derive=alt), 0, 0,
-           "an explicit --required-set satisfies derive's alternation")
-
-    # A PATH-SUFFIX REQUIREMENT SURVIVES THE WHOLE-TOKEN RULE. `state.jsonl` is required of `required-set`
-    # and every real copy writes it inside a path, so the token rule counts a leading `/` as a token start —
-    # while a LONGER file name is a different file and must not satisfy it.
-    for slug, ledger, want_marked, why in (
-        ("path", "run/state.jsonl", 0, "a <dir>/state.jsonl path satisfies the state.jsonl requirement"),
-        ("bare", "state.jsonl", 0, "an unprefixed state.jsonl satisfies it too"),
-        ("longer", "run/state.jsonl.bak", 1, "state.jsonl.bak is a DIFFERENT file and does not satisfy it"),
-    ):
-        ledger_copy = f"python3 s/ci-status.py required-set --ledger {ledger}"
-        expect(f"suffix-{slug}", _every_command_marked(**{"required-set": ledger_copy}), want_marked, 0, why)
-
-    # A LABEL CANNOT LIE: the script name and subcommand are ordinary required tokens. Assert WHICH tokens
-    # are reported rather than a total — a mislabelled block also misses that id's other flags, and pinning
-    # the count would just re-pin DOCUMENTED_COMMANDS' length in a second place.
-    def expect_omissions(slug: str, block: str, tokens: tuple[str, ...], why: str) -> None:
-        marked, _blocks = ci.check_marked_commands(_docs(tmp, slug, _every_command_marked() + block))
-        missing = [t for t in tokens if not any(f"omits `{t}`" in problem for problem in marked)]
-        if missing:
-            problems.append(
-                f"[marked commands {slug}] {why}: expected the report to name {missing}; got {marked!r}"
-            )
-
-    expect_omissions("mislabelled", _marked("derive", FULL_COMMANDS["liveness"]), ("derive",),
-                     "a liveness command marked gauntlet-cmd=derive must fail on the SUBCOMMAND token")
-    # ...AND CANNOT LIE BY PREFIXING EITHER. A plain substring test accepts a longer word that merely CONTAINS
-    # the required token, so a block whose subcommand only ENDS in the required one passed clean. The script
-    # name is checked the same way, one layer earlier: a block opening `example-tool.py` (invented — it
-    # appears nowhere in this repo) is not this script's invocation at all, which the no-invocation case
-    # below pins.
-    lying = "python3 s/ci-status.py rederive --pr 1 --head-sha abc --rundir run --ledger run/state.jsonl"
-    expect_omissions("prefixed", _marked("derive", lying), ("derive",),
-                     "a token that is only a SUFFIX of a longer word satisfies nothing")
-
-    # THE BLOCK IS THE COMMAND — IT DOES NOT MERELY CONTAIN IT, AND EVERY EARLIER ROUND OF THIS CHECK
-    # ASSUMED OTHERWISE. Each carrier below once handed a `gauntlet-cmd=derive` block marked over a
-    # `liveness` invocation the tokens that invocation lacks, and each one killed the round before it: a
-    # whole-body search fell to another LINE; scoping to the command line fell to a tail ON that line;
-    # refusing the tail fell to text to the LEFT of the command. None of them needs Markdown of any kind.
-    # What is pinned is the REFUSAL, never an omission report — an author told to add `--head-sha` to a
-    # block that has to lose its surrounding text makes the block lie harder.
-    def expect_refusal(slug: str, block: str, why: str) -> None:
-        marked, _blocks = ci.check_marked_commands(_docs(tmp, slug, _every_command_marked() + block))
-        if not any("text the invocation does not consist of" in problem for problem in marked):
-            problems.append(
-                f"[marked commands {slug}] {why}: expected the not-one-invocation refusal; got {marked!r}"
-            )
-
-    masked = ("# the derive step takes --head-sha <sha> --rundir <dir> ; see above\n"
-              + FULL_COMMANDS["liveness"])
-    expect_refusal("scope-comment", _marked("derive", masked),
-                   "a COMMENT line in the block is refused, never stripped and then ignored")
-    second_line = FULL_COMMANDS["liveness"] + "\ngrep derive --head-sha --rundir notes.txt"
-    expect_refusal("scope-second-line", _marked("derive", second_line),
-                   "a second COMMAND LINE in the block is refused too")
-    for slug, tail in (
-        ("comment", "   # derive --head-sha abc --rundir run"),
-        ("chained", " ; echo derive --head-sha abc --rundir run"),
-        ("piped", " | grep derive --head-sha --rundir"),
-        ("and-chained", " && echo derive --head-sha abc --rundir run"),
-        ("substitution", " --note $(echo derive --head-sha abc --rundir run)"),
-    ):
-        expect_refusal(f"scope-trailing-{slug}", _marked("derive", FULL_COMMANDS["liveness"] + tail),
-                       f"a trailing {slug} on the COMMAND LINE is refused, not read as part of it")
-
-    # ...AND THE LEFT OF THE TOKEN IS A CARRIER TOO, which is why the rule is that the block IS the command
-    # rather than that its command line has a clean tail. Both of these are complete, correct `derive`
-    # invocations by every token test — and a reader RUNS neither: the first echoes the command as text,
-    # the second writes it to a file. A check that only subtracts text to the RIGHT of the script name calls
-    # both of them clean, because the author chose what sits to the left.
-    echoed = "echo " + FULL_COMMANDS["derive"]
-    expect_refusal("wrapper-echo", _marked("derive", echoed),
-                   "a block that ECHOES the command does not run it, whatever tokens the line spells")
-    heredoc = "cat > run-derive.sh <<'EOF'\n" + FULL_COMMANDS["derive"] + "\nEOF"
-    expect_refusal("wrapper-heredoc", _marked("derive", heredoc),
-                   "a block that WRITES the command to a file does not run it either")
-
-    # A `<…>` PLACEHOLDER IS PROSE, NOT SHELL. The live `liveness` copy documents `--machine-action <due |
-    # in-flight | none>`, so a refusal reading that `|` as a pipe would condemn a correct block — which is
-    # why `_extraneous` blanks placeholders first, and why the blanking must stay LOCAL to it. Requirements
-    # are read from the original window, so `--ledger <rundir>/state.jsonl` keeps its `state.jsonl` suffix.
-    placeheld = {
-        "liveness": FULL_COMMANDS["liveness"].replace("--machine-action none",
-                                                      "--machine-action <due | in-flight | none>"),
-        "required-set": "python3 s/ci-status.py required-set --ledger <rundir>/state.jsonl",
-    }
-    expect("placeholder", _every_command_marked(**placeheld), 0, 0,
-           "a `|` inside a placeholder is a documented choice, and a placeholder path keeps its suffix")
-
-    # A CONTINUED COMMAND IS ONE COMMAND. The live derive and liveness copies wrap, and a window that ended
-    # at the newline would lose `--ledger` from one and `--derive-json`/`--machine-action` from the other —
+    # A CONTINUED COMMAND IS ONE COMMAND. The live derive and liveness copies wrap, and a byte-exact
+    # comparison would condemn all three blocks over the `\` and the indent that continues the line —
     # turning correct blocks red, which is how a check gets deleted by the next person in a hurry.
-    wrapped_commands = {i: c.replace(" --ledger ", " \\\n    --ledger ") for i, c in FULL_COMMANDS.items()}
-    expect("continuation", _every_command_marked(**wrapped_commands), 0, 0,
-           "a backslash continuation keeps the flags on later lines inside the same invocation")
+    wrapped = {i: c.replace(" --ledger ", " \\\n    --ledger ") for i, c in canon.items()}
+    expect("continuation", every(**wrapped), 0, 0,
+           "a backslash continuation joins into the same one command")
+    spaced = {i: "  " + c.replace(" --ledger ", "   --ledger  ") for i, c in canon.items()}
+    expect("whitespace-runs", every(**spaced), 0, 0,
+           "runs of whitespace collapse, so indentation and alignment are not a difference")
 
-    # A BLOCK THAT RUNS NOTHING IS NOT A CHECKED BLOCK, AND IT GETS ITS OWN MESSAGE. This body is a
-    # complete, correct derive invocation of a DIFFERENT script (`example-ci-status.py` is invented; it
-    # exists nowhere in this repo), so a substring test would find every required token in it — round-1's
-    # defect one layer up. It is also the case that separates the two refusals: telling THIS author to
-    # remove text surrounding the invocation names nothing they wrote, because there is no invocation.
-    no_command = _marked("derive", "python3 s/example-ci-status.py derive --pr 1 --head-sha abc "
-                                   "--rundir run --ledger run/state.jsonl")
-    no_invocation = ci.check_marked_commands(_docs(tmp, "no-invocation",
-                                                   _every_command_marked() + no_command))[0]
-    if not any("RUNS no `ci-status.py` command" in problem for problem in no_invocation):
-        problems.append(
-            f"[marked commands no-invocation] a block whose body runs no ci-status.py command must say so "
-            f"plainly; got {no_invocation!r}"
-        )
+    # EVERY CARRIER THAT EVER BROKE THIS CHECK, AS DATA. Each row is a `gauntlet-cmd=derive` block whose
+    # body is not derive's generated command, so each must be reported — and none of them is named
+    # anywhere in `ci-status.py`, which is the property this table exists to demonstrate: the carriers are
+    # refused by construction, not by enumeration. Adding the block to a clean set means the ONE expected
+    # problem is that block, never a missing-id complaint.
+    carriers: tuple[tuple[str, str, str], ...] = (
+        ("other-script", derive.replace("/ci-status.py ", "/not-ci-status.py "),
+         "a different script — this repo ships none called `not-ci-status.py` — is not this command"),
+        ("prefixed-subcommand", derive.replace(" derive ", " rederive "),
+         "a subcommand that merely ENDS in the required one is a different command"),
+        ("comment-line", "# the derive step takes --head-sha <sha> --rundir <dir>\n" + liveness,
+         "a whole-line comment cannot supply what the invocation beside it lacks"),
+        ("second-line", liveness + "\ngrep derive --head-sha --rundir notes.txt",
+         "a second command line cannot supply it either"),
+        # THE COLLAPSE MUST NOT MERGE LINES, and this is the case that says so: the two lines CONCATENATE
+        # to the canonical string, so a comparison over the whole body joined would call them correct. A
+        # reader running this block runs an incomplete `derive` and then a `--rundir` that is no command.
+        ("split-lines", derive.replace(" --rundir ", "\n--rundir "),
+         "two lines that CONCATENATE to the command are still not one command"),
+        ("trailing-comment", liveness + "   # derive --head-sha abc --rundir run",
+         "nor a trailing comment on the command's own line"),
+        ("chained", liveness + " ; echo derive --head-sha abc --rundir run", "nor a `;` chain"),
+        ("piped", liveness + " | grep derive --head-sha --rundir", "nor a pipe"),
+        ("and-chained", liveness + " && echo derive --head-sha abc --rundir run", "nor an `&&` chain"),
+        ("substitution", liveness + " --note $(echo derive --head-sha abc --rundir run)",
+         "nor a `$(…)` substitution"),
+        ("redirection", liveness + " > /tmp/derive --head-sha abc --rundir run",
+         "nor a `>` redirection, whose OPERAND once supplied both the id and the flags it was missing"),
+        ("mislabelled-tail", liveness + " derive --head-sha abc --rundir run",
+         "nor a tail of arguments the subcommand does not take, which argparse exits 2 on"),
+        ("echo-wrapper", "echo " + derive,
+         "a block that ECHOES the command does not run it, whatever the line spells"),
+        ("heredoc", "cat > run-derive.sh <<'EOF'\n" + derive + "\nEOF",
+         "a block that WRITES the command to a file does not run it either"),
+        ("mislabelled", liveness,
+         "a liveness invocation marked gauntlet-cmd=derive is held to DERIVE's command"),
+        ("omits-flag", derive.replace(" --rundir <rundir>", ""),
+         "a flag the tool requires, dropped, is a different string"),
+        ("extra-flag", derive + " --repo <owner>/<repo>",
+         "and so is an extra one, even a real optional the parser accepts"),
+        ("bracketed-optional", derive + " [--repo <owner>/<repo>]",
+         "and so is a bracketed-optional suffix, which is literal text in a body that must BE the command"),
+        ("equals-form", derive.replace(" --ledger ", " --ledger="),
+         "argparse takes --name=value, but the doc shows ONE spelling and the block must be it"),
+        ("placeholder-edited", derive.replace("<rundir>", "<the run dir>"),
+         "a re-worded placeholder is a second spelling of a value slot the table owns"),
+    )
+    for slug, body, why in carriers:
+        expect(f"carrier-{slug}", every() + _marked("derive", body), 1, 0, why)
+
+    # THE REFUSAL STATES THE ONE REPAIR — the exact string to paste. A message that only says what is wrong
+    # gets the block edited until it passes; this one leaves nothing to decide.
+    report, _blocks = ci.check_marked_commands(_docs(tmp, "message", every() + _marked("derive", liveness)))
+    if not any(derive in problem for problem in report):
+        problems.append(f"[marked commands message] a refused block must be told the exact command to hold; "
+                        f"got {report!r}")
 
     # AN UNKNOWN ID IS REPORTED WHATEVER ITS SPELLING. The id pattern must not decide which ids exist: an id
     # the pattern REJECTS is not a marked block at all, so this branch never fires and the author is instead
     # told to move a block that already sits inside a marked fence.
     for n, spelling in enumerate(("nonesuch", "nonesuch2", "NONESUCH", "none_such", "9")):
-        expect(f"unknown-id-{n}", _every_command_marked() + _marked(spelling, FULL_COMMANDS["derive"]), 1, 0,
+        expect(f"unknown-id-{n}", every() + _marked(spelling, derive), 1, 0,
                f"the undefined id `{spelling}` is a failure, never an exemption")
-    expect("trailing-space", _every_command_marked().replace("=derive\n", "=derive  \n"), 0, 0,
+    expect("trailing-space", every().replace("=derive\n", "=derive  \n"), 0, 0,
            "CommonMark drops trailing info-string spaces, so a marked block stays marked despite them")
 
     # A CHECK THAT FINDS NOTHING MUST NEVER PASS.
@@ -1610,28 +1554,33 @@ def marked_command_cases(ci, tmp: Path) -> list[str]:
            "every id with zero blocks is reported")
 
     # WHAT MAY SIT OUTSIDE A BLOCK. Prose NAMING a command is fine; a runnable copy is not.
-    expect("prose-mention", _every_command_marked() + "\nWritten by `ci-status.py liveness`.\n", 0, 0,
+    expect("prose-mention", every() + "\nWritten by `ci-status.py liveness`.\n", 0, 0,
            "prose naming the command without a flag is a mention, not a copy")
-    expect("prose-copy", _every_command_marked() + "\nRun `ci-status.py required-set --ledger x`.\n", 0, 1,
+    expect("prose-copy", every() + "\nRun `ci-status.py required-set --ledger x`.\n", 0, 1,
            "a flag before the closing backtick makes it a runnable copy outside a block")
-    expect("fenced-unmarked", _every_command_marked() + "\n```sh\n" + FULL_COMMANDS["derive"] + "\n```\n",
-           0, 1, "a fenced block WITHOUT the marker is reported, not silently skipped")
-    wrapped = "\nRun `scripts/ci-status.py\nrequired-set --ledger run/state.jsonl`.\n"
-    expect("prose-copy-wrapped", _every_command_marked() + wrapped, 0, 1,
+    expect("fenced-unmarked", every() + "\n```sh\n" + derive + "\n```\n", 0, 1,
+           "a fenced block WITHOUT the marker is reported, not silently skipped")
+    expect("prose-copy-wrapped", every() + "\nRun `scripts/ci-status.py\nrequired-set --ledger x`.\n", 0, 1,
            "a copy WRAPPED across two lines is still a copy — the window ends at the backtick, not the line")
-    expect("flag-after-span", _every_command_marked() + "\n`ci-status.py derive` needs `--ledger`.\n", 0, 0,
+    expect("flag-after-span", every() + "\n`ci-status.py derive` needs `--ledger`.\n", 0, 0,
            "a flag in a LATER code span does not make an earlier mention a copy")
+    # A flag named in PROSE, with no script name before it in the same window, is not a copy — which is
+    # what lets `stage-2-ci.md` state `required-set`'s optional `--repo` beside its block instead of in it.
+    expect("prose-optional-flag", every() + "\nIt also takes `--repo`, `<owner>/<repo>`.\n", 0, 0,
+           "prose naming a FLAG without the script name in the same window is not a copy")
 
-    # ...AND THE OCCURRENCE ITSELF IS BOUNDED, IN BOTH DIRECTIONS AT ONCE. These two cases must hold
-    # TOGETHER or the boundary is wrong: a substring scan calls another script's command a copy of this one
-    # and sends the author to move it, while the locator's boundary — which does not admit a backtick —
-    # stops seeing the code-span copies that are nearly all of the real ones, and a forgotten marker then
-    # reads as success. The second case is what proves the first was not bought by silencing the check.
-    other_tool = "\nSee `example-ci-status.py derive --pr 1` for the other tool.\n"
-    expect("prose-other-script", _every_command_marked() + other_tool, 0, 0,
-           "a longer script name that merely ENDS in ours is not a copy of ours (example-ci-status.py is "
-           "invented and appears nowhere in this repo)")
-    expect("prose-copy-backticked", _every_command_marked() + "\nRun `ci-status.py derive --pr 1`.\n", 0, 1,
+    # ...AND THE OCCURRENCE ITSELF IS BOUNDED, ON BOTH SIDES AT ONCE. These three cases must hold TOGETHER
+    # or the boundary is wrong: a scan loose on the left calls another tool's command a copy of this one, a
+    # scan loose on the right does the same for a backup of a different file, and the tightening that
+    # excludes the backtick stops seeing the code-span copies that are nearly all the real ones — a
+    # forgotten marker would then read as success. The last case proves the first two were not bought by
+    # silencing the check. Both hypothetical names are safe to write here: this repo ships no script called
+    # either, which a `find` for those file names confirms and which this fixture cannot change.
+    expect("prose-other-script", every() + "\nSee `example-ci-status.py derive --pr 1` for the other tool.\n",
+           0, 0, "a longer script name that merely ENDS in ours is not a copy of ours")
+    expect("prose-backup-file", every() + "\nSee `ci-status.py.bak derive --pr 1` for the old copy.\n", 0, 0,
+           "a DIFFERENT file whose name merely BEGINS with ours is not a copy of ours either")
+    expect("prose-copy-backticked", every() + "\nRun `ci-status.py derive --pr 1`.\n", 0, 1,
            "a copy inside a code span is still a copy — nearly every real one is written that way")
     return problems
 
@@ -1724,9 +1673,9 @@ def run(ci, tmp: Path) -> int:
         failures += 1
         print(f"FAIL     {problem}")
     if not marked_command_problems:
-        print(f"ok       {'marked command blocks':32} -> a block IS one invocation carrying every token its "
-              f"id requires and nothing besides, an id with no block fails, and no runnable copy may sit "
-              f"outside a marked block while another script's command is not one")
+        print(f"ok       {'marked command blocks':32} -> a block's body EQUALS the command generated for its "
+              f"id, every carrier that ever broke this check is refused, an id with no block fails, and no "
+              f"runnable copy may sit outside a marked block while another script's command is not one")
 
     print()
     print(f"--- doc-check: {ci.SPEC_DOC.name} + {ci.DRIVER_DOC.name} vs the code that runs ---")

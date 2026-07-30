@@ -170,8 +170,13 @@ cannot see.**
 Run the required-set command before CI derivation on every heartbeat:
 
 ```sh gauntlet-cmd=required-set
-python3 <skill>/scripts/ci-status.py required-set --ledger <rundir>/state.jsonl [--repo <owner>/<repo>]
+python3 <skill>/scripts/ci-status.py required-set --ledger <rundir>/state.jsonl
 ```
+
+It takes one optional flag the block does not spell — **`--repo`, `<owner>/<repo>`** — and it defaults to
+the current checkout's repository. Pass it when the run is not standing in that repository. (A marked
+block's body must EQUAL the command generated for its id, so an optional-flag suffix belongs in this
+sentence rather than inside the fence; see "Marked command blocks" in `ci-derivation-spec.md`.)
 
 The command GROUPS the nonterminal rows by `effective_base` and reads each **distinct** base once: it
 resolves each base through `ledger.py`, URL-encodes it as an API path segment, scopes every GitHub call to

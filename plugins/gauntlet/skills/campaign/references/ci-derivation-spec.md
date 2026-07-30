@@ -562,34 +562,35 @@ nothing was looking. Three checks close that, and **none is optional**:
 - **`ci-status.py doc-check` checks every `gh` INVOCATION in this file against the argv the code really
   issues** — *every copy of them*, not just the spec block (a recap that drops `,headRefOid` reconstructs a
   fetch the MOVED-HEAD rule can never fire on; that copy had drifted, and this is what caught it). It holds
-  the command every **marked command block** across every skill doc RUNS to the tokens
-  `DOCUMENTED_COMMANDS` requires of it, too — the set that decides a merge must not be droppable by a
-  recap. See "Marked command blocks", below.
+  every **marked command block** across every skill doc to the command `ci-status.py` GENERATES for that
+  block's id, too — the set that decides a merge must not be droppable by a recap. See "Marked command
+  blocks", below.
 
-##### Marked command blocks — a runnable command copy is DECLARED, never guessed at
+##### Marked command blocks — the command is GENERATED, and the block must equal it
 
 **A runnable `ci-status.py` copy lives in a fenced block whose info string is `sh gauntlet-cmd=<id>`.**
-`<id>` keys `DOCUMENTED_COMMANDS` in `ci-status.py`, which owns what tokens that command must carry.
-`doc-check` enforces three things and they are not separable:
+`<id>` keys `DOCUMENTED_COMMANDS` in `ci-status.py`, which — with one value slot per flag — GENERATES the
+canonical string for that command. `doc-check` enforces three things and they are not separable:
 
-- the **command a marked block RUNS** carries every token its id requires, and an id the table does not
-  define is a failure rather than an exemption. **A marked block IS that one invocation** — one
-  backslash-continued command line, beginning with the script name (after an optional `python3` and an
-  optional path) and carrying nothing after it but the command's own arguments. It does not merely CONTAIN
-  the command: a second line, a comment line, a trailing comment, a chain, a pipe or a substitution, and a
-  wrapper that echoes the command or writes it to a file, are all refused rather than parsed, because each
-  is text a reader does not run that would otherwise supply the tokens the invocation itself lacks. Put a
-  comment outside the fence and give a second command its own block. A block that runs no `ci-status.py`
-  command at all is reported as such, in its own words;
+- **a marked block's body EQUALS the generated command**, and an id the table does not define is a failure
+  rather than an exemption. Equality is over the joined logical line with runs of whitespace collapsed, so
+  a copy may wrap across as many backslash-continued lines as it likes and nothing else differs. The check
+  never locates the command inside the body, subtracts text it dislikes, or reasons about shell: a second
+  line, a comment line, a trailing comment, a chain, a pipe, a redirection, a substitution, a wrapper that
+  echoes the command or writes it to a file, and a tail of arguments the subcommand does not take are all
+  simply a different string, refused with no list of them written anywhere. The refusal prints the exact
+  string to paste. Put a comment outside the fence, give a second command its own block, and state an
+  optional flag in the prose beside the block rather than as a `[…]` suffix inside it;
 - every id the table defines has **at least one** block somewhere, so deleting the last copy of a command
   goes red instead of quietly narrowing the check to nothing;
 - **no runnable copy sits outside a marked block.** Prose may still NAME a command — `` `ci-status.py
   liveness` `` is a mention, and a reader who runs it verbatim is REFUSED by the tool, which fails closed.
   A `--flag` after the script name and before the closing backtick makes it a copy, and a copy belongs in a
   block. To recap a command in prose, name it and point at its block; do not respell its flags. The script
-  name is matched whole, so a DIFFERENT tool whose name merely ends in it (`example-ci-status.py` —
-  invented; it appears nowhere in this repo) is not a copy of this one, while a name written inside a code
-  span, or after a `/`, still is.
+  name is matched as a WHOLE FILE NAME on both sides, so neither a longer name ending in it
+  (`example-ci-status.py`) nor a different file beginning with it (`ci-status.py.bak`) is a copy of this
+  one — this repo ships no script by either name — while a name written inside a code span, or after a
+  `/`, still is.
 
 **Why the marker, rather than a cleverer scan.** The check used to hunt runnable copies in free Markdown,
 which meant deciding — for arbitrary prose — whether a stretch of text was a command or a sentence about
@@ -598,10 +599,18 @@ died at their repair cap, and 793 lines of it were deleted unmerged. The marker 
 checker to the author, where it costs one info string and cannot be wrong. Forgetting it is LOUD: the
 unmarked copy is reported, not skipped.
 
-**Illustrating a violation:** use an INVENTED script name, never a real one. A doc that quotes a live line
-as its bad example turns itself into a false-positive generator — the next sweeper searches for the
-example, lands on the correct site, and condemns it. Write `example-tool.py derive --pr 1` (invented; it
-exists nowhere in this repo), not a real invocation.
+**Why EQUALITY, rather than a token check.** Four further rounds asked whether a documented line carried
+the tokens its id requires, and each died to a different piece of text the block's author put beside the
+command. Judging a line by searching it has no fixed point, because the author picks what else is on that
+line and can always add more. Equality has exactly one: the generated string. Do not add a case to it —
+a new carrier means the comparison stopped being equality.
+
+**Illustrating a violation:** use a HYPOTHETICAL script name, never a real one. A doc that quotes a live
+line as its bad example turns itself into a false-positive generator — the next sweeper searches for the
+example, lands on the correct site, and condemns it. Write `example-tool.py derive --pr 1`, not a real
+invocation: this repo ships no script called `example-tool.py`, so the illustration names nothing a reader
+can act on by mistake. That stays true when a fixture quotes the name, which is why the claim is about the
+scripts this repo SHIPS rather than about where the characters appear.
 
 **TWO refusals are CROSS-SOURCE and no single-fetch filter can state them** — the rollup's `StatusContext`
 **coverage**, and the **AGREEMENT** of the two sources about a check they both report. One `jq` filter sees
