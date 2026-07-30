@@ -2365,8 +2365,10 @@ def check_required_set_copies(root: Path | None = None) -> tuple[list[str], list
 # line has no fixed point, because the author picks what else is on that line and can always add more.
 # EQUALITY has one: exactly one string passes, this file writes it, and every carrier above fails BY
 # CONSTRUCTION instead of by enumeration. Nothing here parses shell, subtracts text, or locates a window —
-# the only latitude is `_collapsed_lines`, which joins continuations and collapses whitespace runs so a
-# wrapped copy is the same command as an unwrapped one.
+# the only latitude is `_collapsed_lines`, which joins continuations and collapses separator runs so a
+# wrapped copy is the same command as an unwrapped one. EVERY BOUNDARY IN THAT LATITUDE IS THE SHELL'S, NOT
+# PYTHON'S — see `_SHELL_BLANK`, which owns that rule: a body carrying a separator the shell does not
+# recognize is a different string here too, exactly as it is a different command there.
 #
 # A ROW IS NOT HAND-MAINTAINED AGAINST THE CLI. Every fixture that drives this table is blind to a row that
 # is INCOMPLETE, because the omission deletes the case that would have caught it — so the suite reconciles
@@ -2375,6 +2377,10 @@ def check_required_set_copies(root: Path | None = None) -> tuple[list[str], list
 # argparse's remaining job is exactly that reconciliation: the row, never the parser, decides which
 # OPTIONAL flags a documented copy spells, because `derive` alone would otherwise gain `--repo`,
 # `--ledger` and `--required-set` all at once.
+#
+# ARGPARSE CANNOT STATE EVERY REQUIREMENT, AND THE ONES IT CANNOT WERE INVISIBLE TO THAT RECONCILIATION.
+# `action.required` is per-flag; a requirement over a SET of flags has no argparse spelling here. Those are
+# declared in `REQUIRED_ONE_OF` below and reconciled from the same declaration `main()` enforces.
 #
 # WHY THE MARKER, RATHER THAN A CLEVERER SCAN. Checking a command by hunting it in free Markdown means
 # deciding, for arbitrary prose, whether a stretch of text is a command or a sentence about one. That
@@ -2407,7 +2413,8 @@ FLAG_VALUES: dict[str, str] = {
 DOCUMENTED_COMMANDS: dict[str, tuple[str | tuple[str, ...], ...]] = {
     # The required set is what makes `green` mean *the required set passed*, and it is the ROW's
     # `effective_required_set`: name it with `--ledger` (resolve the row's set — the production form) or
-    # with an explicit `--required-set`. A copy carrying NEITHER reconstructs an invocation the tool refuses.
+    # with an explicit `--required-set`. A copy carrying NEITHER reconstructs an invocation the tool refuses,
+    # and `REQUIRED_ONE_OF` below is what holds this alternation to that refusal in both directions.
     "derive": ("--pr", "--head-sha", "--rundir", ("--ledger", "--required-set")),
     # `--machine-action` is the one judgment the command asks of its caller. A reader who drops the question
     # and invents a default strikes the very PR a fix is about to move. `--derive-json` is the evidence the
@@ -2418,6 +2425,50 @@ DOCUMENTED_COMMANDS: dict[str, tuple[str | tuple[str, ...], ...]] = {
     # is literal text in a body that must BE the command, so the block would no longer equal it.
     "required-set": ("--ledger",),
 }
+# THE REQUIREMENT ARGPARSE CANNOT HOLD: at least ONE member of each group must be given. `required=True` on
+# a mutually exclusive group is the wrong shape here, because `--ledger` TOGETHER WITH `--required-set` is a
+# legal `derive` invocation — the explicit set is then an assertion about the row's. So the rule is declared
+# HERE, and both of its readers read it: `check_one_of` enforces it in `main()`, and
+# `ci-status-test.documented_commands_agree_with_argparse` reconciles it against the row and the parser.
+#
+# THE DECLARATION EXISTS BECAUSE A RULE ONLY `main()` KNEW WAS INVISIBLE TO THE RECONCILIATION. That check
+# derives "required" from argparse's `action.required` alone, and neither flag is argparse-required, so a
+# `derive` row that dropped the alternation AND its value slot left every check clean while the generated
+# command exited 2 — an incomplete row is exactly what the two-way reconciliation is for.
+#
+# Each group maps to WHY it exists, in the words the refusal shows its caller: ONE structure, so a group and
+# its reason cannot drift apart, and a group added with no reason is a syntax error rather than a silence.
+REQUIRED_ONE_OF: dict[str, dict[tuple[str, ...], str]] = {
+    "derive": {
+        ("--ledger", "--required-set"):
+            "--ledger resolves the row's effective required set (the production form) and --required-set "
+            "states one explicitly. A derive with NEITHER has no set to decide under, and defaulting one "
+            "is the false green this whole tool exists to kill",
+    },
+}
+
+
+def one_of_dest(flag: str) -> str:
+    """The `argparse` attribute a long option lands in — `--required-set` reads as `required_set`.
+
+    argparse derives a dest from an option's long spelling exactly this way, and nothing here relies on that
+    quietly: `documented_commands_agree_with_argparse` asserts every `REQUIRED_ONE_OF` member is defined by
+    its subparser AND lands on this dest, so a `dest=` override is a REPORTED failure rather than a guard
+    reading an attribute that is always None.
+    """
+    return flag.lstrip("-").replace("-", "_")
+
+
+def check_one_of(cmd_id: str, args: argparse.Namespace) -> None:
+    """Refuse an invocation that gives NO member of a `REQUIRED_ONE_OF` group — the one-of rule, enforced
+    from the declaration rather than restated beside the branch that consumes the answer.
+
+    Reading an absent dest as "not given" is deliberate and FAIL-CLOSED: a mis-derived dest refuses a legal
+    invocation, which the caller sees, instead of accepting an invocation the tool cannot serve.
+    """
+    for group, why in REQUIRED_ONE_OF.get(cmd_id, {}).items():
+        if all(getattr(args, one_of_dest(flag), None) is None for flag in group):
+            fail(f"{cmd_id} needs one of {' or '.join(group)} — {why}")
 
 
 def canonical_flags(cmd_id: str) -> list[str]:
@@ -2540,6 +2591,29 @@ _CONTINUATION = r"[ \t]\\"
 CONTINUED_LINE = re.compile(_CONTINUATION + r"\Z")
 CONTINUATION_JOIN = re.compile(_CONTINUATION + r"\n")
 
+# THE WHOLE SCAN DECIDES ITS LINE BREAKS, TOKEN BOUNDARIES AND BLANKNESS THE WAY A SHELL DOES: ASCII SPACE,
+# TAB AND LINE FEED, AND NOTHING ELSE. Python's own defaults are UNICODE-aware, and every one of them is a
+# question about a SHELL answered with a different grammar than the shell uses — so a body that Python reads
+# as the canonical command is one `bash` reads as something else, and the block passes while the documented
+# invocation does not run. All three of those disagreements were confirmed against `bash`:
+#
+#   - `str.splitlines()` breaks at U+2028, U+2029, U+0085 and the C0 breaks. To the shell none of those is a
+#     newline, so a `\` before one ESCAPES it into a literal character glued onto the next word, and the flag
+#     that follows never reaches argparse.
+#   - a bare `str.strip()` treats a line holding only U+00A0 as blank and DROPS it. The shell treats that
+#     line as one nonempty WORD and runs it as a second command, so the block holds two commands while the
+#     comparison sees one.
+#   - a bare `str.split()` splits on `str.isspace()`, which is True for U+00A0, and NORMALIZES it to a space.
+#     The shell does not: `python3<U+00A0>…` is a single word and it is the command NAME.
+#
+# `CONTINUED_LINE`/`CONTINUATION_JOIN` above were already written this way (`[ \t]` literals), and
+# `MARKED_OPENER`/`MARKED_CLOSE` are too — `re.M` anchors break only at `\n`. These two constants extend the
+# same discipline to the three places that had reached for a Python default, so ONE grammar decides every
+# boundary in the scan. Anything outside `[ \t\n]` is ORDINARY TEXT here, exactly as it is to the shell, and
+# a body carrying it is simply a different string from the generated command.
+_SHELL_BLANK = " \t\n"          # all a logical line may hold and still be blank
+_SHELL_RUN = re.compile(r"[ \t]+")   # the separator run the collapse folds to one space
+
 
 def _logical_lines(body: str) -> list[str]:
     """A fenced body's non-blank LOGICAL lines: backslash continuations joined into the line they continue.
@@ -2550,18 +2624,34 @@ def _logical_lines(body: str) -> list[str]:
 
     A line continues only when it ends `CONTINUED_LINE`'s way. Anything else ENDS its logical line, which
     is what keeps two commands the shell would run separately from being joined into one here.
+
+    **A LINE BREAK IS `\\n` AND BLANK IS `_SHELL_BLANK`** — never `splitlines()` and never a bare `strip()`,
+    for the reason stated where those constants are defined. Both flushes below strip the same way, because
+    a trailing pending group is as much a logical line as any other. Only the LOOP flush can be caught
+    misbehaving, though: the trailing one runs only when the last physical line CONTINUES, so its group
+    always ends in a backslash and no blank test of any grammar calls that blank. `ci-status-test`'s
+    `trailing-flush` case pins exactly that, so the day it stops being true is the day it is reported.
     """
     lines: list[str] = []
     pending: list[str] = []
-    for line in body.splitlines():
+    # `split("\n")` and NOT `splitlines()`, for the reason `_SHELL_BLANK` states. On ASCII input the two
+    # differ in exactly one way — `split` yields an empty final element for a body ending in `\n` and
+    # `splitlines` does not — and that difference is not cosmetic: it would make the body's last physical
+    # line a blank one, so a DANGLING continuation at the end of the body would join with nothing and
+    # collapse into the canonical string. Dropping the element keeps every ASCII body reading exactly as it
+    # read before, and leaves the Unicode question the only thing this rule changes.
+    physical = body.split("\n")
+    if physical and physical[-1] == "":
+        physical.pop()
+    for line in physical:
         pending.append(line)
         if CONTINUED_LINE.search(line):
             continue
         joined = "\n".join(pending)
         pending = []
-        if joined.strip():
+        if joined.strip(_SHELL_BLANK):
             lines.append(joined)
-    if pending and "\n".join(pending).strip():
+    if pending and "\n".join(pending).strip(_SHELL_BLANK):
         lines.append("\n".join(pending))
     return lines
 
@@ -2578,8 +2668,13 @@ def _collapsed_lines(body: str) -> list[str]:
     LIST against a one-element list, so a body split across two commands cannot pass by concatenating into
     the canonical string. A backslash that is NOT a continuation by `CONTINUATION_JOIN`'s rule survives into
     the collapsed line, so a body the shell would read as one invalid token is a different string here too.
+
+    **THE RUN COLLAPSED IS `_SHELL_RUN`** — never a bare `split()`, for the reason stated where that
+    constant is defined. A character the shell does not separate words on stays in the string and makes the
+    body differ from the generated command, which is the correct answer and not a special case.
     """
-    return [" ".join(CONTINUATION_JOIN.sub(" ", line).split()) for line in _logical_lines(body)]
+    return [" ".join(_SHELL_RUN.split(CONTINUATION_JOIN.sub(" ", line).strip(" \t")))
+            for line in _logical_lines(body)]
 
 
 def check_marked_commands(root: Path | None = None) -> tuple[list[str], list[str]]:
@@ -2949,8 +3044,10 @@ def build_parser() -> argparse.ArgumentParser:
     # per-row, so its required set is too), resolved from the ledger:
     #   --ledger <rundir>/state.jsonl
     # `--required-set` remains for the pure/explicit path (tests, an out-of-run spec): with `--ledger` it is
-    # an ASSERTION that must equal the row's effective set; without `--ledger` it IS the set, verbatim. One of
-    # the two is REQUIRED. `unknown` is a legal value that can NEVER go green (a `pending` bullet in DECIDE) —
+    # an ASSERTION that must equal the row's effective set; without `--ledger` it IS the set, verbatim. THAT
+    # ONE OF THEM IS REQUIRED IS `REQUIRED_ONE_OF`'S TO SAY, and it says it for both readers — neither flag
+    # can be marked `required=True` here, because either alone is a complete invocation and both together
+    # are a legal one. `unknown` is a legal value that can NEVER go green (a `pending` bullet in DECIDE) —
     # exactly what makes a run that never performed the read merge NOTHING, instead of merging everything.
     d.add_argument("--ledger", type=Path,
                    help="the run's state.jsonl — resolve the row's `effective_required_set` (its explicit "
@@ -3061,15 +3158,14 @@ def main() -> int:
     if args.repo is not None:
         check_repo(args.repo)
     # The required set is the ROW's effective set when a ledger is named (the production form); an explicit
-    # `--required-set` is the pure/test path AND, with `--ledger`, an assertion. One of the two is required —
-    # a derive with NEITHER would have no set to decide under, and defaulting one is the false green this
-    # whole tool exists to kill.
+    # `--required-set` is the pure/test path AND, with `--ledger`, an assertion. THAT ONE OF THE TWO IS
+    # REQUIRED is `REQUIRED_ONE_OF`'s to say, not this branch's — stated in both places it would be a rule
+    # the doc reconciliation could not see, which is how a row that dropped the alternation stayed clean.
+    check_one_of("derive", args)
     if args.ledger is not None:
         required = resolve_required_for_derive(str(args.ledger), args.pr, args.required_set)
-    elif args.required_set is not None:
-        required = check_required_set(args.required_set)
     else:
-        fail("derive needs --ledger (resolve the row's effective required set) or an explicit --required-set")
+        required = check_required_set(args.required_set)
 
     repo = args.repo
     if not repo:

@@ -588,12 +588,20 @@ separable:
   close is not permitted the three spaces of indent CommonMark would allow it; an indented close reads as
   an opener that never closes, and being told to unindent is the intended fail-closed outcome;
 - **a marked block's body EQUALS the generated command**, and an id the table does not define is a failure
-  rather than an exemption. Equality is over the joined logical line with runs of whitespace collapsed, so
+  rather than an exemption. Equality is over the joined logical line with runs of separators collapsed, so
   a copy may wrap across as many lines as it likes — **breaking only at a space followed by a backslash at
   end of line**, the one wrap spelling the shell reads the same way. A backslash with no space before it
   makes the shell join the two lines into a single invalid token, and whitespace after the backslash makes
   the shell END the command and run the next line separately; both are a different string here, so both
-  are reported rather than passed as canonical. The check never locates the command inside the body,
+  are reported rather than passed as canonical. A trailing backslash on the body's LAST line is a wrap onto
+  a line the block does not have, and is reported for the same reason. **Every boundary in this comparison
+  is the SHELL's: a separator is an ASCII space, tab or line feed, and nothing else** — the check asks where
+  a line breaks, where a word ends and whether a line is blank exactly as `bash` answers them, never as
+  Python's Unicode-aware defaults do. So a non-breaking space between two words, a line break written with
+  U+2028, U+2029 or U+0085, and a line holding only a non-breaking space are all ordinary text in the string
+  compared, and a body carrying one differs from the generated command — which is the accurate answer,
+  because the shell does not read any of them as a separator either. The check never locates the command
+  inside the body,
   subtracts text it dislikes, or reasons about shell: a second line, a comment line, a trailing comment, a
   chain, a pipe, a redirection, a substitution, a wrapper that echoes the command or writes it to a file,
   and a tail of arguments the subcommand does not take are all simply a different string, refused with no
@@ -608,7 +616,11 @@ skill's prose for copies of `derive`, `liveness` and `required-set` and still fa
 they cannot tell a reader is that a documented command is the command the tool ACCEPTS: they ask whether a
 copy carries the one flag each was taught to look for. Equality against a generated string answers that
 question, and `DOCUMENTED_COMMANDS` is reconciled against the real argparse parser in both directions, so a
-flag the tool REQUIRES cannot go missing from the string the docs are held to.
+flag the tool REQUIRES cannot go missing from the string the docs are held to. A parser cannot state every
+requirement, though: `action.required` speaks per flag, and `derive` needs one of `--ledger` or
+`--required-set` while accepting BOTH, which no argparse construct expresses. Requirements over a SET of
+flags are therefore declared once in `REQUIRED_ONE_OF`, the CLI guard and the reconciliation both read that
+declaration, and a row that stopped recording one is reported instead of generating a command that exits 2.
 
 **Why EQUALITY, rather than a token check.** Four rounds of review asked whether a documented line carried
 the tokens its id requires, and each died to a different piece of text the block's author put beside the
