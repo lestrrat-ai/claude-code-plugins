@@ -1440,12 +1440,15 @@ def marked_command_cases(ci, tmp: Path) -> list[str]:
 
     The unmarked-copy group is the one this scheme lives or dies on. A marker that only checks what was
     MARKED is strictly worse than the copy-hunting it replaced, because a forgotten marker reads as success
-    — so that rule is pinned in both directions, including the fenced-but-unmarked shape.
+    — so that rule is pinned in both directions, including the fenced-but-unmarked shape. It is pinned
+    against a false positive too: a boundary loose enough to call an invented `example-ci-status.py` a copy
+    of this script sends authors to move someone else's command, and the obvious tightening (reusing the
+    locator's `[\\s/=]` left boundary) excludes the backtick and silences the real check instead.
 
-    The scope group is the second, and it has two halves because scoping to the command LINE is not scoping
-    to the COMMAND: the requirements are read from the invocation, so no other line of the fenced body may
-    hand a mislabelled block the tokens its real command lacks, AND a command line carrying anything besides
-    the command is refused outright instead of parsed. A wrapped command still stays one command.
+    The BLOCK-IS-ONE-INVOCATION group is the second, and it is a group rather than a case because every
+    round of this check died to a different piece of surrounding text: another line, a comment, a tail on
+    the command's own line, and then text to the LEFT of the command. A block does not CONTAIN its command,
+    it IS its command — a wrapped one still being a single command.
     """
     problems: list[str] = []
 
@@ -1509,45 +1512,55 @@ def marked_command_cases(ci, tmp: Path) -> list[str]:
                      "a liveness command marked gauntlet-cmd=derive must fail on the SUBCOMMAND token")
     # ...AND CANNOT LIE BY PREFIXING EITHER. A plain substring test accepts a longer word that merely CONTAINS
     # the required token, so a block whose subcommand only ENDS in the required one passed clean. The script
-    # name is checked the same way, one layer earlier: `example-tool.py` (invented — it appears nowhere in
-    # this repo) opens no invocation window at all, which the no-invocation case below pins.
+    # name is checked the same way, one layer earlier: a block opening `example-tool.py` (invented — it
+    # appears nowhere in this repo) is not this script's invocation at all, which the no-invocation case
+    # below pins.
     lying = "python3 s/ci-status.py rederive --pr 1 --head-sha abc --rundir run --ledger run/state.jsonl"
     expect_omissions("prefixed", _marked("derive", lying), ("derive",),
                      "a token that is only a SUFFIX of a longer word satisfies nothing")
 
-    # THE TOKENS ARE REQUIRED OF THE COMMAND, NOT OF THE FENCED BODY. Any other line in the block can spell
-    # the tokens the real invocation lacks, and a whole-body search then reads a mislabel as complete. Both
-    # SEPARATE-LINE carriers are pinned here because a comment-stripping fix would pass the first case and
-    # fail the second — neither needs Markdown of any kind, they are just more lines inside the fence. The
-    # same-LINE carriers are the group below, and they are refused rather than reported as an omission.
-    masked = ("# the derive step takes --head-sha <sha> --rundir <dir> ; see above\n"
-              + FULL_COMMANDS["liveness"])
-    expect_omissions("scope-comment", _marked("derive", masked), ("derive", "--head-sha", "--rundir"),
-                     "a COMMENT in the block must not supply tokens the invocation omits")
-    second_line = FULL_COMMANDS["liveness"] + "\ngrep derive --head-sha --rundir notes.txt"
-    expect_omissions("scope-second-line", _marked("derive", second_line),
-                     ("derive", "--head-sha", "--rundir"),
-                     "a second COMMAND LINE in the block must not supply them either")
-
-    # ...AND THE SAME LINE IS A CARRIER TOO, which is why the block is REFUSED rather than dissected. Scoping
-    # to the command line is not scoping to the command: a trailing comment and a `;` chain both sit inside
-    # the window, and both handed a `gauntlet-cmd=derive` block marked over a `liveness` invocation the
-    # tokens it lacks. Cutting each line at an unquoted `#` closes the first carrier and leaves the second,
-    # so what is pinned is the REFUSAL — these blocks must not be reported as merely omitting a token, or the
-    # author is told to add flags to a line that has to lose its tail instead.
-    def expect_extraneous(slug: str, block: str, why: str) -> None:
+    # THE BLOCK IS THE COMMAND — IT DOES NOT MERELY CONTAIN IT, AND EVERY EARLIER ROUND OF THIS CHECK
+    # ASSUMED OTHERWISE. Each carrier below once handed a `gauntlet-cmd=derive` block marked over a
+    # `liveness` invocation the tokens that invocation lacks, and each one killed the round before it: a
+    # whole-body search fell to another LINE; scoping to the command line fell to a tail ON that line;
+    # refusing the tail fell to text to the LEFT of the command. None of them needs Markdown of any kind.
+    # What is pinned is the REFUSAL, never an omission report — an author told to add `--head-sha` to a
+    # block that has to lose its surrounding text makes the block lie harder.
+    def expect_refusal(slug: str, block: str, why: str) -> None:
         marked, _blocks = ci.check_marked_commands(_docs(tmp, slug, _every_command_marked() + block))
         if not any("text the invocation does not consist of" in problem for problem in marked):
             problems.append(
-                f"[marked commands {slug}] {why}: expected the extraneous-text refusal; got {marked!r}"
+                f"[marked commands {slug}] {why}: expected the not-one-invocation refusal; got {marked!r}"
             )
 
-    trailing = FULL_COMMANDS["liveness"] + "   # derive --head-sha abc --rundir run"
-    expect_extraneous("scope-trailing-comment", _marked("derive", trailing),
-                      "a comment on the COMMAND LINE is refused, never read as part of the invocation")
-    chained = FULL_COMMANDS["liveness"] + " ; echo derive --head-sha abc --rundir run"
-    expect_extraneous("scope-chained-command", _marked("derive", chained),
-                      "a second command chained onto the same line is refused too")
+    masked = ("# the derive step takes --head-sha <sha> --rundir <dir> ; see above\n"
+              + FULL_COMMANDS["liveness"])
+    expect_refusal("scope-comment", _marked("derive", masked),
+                   "a COMMENT line in the block is refused, never stripped and then ignored")
+    second_line = FULL_COMMANDS["liveness"] + "\ngrep derive --head-sha --rundir notes.txt"
+    expect_refusal("scope-second-line", _marked("derive", second_line),
+                   "a second COMMAND LINE in the block is refused too")
+    for slug, tail in (
+        ("comment", "   # derive --head-sha abc --rundir run"),
+        ("chained", " ; echo derive --head-sha abc --rundir run"),
+        ("piped", " | grep derive --head-sha --rundir"),
+        ("and-chained", " && echo derive --head-sha abc --rundir run"),
+        ("substitution", " --note $(echo derive --head-sha abc --rundir run)"),
+    ):
+        expect_refusal(f"scope-trailing-{slug}", _marked("derive", FULL_COMMANDS["liveness"] + tail),
+                       f"a trailing {slug} on the COMMAND LINE is refused, not read as part of it")
+
+    # ...AND THE LEFT OF THE TOKEN IS A CARRIER TOO, which is why the rule is that the block IS the command
+    # rather than that its command line has a clean tail. Both of these are complete, correct `derive`
+    # invocations by every token test — and a reader RUNS neither: the first echoes the command as text,
+    # the second writes it to a file. A check that only subtracts text to the RIGHT of the script name calls
+    # both of them clean, because the author chose what sits to the left.
+    echoed = "echo " + FULL_COMMANDS["derive"]
+    expect_refusal("wrapper-echo", _marked("derive", echoed),
+                   "a block that ECHOES the command does not run it, whatever tokens the line spells")
+    heredoc = "cat > run-derive.sh <<'EOF'\n" + FULL_COMMANDS["derive"] + "\nEOF"
+    expect_refusal("wrapper-heredoc", _marked("derive", heredoc),
+                   "a block that WRITES the command to a file does not run it either")
 
     # A `<…>` PLACEHOLDER IS PROSE, NOT SHELL. The live `liveness` copy documents `--machine-action <due |
     # in-flight | none>`, so a refusal reading that `|` as a pipe would condemn a correct block — which is
@@ -1568,10 +1581,11 @@ def marked_command_cases(ci, tmp: Path) -> list[str]:
     expect("continuation", _every_command_marked(**wrapped_commands), 0, 0,
            "a backslash continuation keeps the flags on later lines inside the same invocation")
 
-    # A BLOCK THAT RUNS NOTHING IS NOT A CHECKED BLOCK — and THE LOCATOR IS WHOLE-TOKEN TOO. This body is a
+    # A BLOCK THAT RUNS NOTHING IS NOT A CHECKED BLOCK, AND IT GETS ITS OWN MESSAGE. This body is a
     # complete, correct derive invocation of a DIFFERENT script (`example-ci-status.py` is invented; it
-    # exists nowhere in this repo). A substring locator would open a window at the script-name SUFFIX and
-    # then find every required token inside it, which is round-1's defect returning one layer up.
+    # exists nowhere in this repo), so a substring test would find every required token in it — round-1's
+    # defect one layer up. It is also the case that separates the two refusals: telling THIS author to
+    # remove text surrounding the invocation names nothing they wrote, because there is no invocation.
     no_command = _marked("derive", "python3 s/example-ci-status.py derive --pr 1 --head-sha abc "
                                    "--rundir run --ledger run/state.jsonl")
     no_invocation = ci.check_marked_commands(_docs(tmp, "no-invocation",
@@ -1607,6 +1621,18 @@ def marked_command_cases(ci, tmp: Path) -> list[str]:
            "a copy WRAPPED across two lines is still a copy — the window ends at the backtick, not the line")
     expect("flag-after-span", _every_command_marked() + "\n`ci-status.py derive` needs `--ledger`.\n", 0, 0,
            "a flag in a LATER code span does not make an earlier mention a copy")
+
+    # ...AND THE OCCURRENCE ITSELF IS BOUNDED, IN BOTH DIRECTIONS AT ONCE. These two cases must hold
+    # TOGETHER or the boundary is wrong: a substring scan calls another script's command a copy of this one
+    # and sends the author to move it, while the locator's boundary — which does not admit a backtick —
+    # stops seeing the code-span copies that are nearly all of the real ones, and a forgotten marker then
+    # reads as success. The second case is what proves the first was not bought by silencing the check.
+    other_tool = "\nSee `example-ci-status.py derive --pr 1` for the other tool.\n"
+    expect("prose-other-script", _every_command_marked() + other_tool, 0, 0,
+           "a longer script name that merely ENDS in ours is not a copy of ours (example-ci-status.py is "
+           "invented and appears nowhere in this repo)")
+    expect("prose-copy-backticked", _every_command_marked() + "\nRun `ci-status.py derive --pr 1`.\n", 0, 1,
+           "a copy inside a code span is still a copy — nearly every real one is written that way")
     return problems
 
 
@@ -1698,9 +1724,9 @@ def run(ci, tmp: Path) -> int:
         failures += 1
         print(f"FAIL     {problem}")
     if not marked_command_problems:
-        print(f"ok       {'marked command blocks':32} -> the command a block RUNS carries every token its id "
-              f"requires and nothing besides the invocation, an id with no block fails, and no runnable copy "
-              f"may sit outside a marked block")
+        print(f"ok       {'marked command blocks':32} -> a block IS one invocation carrying every token its "
+              f"id requires and nothing besides, an id with no block fails, and no runnable copy may sit "
+              f"outside a marked block while another script's command is not one")
 
     print()
     print(f"--- doc-check: {ci.SPEC_DOC.name} + {ci.DRIVER_DOC.name} vs the code that runs ---")

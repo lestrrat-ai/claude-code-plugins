@@ -573,19 +573,23 @@ nothing was looking. Three checks close that, and **none is optional**:
 `doc-check` enforces three things and they are not separable:
 
 - the **command a marked block RUNS** carries every token its id requires, and an id the table does not
-  define is a failure rather than an exemption. The tokens are required of the invocation — the script
-  name to the end of its backslash-continued command line — never of the fenced body around it, so a
-  comment or a second command line in the block cannot supply what the invocation itself lacks. **A marked
-  block's command line may carry only the invocation**, so a comment, a chain, a pipe or a substitution ON
-  that line is refused rather than parsed: it sits inside the invocation's own line, which is how it would
-  otherwise supply the missing tokens. Put the comment outside the fence and give a second command its own
-  line. A block that runs no `ci-status.py` command at all is reported as such;
+  define is a failure rather than an exemption. **A marked block IS that one invocation** — one
+  backslash-continued command line, beginning with the script name (after an optional `python3` and an
+  optional path) and carrying nothing after it but the command's own arguments. It does not merely CONTAIN
+  the command: a second line, a comment line, a trailing comment, a chain, a pipe or a substitution, and a
+  wrapper that echoes the command or writes it to a file, are all refused rather than parsed, because each
+  is text a reader does not run that would otherwise supply the tokens the invocation itself lacks. Put a
+  comment outside the fence and give a second command its own block. A block that runs no `ci-status.py`
+  command at all is reported as such, in its own words;
 - every id the table defines has **at least one** block somewhere, so deleting the last copy of a command
   goes red instead of quietly narrowing the check to nothing;
 - **no runnable copy sits outside a marked block.** Prose may still NAME a command — `` `ci-status.py
   liveness` `` is a mention, and a reader who runs it verbatim is REFUSED by the tool, which fails closed.
   A `--flag` after the script name and before the closing backtick makes it a copy, and a copy belongs in a
-  block. To recap a command in prose, name it and point at its block; do not respell its flags.
+  block. To recap a command in prose, name it and point at its block; do not respell its flags. The script
+  name is matched whole, so a DIFFERENT tool whose name merely ends in it (`example-ci-status.py` —
+  invented; it appears nowhere in this repo) is not a copy of this one, while a name written inside a code
+  span, or after a `/`, still is.
 
 **Why the marker, rather than a cleverer scan.** The check used to hunt runnable copies in free Markdown,
 which meant deciding — for arbitrary prose — whether a stretch of text was a command or a sentence about
