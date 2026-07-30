@@ -1444,10 +1444,19 @@ def documentation_option_form_cases(ci, tmp: Path) -> list[str]:
     return problems
 
 
-def _docs(tmp: Path, slug: str, body: str) -> Path:
+def _docs(tmp: Path, slug: str, body: str, **extra: str) -> Path:
+    """A doc tree holding `commands.md` and any `extra` file, written BYTE FOR BYTE as given.
+
+    `newline=""` on the write, never a bare `write_text`: Python's default translates every `\\n` to
+    `os.linesep` on the way out, so on Windows a fixture that spells LF would land as CRLF and a fixture
+    that spells CRLF would land as CR-CR-LF. These fixtures are ABOUT line endings, so the writer has to be
+    as literal as `_scanned`'s reader is.
+    """
     root = tmp / f"marked-commands-{slug}"
     root.mkdir()
-    (root / "commands.md").write_text(body, encoding="utf-8")
+    for name, text in {"commands.md": body, **extra}.items():
+        with (root / name).open("w", encoding="utf-8", newline="") as fh:
+            fh.write(text)
     return root
 
 
@@ -1890,6 +1899,51 @@ def marked_command_cases(ci, tmp: Path) -> list[str]:
     # to prove the appended newline does not swallow a close that was already conforming.
     expect("eof-close-no-newline", every()[:-1], 0,
            "a conforming close IS the last line with no newline, and still closes its block")
+
+    # NO LAYER REWRITES BYTES BEFORE THE SCAN READS THEM, and the CARRIAGE RETURN is the character that rule
+    # exists for. `bash` reads a wrap written space-backslash-CR-LF as an ESCAPED LITERAL CR: the command
+    # receives a one-character `\r` argument and the NEXT physical line runs as a command of its own, exit
+    # 127 — confirmed against GNU bash 5.2.21. A universal-newline read deletes that CR before any pattern
+    # runs, so the checker passed the exact body the shell refuses and could not tell it from its all-LF
+    # twin. Deleting the CR never made the body agree with the shell; it only removed the disagreement from
+    # view, which is why the read is raw and the refusal is explicit.
+    #
+    # THE DIAGNOSTIC IS ASSERTED, NOT JUST THE COUNT, because the raw read ALONE also fails closed and does
+    # it for the wrong reason: `MARKED_OPENER`'s id capture swallows the CR and `MARKED_CLOSE` never matches
+    # a close ending CR-LF, so the report accuses the opener of never closing — an invisible character in
+    # the message, and repair advice pointing at a fence that is perfectly well formed. A count-only fixture
+    # is green under that version, so it would pin the wrong half of the fix.
+    crlf_wrapped = {i: c.replace(" --ledger ", " \\\n    --ledger ") for i, c in canon.items()}
+    crlf_report, crlf_found = ci.check_marked_commands(
+        _docs(tmp, "crlf", every(**crlf_wrapped).replace("\n", "\r\n")))
+    want_crlf = 1 + len(ci.DOCUMENTED_COMMANDS)
+    if len(crlf_report) != want_crlf or crlf_found:
+        problems.append(
+            f"[marked commands crlf] a CRLF doc holding marked blocks must be REFUSED, and credit no id, so "
+            f"the zero-blocks rule fires beside the refusal: expected {want_crlf} problem(s) and no blocks "
+            f"found; got report={crlf_report!r} found={crlf_found!r}"
+        )
+    if not any("CARRIAGE RETURN" in problem for problem in crlf_report):
+        problems.append(
+            f"[marked commands crlf] the refusal must NAME the carriage return, because that is the byte to "
+            f"remove and it is invisible in the file; got {crlf_report!r}"
+        )
+    if any("NEVER CLOSES" in problem for problem in crlf_report):
+        problems.append(
+            f"[marked commands crlf] a CRLF doc must not be reported as an unterminated opener — its fences "
+            f"are well formed and the author would edit a correct close forever; got {crlf_report!r}"
+        )
+
+    # THE GUARD IS SCOPED TO A DOC HOLDING A MARKED BLOCK. A checkout that materializes every `.md` as CRLF
+    # (Git for Windows defaults `core.autocrlf=true`) must not go red over prose this check never reads, so
+    # the CR question is asked only of files the scan actually compares.
+    unrelated, _ = ci.check_marked_commands(
+        _docs(tmp, "crlf-unrelated", every(), **{"prose.md": "Prose with no marked block at all.\r\n"}))
+    if unrelated:
+        problems.append(
+            f"[marked commands crlf-unrelated] a CRLF file holding NO marked block is none of this check's "
+            f"business and must be passed over in silence; got {unrelated!r}"
+        )
     return problems
 
 

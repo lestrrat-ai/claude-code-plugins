@@ -2537,10 +2537,27 @@ def _scanned(md: Path) -> str:
     nor reported unclosed, nor reported for an unknown id, while the renderer showed a block. Normalize
     once here and every pattern added later is correct without being told.
 
-    Carriage returns need no handling of their own either: `read_text` translates CRLF to `\\n` on the way
-    in, so `\\r` never reaches a pattern.
+    **NO LAYER MAY REWRITE BYTES BEFORE THE SHELL-GRAMMAR SCAN READS THEM.** That is why the read passes
+    `newline=""` and turns universal-newline translation OFF. `_SHELL_BLANK` states the rule the whole scan
+    obeys — anything outside space, tab and line feed is ORDINARY TEXT, exactly as it is to the shell — so a
+    body carrying a `\\r` has to compare as a DIFFERENT STRING, and a translating read voids that rule one
+    layer earlier than any pattern can see. It does not make such a body agree with the shell; it only
+    blinds the checker to the disagreement. `bash` reads a wrap written `<space>\\<CR><LF>` as an ESCAPED
+    LITERAL CR and runs the next physical line as a SEPARATE command, exit 127, while the translated text
+    reads as one clean continuation and compares equal. `check_marked_commands` REFUSES a `\\r` outright, so
+    reading the bytes as they are is never mistaken for accepting them.
+
+    Appending the final newline is not such a rewrite: a file that already ends in a line break is returned
+    untouched, and a CRLF file does end in `\\n`.
+
+    THE THREE `check_*_copies` FUNCTIONS READ THE SAME FILES WITH TRANSLATION STILL ON, AND THAT IS CORRECT
+    FOR THEM. They ask a different question — does this copy of the command carry the flag it must carry —
+    and answer it by searching a paragraph for a token, never by holding a body EQUAL to a generated string.
+    A `\\r` cannot change that answer, so translating it away costs them nothing. Only the equality needs the
+    bytes, so only the equality reads them raw. Do not "fix" those three to match this one.
     """
-    text = md.read_text(encoding="utf-8")
+    with md.open(encoding="utf-8", newline="") as fh:
+        text = fh.read()
     return text if not text or text.endswith("\n") else text + "\n"
 
 
@@ -2611,6 +2628,11 @@ CONTINUATION_JOIN = re.compile(_CONTINUATION + r"\n")
 # same discipline to the three places that had reached for a Python default, so ONE grammar decides every
 # boundary in the scan. Anything outside `[ \t\n]` is ORDINARY TEXT here, exactly as it is to the shell, and
 # a body carrying it is simply a different string from the generated command.
+#
+# THIS RULE IS ONLY AS TRUE AS THE READ THAT FEEDS IT: no layer may rewrite bytes before the scan sees them,
+# or a character outside the set is gone before any of the above can call it ordinary text. `_scanned` owns
+# that, and the carriage return — the one character an ordinary checkout is configured to insert — is
+# refused there and in `check_marked_commands` rather than reaching the comparison at all.
 _SHELL_BLANK = " \t\n"          # all a logical line may hold and still be blank
 _SHELL_RUN = re.compile(r"[ \t]+")   # the separator run the collapse folds to one space
 
@@ -2681,14 +2703,16 @@ def check_marked_commands(root: Path | None = None) -> tuple[list[str], list[str
     """Every marked block's body EQUALS the command `canonical_command()` generates for its `gauntlet-cmd`
     id.
 
-    Four ways to fail: the body is not that command; an id is claimed that `DOCUMENTED_COMMANDS` does not
-    define; a marked opener never closes; or an id the table defines has NO block anywhere. That last one is
+    Five ways to fail: the body is not that command; an id is claimed that `DOCUMENTED_COMMANDS` does not
+    define; a marked opener never closes; the file holding the block carries a CARRIAGE RETURN, which the
+    shell reads as no line break at all; or an id the table defines has NO block anywhere. That last one is
     what stops the marker from quietly narrowing the check — delete the only marked copy of a command and
     the build goes red.
 
-    AN UNTERMINATED OPENER CREDITS NOTHING. It is reported and its id is NOT marked as seen, so when the
-    broken block is the only one claiming that id the zero-blocks failure fires beside it: a block whose
-    body the checker never read must never be the reason a command counts as documented.
+    A BLOCK THE CHECKER NEVER READ CREDITS NOTHING. An unterminated opener is reported and its id is NOT
+    marked as seen, and a CR-bearing file is reported and skipped whole, so when the broken block is the
+    only one claiming that id the zero-blocks failure fires beside it: a body the checker never compared
+    must never be the reason a command counts as documented.
 
     **THE COMPARISON IS EQUALITY, AND THAT IS THE WHOLE DESIGN.** It does not locate the command inside the
     body, subtract text it dislikes, or reason about shell. A body holding anything besides the generated
@@ -2705,6 +2729,29 @@ def check_marked_commands(root: Path | None = None) -> tuple[list[str], list[str
     seen: set[str] = set()
     for md in sorted((root or HERE.parent).rglob("*.md")):
         text = _scanned(md)
+        # A CARRIAGE RETURN IS REFUSED, NOT TRANSLATED AWAY — see `_scanned`, which owns the rule that no
+        # layer rewrites bytes before this scan reads them. The RAW READ alone already fails closed here,
+        # but it fails closed for the WRONG REASON and says so out loud: `MARKED_OPENER`'s id capture
+        # swallows the CR and `MARKED_CLOSE` never matches a close ending CR-LF, so a CRLF doc is reported
+        # as an opener that NEVER CLOSES — an invisible character in the message and a repair instruction
+        # pointing at a fence that is perfectly well formed. Naming the cause is the whole reason this guard
+        # exists beside the raw read rather than instead of it.
+        #
+        # SCOPED TO A DOC HOLDING A MARKED OPENER. Line endings elsewhere in the tree are nobody's business
+        # here, and a checkout that materializes every `.md` as CRLF (Git for Windows defaults
+        # `core.autocrlf=true`) must not turn red over prose this check never reads. The file is then
+        # SKIPPED, so it credits no id and the ZERO-blocks rule fires beside this, exactly as it does for an
+        # opener that never closes: a body the checker refused to read must never be why a command counts as
+        # documented.
+        if "\r" in text and MARKED_OPENER.search(text) is not None:
+            problems.append(
+                f"{md.name} holds CARRIAGE RETURNS and holds a marked block, so NO block in it was "
+                f"compared. A shell reads no line break in a `\\r`: a wrap written space-backslash-CR-LF "
+                f"escapes the CR into a literal argument and runs the next physical line as a SEPARATE "
+                f"command, which is not the documented invocation however the rendered page looks. Rewrite "
+                f"the file with LF line endings."
+            )
+            continue
         for block in marked_blocks(text):
             cmd_id, body = block.cmd_id, block.body
             where = f"{md.name}:{block.line}"

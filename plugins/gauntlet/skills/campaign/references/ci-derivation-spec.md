@@ -572,7 +572,7 @@ nothing was looking. Three checks close that, and **none is optional**:
 
 **A fenced block whose info string is `sh gauntlet-cmd=<id>` holds one canonical `ci-status.py`
 invocation.** `<id>` keys `DOCUMENTED_COMMANDS` in `ci-status.py`, which — with one value slot per flag —
-GENERATES the canonical string for that command. `doc-check` enforces three things and they are not
+GENERATES the canonical string for that command. `doc-check` enforces four things and they are not
 separable:
 
 - **the block is delimited exactly as the renderer delimits it.** It opens at column 0 with that info
@@ -587,6 +587,16 @@ separable:
   — it appends the missing newline once, at the read, so no pattern in it carries an end-of-file case. The
   close is not permitted the three spaces of indent CommonMark would allow it; an indented close reads as
   an opener that never closes, and being told to unindent is the intended fail-closed outcome;
+- **no layer rewrites the bytes before the scan reads them**, so the read turns universal-newline
+  translation OFF and a **carriage return in a document holding a marked block is REPORTED**, naming the CR
+  and asking for LF line endings. The shell reads no line break in a `\r`: a wrap written
+  space-backslash-CR-LF escapes the CR into a literal argument and runs the next physical line as a
+  separate command, so a translating read would delete the very byte that makes the documented invocation
+  fail — and pass a body indistinguishable from its all-LF twin. Such a file is skipped whole, crediting no
+  id, so its commands are reported as having no block just as an unterminated opener's are. A CRLF file
+  holding no marked block is not this check's business and is passed over. This matters off Linux: Git for
+  Windows defaults to `core.autocrlf=true`, so an ordinary Windows checkout or plugin-cache clone
+  materializes every `.md` as CRLF;
 - **a marked block's body EQUALS the generated command**, and an id the table does not define is a failure
   rather than an exemption. Equality is over the joined logical line with runs of separators collapsed, so
   a copy may wrap across as many lines as it likes — **breaking only at a space followed by a backslash at
@@ -600,7 +610,9 @@ separable:
   Python's Unicode-aware defaults do. So a non-breaking space between two words, a line break written with
   U+2028, U+2029 or U+0085, and a line holding only a non-breaking space are all ordinary text in the string
   compared, and a body carrying one differs from the generated command — which is the accurate answer,
-  because the shell does not read any of them as a separator either. The check never locates the command
+  because the shell does not read any of them as a separator either. The carriage return is the one
+  character of that class this check answers at the READ rather than at the comparison, for the reason the
+  bullet above gives. The check never locates the command
   inside the body,
   subtracts text it dislikes, or reasons about shell: a second line, a comment line, a trailing comment, a
   chain, a pipe, a redirection, a substitution, a wrapper that echoes the command or writes it to a file,
