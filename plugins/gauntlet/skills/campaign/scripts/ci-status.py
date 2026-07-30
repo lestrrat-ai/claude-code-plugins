@@ -118,8 +118,9 @@ The enums, the CLASSIFY buckets and the DECIDE order are stated in `ci-derivatio
 one a reader believed. `doc-check` PARSES the doc's own enum block, its two CLASSIFY tables and its DECIDE
 bullet order, and asserts they agree with the sets `ci-snapshot.py` actually classifies with — and that the
 classification is TOTAL over the enums the doc declares. It also checks every copy of a `gh` command the doc
-prints against the argv this code really issues, every copy of the derive command for `--required-set`, and
-the moved-head owner block's retained-artifact/trust/result contract. Drift is a RED BUILD, not a discovery.
+prints against the argv this code really issues, every MARKED `ci-status.py` command block against the tokens
+its `gauntlet-cmd` id requires — with no runnable copy sitting OUTSIDE such a block — and the moved-head owner
+block's retained-artifact/trust/result contract. Drift is a RED BUILD, not a discovery.
 
 **A check that finds nothing MUST NOT PASS.** If the doc cannot be found, or a block cannot be parsed, or
 zero rules are extracted, `doc-check` FAILS. An extractor that silently matches nothing and reports success
@@ -2251,7 +2252,12 @@ def _has_long_option(command: str, option: str) -> bool:
 # WHICH TEXT IS A COMMAND. A marked block opens with the info string ```sh gauntlet-cmd=<id>`; `<id>` keys
 # this table, whose value is every token that copy MUST carry. A nested tuple is an alternation — any one of
 # its members satisfies it. A `--flag` requirement is matched as a long option (argparse's `--name=value`
-# form included); anything else is matched as a plain substring.
+# form included); anything else must appear as a WHOLE command token — see `_requirement_met`.
+#
+# A ROW IS NOT HAND-MAINTAINED AGAINST THE CLI. Every fixture that drives this table is blind to a row that
+# is INCOMPLETE, because the omission deletes the case that would have caught it — so the suite reconciles
+# each row against `build_parser()` instead (`ci-status-test.documented_commands_agree_with_argparse`). A
+# flag the parser REQUIRES and a row omits is a copy this checker calls complete and the tool then refuses.
 #
 # WHY THE MARKER EXISTS AT ALL. The checker used to hunt runnable copies in free Markdown, which meant
 # deciding, for arbitrary prose, whether a stretch of text was a command or a sentence about one. That
@@ -2265,19 +2271,37 @@ DOCUMENTED_COMMANDS: dict[str, tuple[str | tuple[str, ...], ...]] = {
     # with an explicit `--required-set`. A copy carrying NEITHER reconstructs an invocation the tool refuses.
     "derive": ("ci-status.py", "derive", "--pr", "--head-sha", "--rundir", ("--ledger", "--required-set")),
     # `--machine-action` is the one judgment the command asks of its caller. A reader who drops the question
-    # and invents a default strikes the very PR a fix is about to move.
-    "liveness": ("ci-status.py", "liveness", "--ledger", "--pr", "--machine-action"),
+    # and invents a default strikes the very PR a fix is about to move. `--derive-json` is the evidence the
+    # bookkeeping is ABOUT: argparse requires it, so a copy without it is an invocation the tool refuses.
+    "liveness": ("ci-status.py", "liveness", "--ledger", "--pr", "--derive-json", "--machine-action"),
     # The command must persist the value it read, so the copy names the run ledger it persists to.
     "required-set": ("ci-status.py", "required-set", "--ledger", "state.jsonl"),
 }
 
-MARKED_FENCE = re.compile(r"^```sh gauntlet-cmd=(?P<id>[a-z][a-z-]*)\n(?P<body>.*?)^```", re.M | re.S)
+# The id is ANY nonempty run of characters, never a spelling this checker approves of: an id the regex
+# REJECTS is not a marked block at all, so the unknown-id branch below cannot fire and the author is told to
+# move a block that is already inside a marked fence. Capture whatever was written and let
+# DOCUMENTED_COMMANDS be the only thing that decides which ids exist. Trailing spaces are dropped because
+# CommonMark drops them from the info string, so a fence this checker rejected over one would be a fence the
+# renderer accepted.
+MARKED_FENCE = re.compile(r"^```sh gauntlet-cmd=(?P<id>[^\n]+?)[ \t]*\n(?P<body>.*?)^```", re.M | re.S)
 LONG_OPTION = re.compile(r"(?<![\w-])--[a-z][a-z-]+")
 COMMAND_NAME = "ci-status.py"
 
 
 def _requirement_met(body: str, want: str) -> bool:
-    return _has_long_option(body, want) if want.startswith("--") else want in body
+    """A `--flag` is matched as a long option; every other requirement as a WHOLE command token.
+
+    Whole-token, not substring, is what stops a block from LYING about which command it is. Plain
+    `want in body` accepts `not-ci-status.py rederive` for both `ci-status.py` and `derive`, so a block
+    marked `gauntlet-cmd=derive` that runs neither the script nor the subcommand passes clean. A leading
+    `/` or `=` still counts as a token start, which is what keeps the path-SUFFIX requirements working:
+    `--ledger <rundir>/state.jsonl` satisfies `state.jsonl`, and `python3 <skill>/scripts/ci-status.py`
+    satisfies `ci-status.py`.
+    """
+    if want.startswith("--"):
+        return _has_long_option(body, want)
+    return re.search(rf"(?:\A|[\s/=]){re.escape(want)}(?=\s|\Z)", body) is not None
 
 
 def _blank(text: str) -> str:
@@ -2623,7 +2647,15 @@ def resolve_repo(fetch: Fetch) -> str:
                            "nameWithOwner", str))
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """The CLI surface, built apart from `main` so a test can ASK it what each subcommand requires.
+
+    `DOCUMENTED_COMMANDS` says what a documented copy must carry and this parser says what the tool will
+    actually accept. Two statements of one contract drift, and the drift is silent in the direction that
+    matters: a flag only the parser insists on is a copy `doc-check` calls complete and the tool then
+    REFUSES. The fixture suite reconciles the two, which it can only do if the parser exists without
+    running.
+    """
     p = argparse.ArgumentParser(description=next(iter((__doc__ or "").splitlines()), ""))
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -2671,14 +2703,17 @@ def main() -> int:
 
     c = sub.add_parser("doc-check", help="assert the CI docs (ci-derivation-spec.md + stage-2-ci.md) "
                                          "agree with the code that runs — enums, CLASSIFY, DECIDE order, "
-                                         "caps, fingerprint, moved-head artifact contract, and every copy "
-                                         "of every command")
+                                         "caps, fingerprint, moved-head artifact contract, every `gh` copy, "
+                                         "and every marked command block with no runnable copy outside one")
     c.add_argument("--spec-doc", type=Path, default=SPEC_DOC)
     c.add_argument("--driver-doc", type=Path, default=DRIVER_DOC)
 
     sub.add_parser("self-test", help="run every fixture (ci-status-test.py), then doc-check")
+    return p
 
-    args = p.parse_args()
+
+def main() -> int:
+    args = build_parser().parse_args()
 
     if args.cmd == "doc-check":
         return doc_check(args.spec_doc, args.driver_doc)

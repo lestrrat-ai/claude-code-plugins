@@ -1356,7 +1356,8 @@ def verdict_doc_cases(ci) -> list[str]:
 
 FULL_COMMANDS = {
     "derive": "python3 s/ci-status.py derive --pr 1 --head-sha abc --rundir run --ledger run/state.jsonl",
-    "liveness": "python3 s/ci-status.py liveness --ledger run/state.jsonl --pr 1 --machine-action none",
+    "liveness": ("python3 s/ci-status.py liveness --ledger run/state.jsonl --pr 1 "
+                 "--derive-json out.json --machine-action none"),
     "required-set": "python3 s/ci-status.py required-set --ledger run/state.jsonl",
 }
 
@@ -1372,9 +1373,66 @@ def _marked(cmd_id: str, command: str) -> str:
     return f"```sh gauntlet-cmd={cmd_id}\n{command}\n```\n"
 
 
+def _without(command: str, tokens: tuple[str, ...]) -> str:
+    """Drop the tokens that satisfy ONE requirement, keeping every value the command spelled.
+
+    Keeping values is what isolates the omission: `--ledger` and `run/state.jsonl` satisfy two DIFFERENT
+    requirements of `required-set`, so dropping a flag together with its value would remove two at once and
+    the fixture could no longer say which one the checker actually caught.
+    """
+    def drop(token: str) -> bool:
+        return any(token == t or token.endswith(f"/{t}") or token.startswith(f"{t}=") for t in tokens)
+
+    return " ".join(token for token in command.split() if not drop(token))
+
+
 def _every_command_marked(**override: str) -> str:
     """Every id gets a block, so the has-at-least-one-block rule never fires for an unrelated reason."""
     return "\n".join(_marked(i, override.get(i, c)) for i, c in FULL_COMMANDS.items())
+
+
+def documented_commands_agree_with_argparse(ci) -> list[str]:
+    """`DOCUMENTED_COMMANDS` and the real CLI parser state ONE contract — reconcile them, never restate them.
+
+    Every fixture below drives the table, so not one of them can notice that the table is INCOMPLETE: drop a
+    requirement from a row and the case that would have caught it disappears with it. That gap is the defect
+    this pins. The `liveness` row once omitted `--derive-json` — a flag argparse REQUIRES — so `doc-check`
+    reported the documented invocation as carrying every token it needs, and running it exited 2.
+
+    Both directions matter. A required flag missing from a row is a documented copy the tool refuses; a
+    `--flag` in a row that the parser does not define is a token the doc makes authors write and the tool
+    rejects. Only the parser knows either answer, so ask it rather than writing the answer down twice.
+    """
+    problems: list[str] = []
+    # `_actions` because argparse exposes no public accessor for its actions or its subparser map — the
+    # same read `followups-test.py` makes of its own parser.
+    subcommands = next((action.choices for action in ci.build_parser()._actions  # noqa: SLF001
+                        if isinstance(getattr(action, "choices", None), dict)), None)
+    if not subcommands:
+        return ["[documented commands] build_parser() exposed no subcommands — the reconciliation below "
+                "would then pass by asking nothing, which is this suite's founding defect"]
+
+    for cmd_id, wanted in ci.DOCUMENTED_COMMANDS.items():
+        parser = subcommands.get(cmd_id)
+        if parser is None:
+            problems.append(f"[documented commands {cmd_id}] DOCUMENTED_COMMANDS names an id that is not a "
+                            f"subcommand of ci-status.py — known: {sorted(subcommands)}")
+            continue
+        documented = {alt for want in wanted for alt in (want if isinstance(want, tuple) else (want,))}
+        defined = {opt for action in parser._actions for opt in action.option_strings}
+        required = {action.option_strings[0] for action in parser._actions
+                    if action.required and action.option_strings}
+        if missing := sorted(required - documented):
+            problems.append(
+                f"[documented commands {cmd_id}] argparse REQUIRES {missing}, which no DOCUMENTED_COMMANDS "
+                f"entry names — a documented copy without it passes doc-check and the tool refuses to run it"
+            )
+        if unknown := sorted(flag for flag in documented if flag.startswith("--") and flag not in defined):
+            problems.append(
+                f"[documented commands {cmd_id}] DOCUMENTED_COMMANDS requires {unknown}, which the "
+                f"{cmd_id} parser does not define — the doc would make every copy carry a rejected flag"
+            )
+    return problems
 
 
 def marked_command_cases(ci, tmp: Path) -> list[str]:
@@ -1399,40 +1457,65 @@ def marked_command_cases(ci, tmp: Path) -> list[str]:
     expect("all-present", _every_command_marked(), 0, 0,
            "a marked block per id, each carrying every required token, is clean")
 
-    # WHAT A BLOCK MUST CARRY — one omission per id, and the `--name=value` form counts as present.
-    for cmd_id, command in FULL_COMMANDS.items():
-        dropped = " ".join(t for t in command.split() if not t.startswith("--machine-action")
-                           and not (cmd_id == "derive" and t == "--ledger")
-                           and not (cmd_id == "required-set" and t == "--ledger"))
-        if dropped != command:
-            expect(f"omits-{cmd_id}", _every_command_marked(**{cmd_id: dropped}), 1, 0,
-                   f"a {cmd_id} block missing a required token is reported")
+    # WHAT A BLOCK MUST CARRY — EVERY entry of EVERY table row, not the one a hand-written case happened to
+    # drop. Driving the table itself is what makes adding a requirement to DOCUMENTED_COMMANDS self-covering:
+    # a row entry the checker does not really enforce fails here the day it is added, with no fixture edit.
+    for cmd_id, wanted in ci.DOCUMENTED_COMMANDS.items():
+        for want in wanted:
+            alternatives = want if isinstance(want, tuple) else (want,)
+            slug = "-".join(alt.lstrip("-") for alt in alternatives)
+            expect(f"omits-{cmd_id}-{slug}",
+                   _every_command_marked(**{cmd_id: _without(FULL_COMMANDS[cmd_id], alternatives)}), 1, 0,
+                   f"a {cmd_id} block missing {' / '.join(alternatives)} is reported")
     equals = {i: c.replace(" --ledger ", " --ledger=").replace(" --pr ", " --pr=")
               for i, c in FULL_COMMANDS.items()}
     expect("equals-form", _every_command_marked(**equals), 0, 0,
            "argparse's --name=value form satisfies a long-option requirement")
 
-    # `derive` alone accepts either flag for the required set — pin BOTH members of the alternation.
+    # `derive` alone accepts either flag for the required set — the drop loop above pins that NEITHER fails,
+    # so pin the other member of the alternation here.
     alt = FULL_COMMANDS["derive"].replace("--ledger run/state.jsonl", "--required-set unknown")
     expect("derive-alternation", _every_command_marked(derive=alt), 0, 0,
            "an explicit --required-set satisfies derive's alternation")
-    neither = FULL_COMMANDS["derive"].replace(" --ledger run/state.jsonl", "")
-    expect("derive-neither", _every_command_marked(derive=neither), 1, 0,
-           "derive naming NEITHER --ledger nor --required-set is reported")
 
-    # A LABEL CANNOT LIE: the script name and subcommand are ordinary required tokens. Assert the SUBCOMMAND
-    # is among what is reported rather than a total — a mislabelled block also misses that id's other flags,
-    # and pinning the count would just re-pin DOCUMENTED_COMMANDS' length in a second place.
-    mislabelled = _docs(tmp, "mislabelled", _every_command_marked()
-                        + _marked("derive", FULL_COMMANDS["liveness"]))
-    marked, _blocks = ci.check_marked_commands(mislabelled)
-    if not any("omits `derive`" in problem for problem in marked):
-        problems.append(
-            f"[marked commands mislabelled] a liveness command marked gauntlet-cmd=derive must fail on the "
-            f"SUBCOMMAND token, so a block cannot lie about which command it is; got {marked!r}"
-        )
-    expect("unknown-id", _every_command_marked() + _marked("nonesuch", FULL_COMMANDS["derive"]), 1, 0,
-           "an id DOCUMENTED_COMMANDS does not define is a failure, never an exemption")
+    # A PATH-SUFFIX REQUIREMENT SURVIVES THE WHOLE-TOKEN RULE. `state.jsonl` is required of `required-set`
+    # and every real copy writes it inside a path, so the token rule counts a leading `/` as a token start —
+    # while a LONGER file name is a different file and must not satisfy it.
+    for slug, ledger, want_marked, why in (
+        ("path", "run/state.jsonl", 0, "a <dir>/state.jsonl path satisfies the state.jsonl requirement"),
+        ("bare", "state.jsonl", 0, "an unprefixed state.jsonl satisfies it too"),
+        ("longer", "run/state.jsonl.bak", 1, "state.jsonl.bak is a DIFFERENT file and does not satisfy it"),
+    ):
+        ledger_copy = f"python3 s/ci-status.py required-set --ledger {ledger}"
+        expect(f"suffix-{slug}", _every_command_marked(**{"required-set": ledger_copy}), want_marked, 0, why)
+
+    # A LABEL CANNOT LIE: the script name and subcommand are ordinary required tokens. Assert WHICH tokens
+    # are reported rather than a total — a mislabelled block also misses that id's other flags, and pinning
+    # the count would just re-pin DOCUMENTED_COMMANDS' length in a second place.
+    def expect_omissions(slug: str, block: str, tokens: tuple[str, ...], why: str) -> None:
+        marked, _blocks = ci.check_marked_commands(_docs(tmp, slug, _every_command_marked() + block))
+        missing = [t for t in tokens if not any(f"omits `{t}`" in problem for problem in marked)]
+        if missing:
+            problems.append(
+                f"[marked commands {slug}] {why}: expected the report to name {missing}; got {marked!r}"
+            )
+
+    expect_omissions("mislabelled", _marked("derive", FULL_COMMANDS["liveness"]), ("derive",),
+                     "a liveness command marked gauntlet-cmd=derive must fail on the SUBCOMMAND token")
+    # ...AND CANNOT LIE BY PREFIXING EITHER. A plain substring test accepts a longer word that merely CONTAINS
+    # the required token, so a block naming neither the real script nor the real subcommand passed clean.
+    lying = "python3 s/not-ci-status.py rederive --pr 1 --head-sha abc --rundir run --ledger run/state.jsonl"
+    expect_omissions("prefixed", _marked("derive", lying), ("ci-status.py", "derive"),
+                     "a token that is only a SUFFIX of a longer word satisfies nothing")
+
+    # AN UNKNOWN ID IS REPORTED WHATEVER ITS SPELLING. The id pattern must not decide which ids exist: an id
+    # the pattern REJECTS is not a marked block at all, so this branch never fires and the author is instead
+    # told to move a block that already sits inside a marked fence.
+    for n, spelling in enumerate(("nonesuch", "nonesuch2", "NONESUCH", "none_such", "9")):
+        expect(f"unknown-id-{n}", _every_command_marked() + _marked(spelling, FULL_COMMANDS["derive"]), 1, 0,
+               f"the undefined id `{spelling}` is a failure, never an exemption")
+    expect("trailing-space", _every_command_marked().replace("=derive\n", "=derive  \n"), 0, 0,
+           "CommonMark drops trailing info-string spaces, so a marked block stays marked despite them")
 
     # A CHECK THAT FINDS NOTHING MUST NEVER PASS.
     expect("no-blocks", "nothing here\n", len(ci.DOCUMENTED_COMMANDS), 0,
@@ -1527,6 +1610,14 @@ def run(ci, tmp: Path) -> int:
     if not verdict_doc_problems:
         print(f"ok       {'DECIDE verdict terminology':32} -> UNUSABLE and UNVERIFIABLE both remain explicit "
               f"before liveness groups them")
+
+    documented_command_problems = documented_commands_agree_with_argparse(ci)
+    for problem in documented_command_problems:
+        failures += 1
+        print(f"FAIL     {problem}")
+    if not documented_command_problems:
+        print(f"ok       {'DOCUMENTED_COMMANDS vs argparse':32} -> every flag a subcommand REQUIRES is a token "
+              f"its documented copies must carry, and no row requires a flag the parser rejects")
 
     marked_command_problems = marked_command_cases(ci, tmp)
     for problem in marked_command_problems:
