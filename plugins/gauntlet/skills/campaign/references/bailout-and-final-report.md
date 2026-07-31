@@ -84,7 +84,9 @@ LOCAL state against that same PR / its head; the PR itself is left in place.
   ever touch this run's own PRs (ownership = the `gauntlet-run-<run-id>` label). **Terminal detection
   relies on label removal, not closure**: loop control gates the finished-run branch on "no open PR
   still carrying this run's label", so once this run's owner label is removed the still-open PR no
-  longer carries it and can no longer block terminal exit — an aborted row is terminal and lacks its
+  longer carries it and can no longer block terminal exit — and `loop-control.md`'s **"Live work (this
+  run)"** definition owns what *carrying this run's label* means, because GitHub's label QUERY keeps
+  answering with a PR after the removal — an aborted row is terminal and lacks its
   `required(tier)` SATISFIED verdicts, so reconcile will never merge or keep driving it, and the
   un-labelled open PR is simply left for its owner.
 - **Not converging → the REASSESSMENT PASS takes over. `repair-pass.md` owns this, and it SUPERSEDES the

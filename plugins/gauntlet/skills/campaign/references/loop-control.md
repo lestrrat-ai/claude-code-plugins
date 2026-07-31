@@ -75,7 +75,17 @@ rules keep their own wording; these are illustrations of them, not a second copy
    PRs are never mistaken for your own (adopted PRs keep their OWN head branch, so ownership is the
    LABEL only — never a branch prefix). Live work (this run) = any open PR carrying this run's label,
    **OR** any non-terminal row in this run's `state.jsonl` (any status that is not terminal `merged`/`aborted`).
-   Three cases:
+
+   **"Carrying this run's label" means the PR's OWN `labels` carry it — NOT that a `--label` query
+   returned it.** GitHub answers a label query out of its issue search index, which does not durably
+   apply label REMOVALS, so it keeps listing a PR whose label an abort or a merge already took off. Such
+   an entry is a GHOST and is **not live work**; counted as live it would deny this run its finished
+   classification for as long as the index stays stale, and that is not a timer — it clears only when
+   that PR gets a later label write. So **whatever asks the question must read each candidate's own
+   `labels` and drop the ones that do not carry `gauntlet-run-<run-id>`**: `scripts/reconcile.py fetch`
+   already does this for the snapshot below (`files-and-ledger.md` owns the rule and what skipping a
+   ghost gives up), and a hand-run query must ask for `--json number,labels` and match locally, the way
+   `run-identity-and-lease.md`'s no-arg **discover runs** step already does. Three cases:
 
    - **This run has live work → resume.** Resolve a dead review pass — no verdict, no live task — from its
      highest-numbered `launch_attempt` through `runtime-adapter.md`, **Review preparation mapping**, **NOT
@@ -107,7 +117,10 @@ rules keep their own wording; these are illustrations of them, not a second copy
      Produce **one batched snapshot per heartbeat** through **"The canonical `prs.json` command"** in
      `files-and-ledger.md`. Its executable owner is `scripts/reconcile.py fetch`; NEVER reconstruct its
      GitHub query. A refusal leaves the prior file intact, but that prior file is not current evidence →
-     stop this reconcile and handle the reported blocker.
+     stop this reconcile and handle the reported blocker. A **skipped ghost is not a refusal**: the fetch
+     exits 0, promotes the run's other PRs, and names each skip on stderr and in `skipped_unlabelled`
+     (`files-and-ledger.md` owns what a ghost is and what skipping it gives up). A skipped PR then
+     reaches you below as `absent_from_snapshot`, and routes exactly like any other absence.
 
      — then **compare that snapshot against the ledger by running
      `scripts/reconcile.py detect --ledger <rundir>/state.jsonl --prs <rundir>/prs.json --run-id

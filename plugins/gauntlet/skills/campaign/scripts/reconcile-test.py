@@ -9,12 +9,16 @@ a refused run), and that stderr NAMES the specific thing wrong (the missing fiel
 suite that only checked `code == 0` would pass against a detector that emitted the wrong facts, and the
 facts are what the skill routes on.
 
-Two decisions this suite PINS, because they are the ones a reader would otherwise have to guess:
+Three decisions this suite PINS, because they are the ones a reader would otherwise have to guess:
 - **A TERMINAL row is not compared at all.** `merged`/`aborted` rows emit `{"terminal": status}` and
   nothing else — even when the snapshot still shows the PR (a reopened-after-merge oddity). Presence is not
   reported, absence is not reported, no change is computed. The fixtures drive both branches.
 - **`absent_from_snapshot` is a FACT, never an error.** A live row missing from the snapshot exits 0 with
   `{"absent_from_snapshot": true}` — the merged/closed-by-absence signal — not a non-zero "PR vanished".
+- **An unlabelled entry is answered DIFFERENTLY by the two commands, and both halves are pinned.** `fetch`
+  SKIPS it as a stale-search-index ghost, reports it, and promotes the rest; `detect` refuses the WHOLE
+  file, because only there can the snapshot and the run-id have come from different runs. One fixture
+  drives both over the SAME bytes, so neither half can drift into the other.
 """
 
 from __future__ import annotations
@@ -200,13 +204,113 @@ def t_fetch_non_utf8_preserves_old():
         check(output.read_bytes() == b"old", "non-UTF-8 response replaced the previous snapshot")
 
 
-def t_fetch_wrong_label_preserves_old():
+def t_fetch_skips_ghost_and_promotes_the_rest():
+    # THE GHOST: `gh pr list --label X` compiles to the issues search index, which does not durably apply
+    # label REMOVALS, so it keeps returning a PR whose own `labels` (from the primary DB) no longer carry
+    # the run label. fetch cannot be mis-scoped — its selector and its validator are the same `run_id` —
+    # so it skips the ghost and promotes the run's real PRs instead of losing the whole response.
     with tempfile.TemporaryDirectory() as d:
         project_root, output = fetch_paths(d)
-        output.write_bytes(b"old")
+        ghost = entry(201, label_names=[])                 # label REMOVED; the index has not caught up
+        live = entry(199)
+        ghosts: list[dict] = []
+        count = M.fetch_snapshot(project_root, output, RUN_ID,
+                                 runner=completed(response_bytes([ghost, live])), ghosts=ghosts)
+        check(count == 1, f"the labelled remainder must still be promoted, got count {count}")
+        promoted = json.loads(output.read_text(encoding="utf-8"))
+        check([e["number"] for e in promoted] == [199],
+              f"the promoted snapshot must hold the labelled entry ONLY, got {promoted!r}")
+        check(ghosts == [{"index": 0, "number": 201, "labels": []}],
+              f"the skip must be recorded with WHY it was skipped (its labels), got {ghosts!r}")
+        # The promoted file is ghost-free, so `detect` — whose refusal is deliberately unchanged — reads it.
+        ledger = build_ledger(output.parent, [row(199)])
+        facts = M.detect(ledger, output, RUN_ID)
+        check(facts["rows"]["199"]["absent_from_snapshot"] is False,
+              f"detect must consume the ghost-free promotion, got {facts['rows']['199']!r}")
+
+
+def t_fetch_skips_another_runs_ghost():
+    # A ghost belonging to ANOTHER run is self-identifying: its labels name that other run. Skipping it is
+    # right for the same reason — this query asked for OUR label, so the entry is the index disagreeing.
+    with tempfile.TemporaryDirectory() as d:
+        project_root, output = fetch_paths(d)
         foreign = entry(41, label_names=["gauntlet-run-other", REVIEWING])
-        expect_fetch_refusal(project_root, output, RUN_ID, completed(response_bytes([foreign])), RUN_LABEL)
-        check(output.read_bytes() == b"old", "wrong-label response replaced the previous snapshot")
+        ghosts: list[dict] = []
+        count = M.fetch_snapshot(project_root, output, RUN_ID,
+                                 runner=completed(response_bytes([foreign, entry(199)])), ghosts=ghosts)
+        check(count == 1, f"the foreign ghost must not cost the run its own row, got count {count}")
+        check(ghosts == [{"index": 0, "number": 41, "labels": ["gauntlet-run-other", REVIEWING]}],
+              f"the skip must carry the OTHER run's label as its reason, got {ghosts!r}")
+        check([e["number"] for e in json.loads(output.read_text(encoding="utf-8"))] == [199],
+              "the foreign ghost was promoted into this run's snapshot")
+
+
+def t_fetch_reports_every_skip():
+    # A skip can NEVER be silent: stderr names it, and `skipped_unlabelled` is in the result JSON. The key
+    # is present even on a clean fetch, so a reader tests its contents, never a missing key.
+    with tempfile.TemporaryDirectory() as d:
+        project_root, output = fetch_paths(d)
+
+        def cli_over(payload: bytes) -> "tuple[int, str, str]":
+            # `cmd_fetch` OWNS the reporting under test, and only the gh call is stubbed: the real
+            # `fetch_snapshot` underneath still validates, skips, and promotes.
+            return capture_cli(
+                lambda _argv: M.cmd_fetch(project_root, output, RUN_ID, runner=completed(payload)), [])
+
+        code, out, err = cli_over(response_bytes([entry(201, label_names=[]), entry(199)]))
+        _clean_code, clean_out, _clean_err = cli_over(response_bytes([entry(199)]))
+    check(code == 0, f"a skipped ghost is not a failure; fetch must exit 0, got {code} (stderr {err!r})")
+    result = json.loads(out)
+    check(result["entries"] == 1, f"the result must count the PROMOTED rows, got {result!r}")
+    check(result["skipped_unlabelled"] == [{"index": 0, "number": 201, "labels": []}],
+          f"the result JSON must carry the skip and its reason, got {result!r}")
+    check("201" in err and "search index" in err and RUN_LABEL in err,
+          f"stderr must name the skipped PR, the run label, and WHY it was skipped, got {err!r}")
+    check(json.loads(clean_out)["skipped_unlabelled"] == [],
+          f"a clean fetch must still carry an EMPTY skipped_unlabelled, got {clean_out!r}")
+
+
+def t_fetch_all_ghosts_promotes_an_empty_snapshot():
+    # EVERY entry a ghost — what a run looks like after its last PR's labels were removed (an abort or a
+    # merge). The right answer is an EMPTY snapshot, not a refusal: absence is the terminal signal, and
+    # refusing here would deny the run the very completion signal loop-control gates the finished branch
+    # on. Promoting `[]` is also what a genuinely empty run promotes, so detect needs no special case.
+    with tempfile.TemporaryDirectory() as d:
+        project_root, output = fetch_paths(d)
+        output.write_bytes(b"stale")
+        ghosts: list[dict] = []
+        count = M.fetch_snapshot(project_root, output, RUN_ID, ghosts=ghosts,
+                                 runner=completed(response_bytes([entry(201, label_names=[]),
+                                                                  entry(199, label_names=[REVIEWING])])))
+        check(count == 0, f"an all-ghost response promotes nothing, got count {count}")
+        check(json.loads(output.read_text(encoding="utf-8")) == [],
+              f"an all-ghost response must promote an EMPTY array, got {output.read_bytes()!r}")
+        check([g["number"] for g in ghosts] == [201, 199], f"every ghost must be reported, got {ghosts!r}")
+        ledger = build_ledger(output.parent, [row(199)])
+        facts = M.detect(ledger, output, RUN_ID)
+        check(facts["rows"]["199"] == {"absent_from_snapshot": True},
+              f"an all-ghost snapshot reads as plain absence, got {facts['rows']['199']!r}")
+
+
+def t_fetch_ghost_still_refused_by_detect():
+    # THE ASYMMETRY, on ONE set of bytes. fetch skips the ghost; the SAME snapshot handed to detect through
+    # --prs is refused whole. detect's --prs and --run-id are independent arguments, so an unlabelled entry
+    # there can mean a run was pointed at another run's file — the isolation violation the label prevents.
+    payload = response_bytes([entry(201, label_names=[]), entry(199)])
+    with tempfile.TemporaryDirectory() as d:
+        project_root, output = fetch_paths(d)
+        ghosts: list[dict] = []
+        M.fetch_snapshot(project_root, output, RUN_ID, runner=completed(payload), ghosts=ghosts)
+        check(len(ghosts) == 1, f"fetch must skip the ghost, got {ghosts!r}")
+
+        unfiltered = output.parent / "handed-in.json"
+        unfiltered.write_bytes(payload)
+        ledger = build_ledger(output.parent, [row(199)])
+        code, out, err = capture_cli(M.main, [
+            "detect", "--ledger", str(ledger), "--prs", str(unfiltered), "--run-id", RUN_ID])
+    check(code == 2, f"detect must still refuse the WHOLE mis-scoped file, got {code}")
+    check(out.strip() == "", f"a refused detect leaks no facts, got {out!r}")
+    check("run-isolation" in err, f"detect's refusal must still name the isolation property, got {err!r}")
 
 
 def t_fetch_limit_boundary_refused():
@@ -216,6 +320,18 @@ def t_fetch_limit_boundary_refused():
         rows = [entry(n) for n in range(M.SNAPSHOT_LIMIT)]
         expect_fetch_refusal(project_root, output, RUN_ID, completed(response_bytes(rows)), "may be truncated")
         check(output.read_bytes() == b"old", "limit-boundary response replaced the previous snapshot")
+
+
+def t_fetch_limit_boundary_counts_ghosts():
+    # The truncation guard counts what the QUERY RETURNED, not the survivors. Counting survivors would let
+    # a capped response carrying one ghost slip under the boundary, and absence read off a truncated list
+    # is not evidence.
+    with tempfile.TemporaryDirectory() as d:
+        project_root, output = fetch_paths(d)
+        output.write_bytes(b"old")
+        rows = [entry(n) for n in range(M.SNAPSHOT_LIMIT - 1)] + [entry(9999, label_names=[])]
+        expect_fetch_refusal(project_root, output, RUN_ID, completed(response_bytes(rows)), "may be truncated")
+        check(output.read_bytes() == b"old", "a ghost let a limit-boundary response through the guard")
 
 
 def t_fetch_command_failures_preserve_old():
@@ -587,10 +703,20 @@ CASES = [
     ("fetch-refuse-malformed", "malformed/missing-field output preserves the old snapshot",
      t_fetch_malformed_and_missing_field_preserve_old),
     ("fetch-refuse-non-utf8", "non-UTF-8 output preserves the old snapshot", t_fetch_non_utf8_preserves_old),
-    ("fetch-refuse-wrong-label", "every fetched row must carry this run's label",
-     t_fetch_wrong_label_preserves_old),
+    ("fetch-skip-ghost", "an unlabelled ghost is skipped and the labelled remainder is promoted",
+     t_fetch_skips_ghost_and_promotes_the_rest),
+    ("fetch-skip-foreign-ghost", "a ghost carrying ANOTHER run's label is skipped too",
+     t_fetch_skips_another_runs_ghost),
+    ("fetch-report-skip", "every skip lands on stderr and in skipped_unlabelled — never silent",
+     t_fetch_reports_every_skip),
+    ("fetch-all-ghosts", "an all-ghost response promotes an EMPTY snapshot, not a refusal",
+     t_fetch_all_ghosts_promotes_an_empty_snapshot),
+    ("fetch-skip-detect-refuses", "the SAME bytes fetch skips are refused whole by detect",
+     t_fetch_ghost_still_refused_by_detect),
     ("fetch-refuse-limit", "a response at the limit boundary may be truncated and is refused",
      t_fetch_limit_boundary_refused),
+    ("fetch-limit-counts-ghosts", "the limit guard counts the response, so a ghost cannot slip it",
+     t_fetch_limit_boundary_counts_ghosts),
     ("fetch-command-failures", "non-zero and spawn failures preserve the old snapshot",
      t_fetch_command_failures_preserve_old),
     ("fetch-atomic-preserve", "failed atomic promotion preserves old bytes and cleans its temp",

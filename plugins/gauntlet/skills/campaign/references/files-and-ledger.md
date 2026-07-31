@@ -42,7 +42,7 @@ run_argv(
 
 `fetch` builds the fixed `gh pr list` argv internally. It captures stdout as bytes without shell source,
 validates JSON shape + every required field + every row's run label, rejects a response at its result cap,
-then promotes the exact bytes through a same-directory atomic rename. Any command, validation, or promotion
+then promotes those bytes through a same-directory atomic rename. Any command, validation, or promotion
 failure leaves the previous `prs.json` intact.
 
 Every part is load-bearing:
@@ -54,6 +54,16 @@ Every part is load-bearing:
 
 **`fetch` refuses the query's result-cap boundary.** At that exact row count, completeness is unknown and
 absence cannot be evidence. Split campaign into smaller runs; NEVER detect against the refused response.
+
+**An entry GitHub returns for the label while its OWN labels omit it is a GHOST, and `fetch` SKIPS it.**
+GitHub's issue search index — which `--label` compiles to — does not durably apply label REMOVALS, so it
+keeps listing a PR whose label is already gone until that PR gets a later label write. `fetch` cannot be
+mis-scoped (it builds the selector and the check from the same run ID), so it drops the entry, promotes
+the rest, and reports each skip on stderr and in the result JSON's `skipped_unlabelled` — one ghost must
+never cost the run drift detection on every other PR. **DISCLOSED COST: a run label removed BY HAND from
+a still-live PR looks exactly like a ghost, so that PR reads as `absent_from_snapshot` rather than
+refusing the fetch.** The promoted file is ghost-free, and `detect` still refuses a `--prs` file whose
+entries escape the run's label scope — the tool's `--run-id` docstring owns both halves.
 
 Store ALL reviewer and `gh` output under `<rundir>` first, then Read/Grep it. NEVER `/tmp/`.
 
