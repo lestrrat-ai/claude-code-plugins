@@ -20,17 +20,23 @@ Invocation: Claude Code `/fusion:query-api`; Codex `$fusion:query-api`.
    | Provenance / source commit of the data | `info` |
    | Find names matching a term | `search <term>` |
    | Full detail for a class, function, or one member | `show <name>` |
-   | All members of a class | `members <class>` (`--inherited` walks bases) |
+   | All members of a class | `members <class>` (`--own` drops inherited ones) |
    | Base chain + direct subclasses | `tree <class>` |
    | Which symbols' docs mention a term | `doc-search <term>` |
 
    `show` accepts qualnames (`adsk.fusion.ExtrudeFeatures`), bare class names, `Class.member`, and bare
    member names; ambiguous input returns the candidate list — pick one and re-run.
+
+   Member lookups include inherited members by default, and every one is reported against the class
+   that declares it: `show Class.member` resolves a member declared on any base, `show Class` lists
+   inherited members after the class's own, and `members <class>` groups them by declaring class.
+   `members` and `tree` take a class; given anything else they report no such class.
 3. Database resolution order (explicit `--db`, then user cache, then the bundled copy) is owned by the
    script's module docstring; pass `--db` only when the user names a database. Database missing at every
    location → tell user to run `/fusion:compile-api` (Codex `$fusion:compile-api`).
-4. Answer from script output only. Exit code 1 with a candidate list or "no matches" is a lookup miss,
-   not a failure — refine the name and re-run, or report the miss.
+4. Answer from script output only. Exit code 1 with a candidate list or "no matches" on stdout is a
+   lookup miss, not a failure — refine the name and re-run, or report the miss. Exit code 1 with an
+   `error:` line on stderr is a real failure (no database, or the file is not one) — relay it and stop.
 
 Read-only. The bundled database ships with the plugin; NEVER edit or regenerate it here — regeneration
 is `compile-api`'s job.

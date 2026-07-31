@@ -4,12 +4,16 @@
 Source: the auto-generated intellisense stubs under
 ``Fusion_API_Python_Reference/defs/adsk`` in
 https://github.com/AutodeskFusion360/FusionAPIReference. Every class, module
-function, method, property, and class attribute (enum value) is extracted with
-its signature, docstring, and inheritance links.
+function, method (``__init__`` included), property, and class attribute (enum
+value) is extracted with its signature, docstring, and inheritance links.
 
 Default output is the user-level cache (``~/.cache/fusion-api-db/fusion-api.db``),
 which the query script prefers over the database bundled with the plugin. Pass
 ``--output`` to write elsewhere (e.g. the bundled path in the authoring repo).
+
+The output database is replaced only after every stub has been parsed and the
+result has been checked, so a failed compile leaves the previous database in
+place rather than a truncated one.
 
 Stdlib only. Network access is needed unless ``--source`` points at a local
 checkout of the stub directory.
@@ -21,6 +25,8 @@ import argparse
 import ast
 import datetime
 import json
+import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -31,6 +37,18 @@ REPO = "AutodeskFusion360/FusionAPIReference"
 STUB_DIR = "Fusion_API_Python_Reference/defs/adsk"
 SCHEMA_VERSION = "1"
 USER_AGENT = "fusion-plugin-compile-api"
+
+# Download caps. Nothing here is negotiated with the server, so an unbounded read would let a
+# runaway or hostile response decide this process's memory use. The whole stub set measured about
+# 4 MB when these were chosen (2026-07); the caps sit far above that so a normal compile never
+# trips one.
+MAX_METADATA_BYTES = 8 * 1024 * 1024
+MAX_STUB_BYTES = 32 * 1024 * 1024
+MAX_TOTAL_BYTES = 128 * 1024 * 1024
+
+# A tree entry name must be a plain `.py` file name that lands directly in the staging directory:
+# no separator, no leading dot, no `..`, nothing absolute.
+STUB_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]*\.py")
 
 SCHEMA = """
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -61,20 +79,49 @@ CREATE INDEX idx_members_symbol ON members(symbol_id);
 """
 
 
-def http_get(url: str) -> bytes:
+class ByteBudget:
+    """Caps the total number of bytes one compile may download."""
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.used = 0
+
+    def spend(self, count: int, what: str) -> None:
+        if self.used + count > self.limit:
+            raise RuntimeError(
+                f"download budget of {self.limit} bytes exhausted while fetching {what}"
+            )
+        self.used += count
+
+
+def http_get(url: str, max_bytes: int, budget: ByteBudget | None = None) -> bytes:
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=60) as resp:
-        return resp.read()
+        # One byte past the cap: enough to tell that the body is oversized without buffering it.
+        data = resp.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise RuntimeError(f"{url} returned more than the {max_bytes}-byte limit")
+    if budget is not None:
+        budget.spend(len(data), url)
+    return data
 
 
 def resolve_head_sha(ref: str) -> str:
-    data = json.loads(http_get(f"https://api.github.com/repos/{REPO}/commits/{ref}"))
+    data = json.loads(
+        http_get(
+            f"https://api.github.com/repos/{REPO}/commits/{ref}", MAX_METADATA_BYTES
+        )
+    )
     return data["sha"]
 
 
-def list_stub_files(sha: str) -> list[str]:
+def list_stub_files(sha: str, budget: ByteBudget | None = None) -> list[str]:
     data = json.loads(
-        http_get(f"https://api.github.com/repos/{REPO}/git/trees/{sha}:{STUB_DIR}")
+        http_get(
+            f"https://api.github.com/repos/{REPO}/git/trees/{sha}:{STUB_DIR}",
+            MAX_METADATA_BYTES,
+            budget,
+        )
     )
     if data.get("truncated"):
         raise RuntimeError("stub directory listing was truncated")
@@ -88,12 +135,27 @@ def list_stub_files(sha: str) -> list[str]:
     return sorted(names)
 
 
-def download_stubs(sha: str, dest: Path) -> list[Path]:
+def staging_target(dest: Path, name: str) -> Path:
+    """Resolve a tree entry name to a file directly inside `dest`, or refuse it.
+
+    The names come from the server's tree listing, so they are untrusted input: one carrying a
+    separator, a `..`, or an absolute path would otherwise be written wherever it pointed.
+    """
+    if not STUB_NAME.fullmatch(name):
+        raise RuntimeError(f"refusing stub entry {name!r}: expected a plain .py file name")
+    root = dest.resolve()
+    target = (root / name).resolve()
+    if target.parent != root:
+        raise RuntimeError(f"refusing stub entry {name!r}: it resolves outside {root}")
+    return target
+
+
+def download_stubs(sha: str, dest: Path, budget: ByteBudget | None = None) -> list[Path]:
     paths: list[Path] = []
-    for name in list_stub_files(sha):
+    for name in list_stub_files(sha, budget):
         url = f"https://raw.githubusercontent.com/{REPO}/{sha}/{STUB_DIR}/{name}"
-        target = dest / name
-        target.write_bytes(http_get(url))
+        target = staging_target(dest, name)
+        target.write_bytes(http_get(url, MAX_STUB_BYTES, budget))
         paths.append(target)
         print(f"fetched {name} ({target.stat().st_size} bytes)", file=sys.stderr)
     return paths
@@ -121,8 +183,12 @@ def render_signature(fn: ast.FunctionDef) -> tuple[str, str | None]:
     defaults: list[ast.expr | None] = [None] * (
         len(positional) - len(a.defaults)
     ) + list(a.defaults)
-    for arg, default in zip(positional, defaults):
+    for index, (arg, default) in enumerate(zip(positional, defaults)):
         parts.append(render_arg(arg, default))
+        # `/` closes the positional-only group; without it the rendered signature would claim
+        # those parameters can be passed by keyword.
+        if index == len(a.posonlyargs) - 1:
+            parts.append("/")
     if a.vararg is not None:
         parts.append("*" + render_arg(a.vararg, None))
     elif a.kwonlyargs:
@@ -154,9 +220,8 @@ def normalize_base(base: ast.expr, module: str) -> str:
 
 class DocDb:
     def __init__(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if path.exists():
-            path.unlink()
+        # `path` is always a fresh staging file chosen by build_database(); nothing is deleted
+        # here, so the previous database survives a compile that fails partway.
         self.conn = sqlite3.connect(path)
         self.conn.executescript(SCHEMA)
 
@@ -207,8 +272,6 @@ def compile_class(db: DocDb, module: str, node: ast.ClassDef) -> None:
     properties: dict[str, dict[str, object]] = {}
     for item in node.body:
         if isinstance(item, ast.FunctionDef):
-            if item.name == "__init__":
-                continue  # stub constructors are always `def __init__(self): pass`
             decorators = decorator_names(item)
             signature, returns = render_signature(item)
             doc = ast.get_docstring(item)
@@ -278,6 +341,66 @@ def compile_module(db: DocDb, path: Path) -> None:
             )
 
 
+def fill_database(
+    db: DocDb, stub_paths: list[Path], source_desc: str, sha: str
+) -> tuple[int, int]:
+    """Compile every stub and its metadata into `db`; return (symbol count, member count)."""
+    for path in stub_paths:
+        compile_module(db, path)
+    db.set_meta("schema_version", SCHEMA_VERSION)
+    db.set_meta("source", source_desc)
+    db.set_meta("source_commit", sha)
+    db.set_meta(
+        "generated_at",
+        datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+    )
+    db.set_meta("modules", json.dumps([module_name_for(p) for p in stub_paths]))
+    db.conn.commit()
+    symbols = db.conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
+    members = db.conn.execute("SELECT COUNT(*) FROM members").fetchone()[0]
+    return symbols, members
+
+
+def build_database(
+    stub_paths: list[Path], output: Path, source_desc: str, sha: str
+) -> tuple[int, int]:
+    """Compile into a staging file beside `output` and replace `output` only once it is complete.
+
+    A stub that fails to parse — or any other error — therefore leaves an existing database
+    untouched, instead of replacing it with an empty one that later queries would trust.
+    """
+    output.parent.mkdir(parents=True, exist_ok=True)
+    handle, staging_name = tempfile.mkstemp(
+        prefix=f".{output.name}.", suffix=".partial", dir=output.parent
+    )
+    os.close(handle)
+    staging = Path(staging_name)
+    # sqlite3.connect creates the file itself; mkstemp only reserved the name.
+    staging.unlink()
+    try:
+        db = DocDb(staging)
+        try:
+            symbols, members = fill_database(db, stub_paths, source_desc, sha)
+        finally:
+            db.conn.close()
+        if symbols == 0 or members == 0:
+            raise RuntimeError(
+                f"compiled {symbols} symbols and {members} members from"
+                f" {len(stub_paths)} stub(s); refusing to replace {output}"
+            )
+        # mkstemp files are private to the owner; the database is meant to be as readable as any
+        # other file this user writes.
+        umask = os.umask(0)
+        os.umask(umask)
+        os.chmod(staging, 0o666 & ~umask)
+        os.replace(staging, output)
+    except BaseException:
+        for leftover in (staging, Path(f"{staging}-journal"), Path(f"{staging}-wal")):
+            leftover.unlink(missing_ok=True)
+        raise
+    return symbols, members
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -298,38 +421,29 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    source_desc: str
-    if args.source is not None:
-        stub_paths = sorted(args.source.glob("*.py"))
-        if not stub_paths:
-            print(f"error: no .py stubs in {args.source}", file=sys.stderr)
-            return 1
-        source_desc = str(args.source)
-        sha = "local"
-    else:
-        sha = resolve_head_sha(args.ref)
-        print(f"compiling {REPO}@{sha}", file=sys.stderr)
-        tmpdir = Path(tempfile.mkdtemp(prefix="fusion-stubs-"))
-        stub_paths = download_stubs(sha, tmpdir)
-        source_desc = f"https://github.com/{REPO}"
+    try:
+        if args.source is not None:
+            stub_paths = sorted(args.source.glob("*.py"))
+            if not stub_paths:
+                print(f"error: no .py stubs in {args.source}", file=sys.stderr)
+                return 1
+            symbols, members = build_database(
+                stub_paths, args.output, str(args.source), "local"
+            )
+        else:
+            sha = resolve_head_sha(args.ref)
+            print(f"compiling {REPO}@{sha}", file=sys.stderr)
+            budget = ByteBudget(MAX_TOTAL_BYTES)
+            # The staging directory goes away on success and on failure alike.
+            with tempfile.TemporaryDirectory(prefix="fusion-stubs-") as tmpdir:
+                stub_paths = download_stubs(sha, Path(tmpdir), budget)
+                symbols, members = build_database(
+                    stub_paths, args.output, f"https://github.com/{REPO}", sha
+                )
+    except (OSError, RuntimeError, SyntaxError, ValueError, KeyError, sqlite3.Error) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
-    db = DocDb(args.output)
-    for path in stub_paths:
-        compile_module(db, path)
-
-    db.set_meta("schema_version", SCHEMA_VERSION)
-    db.set_meta("source", source_desc)
-    db.set_meta("source_commit", sha)
-    db.set_meta(
-        "generated_at",
-        datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
-    )
-    db.set_meta("modules", json.dumps([module_name_for(p) for p in stub_paths]))
-    db.conn.commit()
-
-    symbols = db.conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
-    members = db.conn.execute("SELECT COUNT(*) FROM members").fetchone()[0]
-    db.conn.close()
     print(f"wrote {args.output}: {symbols} symbols, {members} members")
     return 0
 

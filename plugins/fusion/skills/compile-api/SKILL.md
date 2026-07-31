@@ -26,5 +26,8 @@ Invocation: Claude Code `/fusion:compile-api`; Codex `$fusion:compile-api`.
 4. Report the script's final line (path, symbol count, member count) and the `compiling <repo>@<sha>`
    line as the new source commit. Non-zero exit → relay stderr as-is and stop.
 
-The script deletes and rebuilds its output database from scratch; there is no incremental mode, and a
-rebuild is always safe.
+The script rebuilds the whole database from scratch; there is no incremental mode. It compiles into a
+staging file next to the output and replaces the output only after every stub has parsed and the result
+has been checked to be non-empty, so a compile that fails partway leaves the existing database in place.
+A compile that succeeds still discards the previous contents — anything hand-edited into that database is
+lost.
