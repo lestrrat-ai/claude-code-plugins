@@ -23,6 +23,10 @@ place rather than a truncated one. A stub larger than the per-stub parse limit
 is refused before it is parsed and fails the compile, whether it was downloaded
 or given by ``--source``.
 
+Both halves of the provenance are recorded and reported: ``meta.source_ref``
+holds the ref that was asked for and ``meta.source_commit`` the commit it
+resolved to, and the ``compiling`` line on stderr names the same pair.
+
 Stdlib only. Network access is needed unless ``--source`` points at a local
 checkout of the stub directory.
 """
@@ -41,7 +45,9 @@ import tempfile
 import time
 import unicodedata
 import urllib.error
+import urllib.parse
 import urllib.request
+import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -129,10 +135,11 @@ def sanitize(text: str) -> str:
 def out(text: str) -> None:
     """Write sanitized text to stdout; err() is the stderr half of the same pair.
 
-    Every line this script prints goes through one of the two, argparse's usage, help, and error
-    text included (SanitizedParser routes it here). What stays outside the pair is what the
-    interpreter itself writes: an unhandled exception's traceback is Python's own output and is not
-    sanitized.
+    Every line this script prints goes through one of the two: argparse's usage, help, and error
+    text (SanitizedParser routes it here), and a warning Python raises while a stub is parsed
+    (compile_module() captures it and reports it through err() instead of letting the interpreter
+    quote the source line itself). What stays outside the pair is an unhandled exception's
+    traceback, which Python writes on its own and is not sanitized.
     """
     print(sanitize(text))
 
@@ -271,9 +278,20 @@ def http_get(url: str, max_bytes: int, budget: ByteBudget | None = None) -> byte
 
 
 def resolve_head_sha(ref: str, budget: ByteBudget | None = None) -> str:
+    """Resolve an operator-supplied git ref to the commit id GitHub reports for it.
+
+    The ref becomes one path segment of the lookup URL, and git accepts ref names that mean
+    something else inside a URL, so it is percent-encoded before it is inserted rather than after.
+    Two characters make the difference between asking for one commit and compiling another:
+    ``#`` starts a URL fragment, which urllib strips off before the request leaves this process
+    (``main#nothing`` would be sent as ``main`` and answer with main's commit); and a ``%`` the
+    operator typed is a percent-escape the server decodes itself (``ma%69n`` would arrive as
+    ``main``). ``/`` is kept unescaped because a hierarchical ref such as ``release/2.0`` is one
+    path, not a segment containing a separator.
+    """
     data = json.loads(
         http_get(
-            f"https://api.github.com/repos/{REPO}/commits/{ref}",
+            f"https://api.github.com/repos/{REPO}/commits/{urllib.parse.quote(ref, safe='/')}",
             MAX_METADATA_BYTES,
             budget,
         )
@@ -565,6 +583,12 @@ def compile_module(db: DocDb, path: Path) -> int:
     more. This is the one gate every stub passes, downloaded or handed over by `--source`, and it is
     an addition: the checks that run after a parse still decide whether the result may replace an
     existing database.
+
+    A warning the parse raises is captured and reported through err() rather than left to Python's
+    own warning writer. That writer quotes the offending SOURCE LINE verbatim, which is stub text a
+    server chose, so it would put unescaped bytes on this terminal past both sanitizing writers —
+    the one place stub content reached stderr without going through sanitize(). The report keeps the
+    file, line, category, and message, and drops the source line the interpreter would have copied.
     """
     size = path.stat().st_size
     if size > MAX_PARSE_BYTES:
@@ -573,7 +597,16 @@ def compile_module(db: DocDb, path: Path) -> int:
             " it was refused before parsing"
         )
     module = module_name_for(path)
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    with warnings.catch_warnings(record=True) as raised:
+        # Every category, not SyntaxWarning alone: the point is that no warning raised here reaches
+        # the terminal by any route but err(). "always" keeps a repeat from being swallowed by the
+        # once-per-location default, so what is reported is what the parse actually raised.
+        warnings.simplefilter("always")
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for entry in raised:
+        err(
+            f"warning: {path}:{entry.lineno}: {entry.category.__name__}: {entry.message}"
+        )
     unhandled = 0
     for node in tree.body:
         if isinstance(node, ast.ClassDef):
@@ -595,13 +628,17 @@ def compile_module(db: DocDb, path: Path) -> int:
 
 
 def fill_database(
-    db: DocDb, stub_paths: list[Path], source_desc: str, sha: str
+    db: DocDb, stub_paths: list[Path], source_desc: str, sha: str, ref: str
 ) -> tuple[int, int, int]:
     """Compile every stub and its metadata into `db`.
 
     Returns (symbol count, member count, unhandled statement count). The last is recorded in `meta`
     as well as returned, so a database carries the number of constructs its compiler did not
     understand rather than only the symbols it did.
+
+    `meta.source_ref` records what was ASKED FOR and `meta.source_commit` what that resolved to, so
+    the two are checkable against each other. A commit id alone cannot be checked: it says which
+    commit was compiled and nothing about whether it is the one the operator named.
     """
     unhandled = 0
     for path in stub_paths:
@@ -609,6 +646,7 @@ def fill_database(
     db.set_meta("unhandled_statements", str(unhandled))
     db.set_meta("schema_version", SCHEMA_VERSION)
     db.set_meta("source", source_desc)
+    db.set_meta("source_ref", ref)
     db.set_meta("source_commit", sha)
     db.set_meta(
         "generated_at",
@@ -622,7 +660,7 @@ def fill_database(
 
 
 def build_database(
-    stub_paths: list[Path], output: Path, source_desc: str, sha: str
+    stub_paths: list[Path], output: Path, source_desc: str, sha: str, ref: str
 ) -> tuple[int, int, int]:
     """Compile into a staging file beside `output` and replace `output` only once it is complete.
 
@@ -641,7 +679,7 @@ def build_database(
         db = DocDb(staging)
         try:
             symbols, members, unhandled = fill_database(
-                db, stub_paths, source_desc, sha
+                db, stub_paths, source_desc, sha, ref
             )
         finally:
             db.conn.close()
@@ -690,22 +728,28 @@ def main() -> int:
                 err(f"error: no .py stubs in {args.source}")
                 return 1
             # Every path emits this source record, so what a compile compiled is reportable
-            # whichever way the stubs were obtained. A local compile has no commit to name, so
-            # the commit field reads `local` — the same value `meta.source_commit` records.
+            # whichever way the stubs were obtained. A local compile resolves no ref and has no
+            # commit to name, so both fields read `local` — the same values `meta.source_ref` and
+            # `meta.source_commit` record.
             err(f"compiling {args.source}@local")
             symbols, members, unhandled = build_database(
-                stub_paths, args.output, str(args.source), "local"
+                stub_paths, args.output, str(args.source), "local", "local"
             )
         else:
             # Built before the first request, so the commit lookup spends from it too.
             budget = ByteBudget(MAX_TOTAL_BYTES)
             sha = resolve_head_sha(args.ref, budget)
-            err(f"compiling {REPO}@{sha}")
+            # The requested ref is named beside the commit it resolved to, because the resolution
+            # is what an operator cannot otherwise check: a ref that reaches the server as a
+            # different one still answers, and a line naming only the resolved commit reads exactly
+            # the same either way. Quoted through repr so a ref that is empty, spaced, or padded is
+            # visible as typed; err() escapes anything it carries.
+            err(f"compiling {REPO}@{sha} (requested ref {args.ref!r})")
             # The staging directory goes away on success and on failure alike.
             with tempfile.TemporaryDirectory(prefix="fusion-stubs-") as tmpdir:
                 stub_paths = download_stubs(sha, Path(tmpdir), budget)
                 symbols, members, unhandled = build_database(
-                    stub_paths, args.output, f"https://github.com/{REPO}", sha
+                    stub_paths, args.output, f"https://github.com/{REPO}", sha, args.ref
                 )
     except (OSError, RuntimeError, SyntaxError, ValueError, KeyError, sqlite3.Error) as exc:
         err(f"error: {exc}")

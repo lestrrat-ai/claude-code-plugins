@@ -9,7 +9,7 @@ with the plugin, so queries work offline out of the box.
 
 | Skill | Invocation | What it does |
 |-------|------------|--------------|
-| `query-api` | `/fusion:query-api` (Codex `$fusion:query-api`) | Answers questions about Fusion API symbols: full class detail, member signatures, inheritance trees, name and docstring search. Member lookups include members declared on base classes and name the class each one comes from; `members <class> --own` narrows a listing to the class itself. |
+| `query-api` | `/fusion:query-api` (Codex `$fusion:query-api`) | Answers questions about Fusion API symbols: full class detail, member signatures, inheritance trees, name and docstring search. Member lookups include members declared on base classes, walk them in the order Python itself resolves an attribute, and name the class each one comes from; `members <class> --own` narrows a listing to the class itself. |
 | `compile-api` | `/fusion:compile-api` (Codex `$fusion:compile-api`) | Rebuilds the database from the reference repo's current `main` into `~/.cache/fusion-api-db/`, which `query-api` prefers over the bundled copy — upgrades need no plugin reinstall. |
 
 ## Examples

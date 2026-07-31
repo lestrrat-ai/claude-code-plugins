@@ -26,8 +26,12 @@ Subcommands:
 
 Member lookups resolve inherited members by default: ``show Class.member``,
 ``show Class``, and ``members Class`` all walk the class's bases and report
-which class declares each member. A member declared closer to the queried class
-hides a same-named member on a farther base. Member names are compared exactly,
+which class declares each member. The bases are walked in the order Python
+itself resolves an attribute (C3 linearization, what ``type.__mro__`` gives),
+so the class named is the class the member really comes from; a class whose
+recorded bases have no such order is refused rather than answered with a guess.
+A member declared earlier in that order hides a same-named member declared
+later. Member names are compared exactly,
 so ``foo`` and ``Foo`` are two members and neither hides the other; a lookup
 that matches no member exactly is retried ignoring case, which lets a
 mistyped-case name still resolve without ever shadowing an exact match.
@@ -324,33 +328,124 @@ def resolve_class(conn: sqlite3.Connection, name: str) -> sqlite3.Row | None:
     return symbols[0]
 
 
-def ancestry(conn: sqlite3.Connection, sym: sqlite3.Row) -> list[sqlite3.Row]:
-    """`sym` followed by every ancestor reachable through `bases`, nearest first.
+class InconsistentHierarchy(Exception):
+    """A class whose recorded bases have no resolution order at all.
 
-    Breadth-first over a deque, so taking the next name off the frontier costs the same however
-    long the frontier is. Each base name is looked up at most once and each qualname is appended at
-    most once, so a class naming one base a hundred thousand times costs one lookup and one visit:
-    a repeated base and a cycle in the recorded bases both terminate the walk instead of repeating
-    or looping. Two spellings of one name (lookups fold case) still resolve to one visit, because
-    the qualname decides what is already in the chain.
+    Raised instead of answering, because every answer available at that point is a guess: with no
+    order there is no fact about which base declares the member a lookup would reach, and a guess
+    is indistinguishable from the real answer in the output.
     """
-    chain = [sym]
-    seen = {sym["qualname"]}
-    frontier: deque[str] = deque(json.loads(sym["bases"]))
+
+
+def base_rows(conn: sqlite3.Connection, sym: sqlite3.Row) -> list[sqlite3.Row]:
+    """The classes `sym` names as bases, in the order it names them, each appearing once.
+
+    Each distinct name is looked up once however many times it is listed, and a class already
+    reached through an earlier name is not repeated, so a class naming one base a hundred thousand
+    times costs one lookup and contributes one base. Two spellings of one name (lookups fold case)
+    collapse the same way, because the qualname decides what is already there. A name the database
+    does not hold contributes nothing: a base outside the adsk package has no members to inherit.
+    """
+    rows: list[sqlite3.Row] = []
     queried: set[str] = set()
-    while frontier:
-        base_name = frontier.popleft()
-        if base_name in queried:
+    seen: set[str] = set()
+    for name in json.loads(sym["bases"]):
+        if name in queried:
             continue
-        queried.add(base_name)
-        for base in find_symbol(conn, base_name):
+        queried.add(name)
+        for base in find_symbol(conn, name):
             qualname = base["qualname"]
             if qualname in seen:
                 continue
             seen.add(qualname)
-            chain.append(base)
-            frontier.extend(json.loads(base["bases"]))
-    return chain
+            rows.append(base)
+    return rows
+
+
+def c3_merge(sequences: list[list[sqlite3.Row]], owner: str) -> list[sqlite3.Row]:
+    """Merge already-linearized base orders the way C3 does, or refuse.
+
+    A class may be taken next only when it is the head of every sequence it appears in; taking one
+    that appears in some sequence's tail would place it before a class the tail says comes first.
+    When no head qualifies, the recorded bases contradict each other and there is no order to
+    return — `owner` is named in the refusal because it is the class whose base list is the problem.
+    """
+    pending = [list(sequence) for sequence in sequences if sequence]
+    order: list[sqlite3.Row] = []
+    while pending:
+        head: sqlite3.Row | None = None
+        for sequence in pending:
+            candidate = sequence[0]["qualname"]
+            if not any(
+                candidate in {row["qualname"] for row in other[1:]} for other in pending
+            ):
+                head = sequence[0]
+                break
+        if head is None:
+            blocked = dict.fromkeys(remaining[0]["qualname"] for remaining in pending)
+            raise InconsistentHierarchy(
+                f"{owner} has no consistent resolution order: its recorded bases"
+                f" disagree about which of {', '.join(blocked)} comes first, so which"
+                " class declares an inherited member is not decidable"
+            )
+        order.append(head)
+        for sequence in pending:
+            if sequence[0]["qualname"] == head["qualname"]:
+                del sequence[0]
+        pending = [sequence for sequence in pending if sequence]
+    return order
+
+
+def ancestry(conn: sqlite3.Connection, sym: sqlite3.Row) -> list[sqlite3.Row]:
+    """`sym` followed by every ancestor, in the order Python itself resolves an attribute.
+
+    C3 linearization, the same rule `type.__mro__` follows, and not breadth-first order: the two
+    disagree the moment a class has more than one base. On a diamond where `D(B, C)`, `B(A)`, and
+    both `A` and `C` declare one name, breadth-first reaches `C` first while Python resolves the
+    name on `A`, so a breadth-first answer names a class that does not declare what the class
+    actually inherits. This walk is the one place the order is decided; every member lookup reads
+    it, so `show`, `members`, and the hiding rule all answer with Python's own resolution.
+
+    Iterative rather than recursive, so a deep chain costs heap and not stack. A base already on
+    the path being walked is a cycle: no class can inherit from something that inherits from it, so
+    there is no order to report and the walk refuses instead of cutting the loop at an arbitrary
+    point. A repeated base is not a cycle and does not refuse; base_rows() has already reduced it
+    to one entry.
+    """
+    order: dict[str, list[sqlite3.Row]] = {}
+    bases: dict[str, list[sqlite3.Row]] = {sym["qualname"]: base_rows(conn, sym)}
+    stack: list[tuple[sqlite3.Row, int]] = [(sym, 0)]
+    on_path: set[str] = {sym["qualname"]}
+    while stack:
+        node, index = stack[-1]
+        qualname = node["qualname"]
+        node_bases = bases[qualname]
+        if index < len(node_bases):
+            stack[-1] = (node, index + 1)
+            base = node_bases[index]
+            base_qualname = base["qualname"]
+            if base_qualname in order:
+                continue  # already linearized on another branch of the same hierarchy
+            if base_qualname in on_path:
+                raise InconsistentHierarchy(
+                    f"{sym['qualname']} has no consistent resolution order:"
+                    f" {qualname} names {base_qualname} as a base, and {base_qualname}"
+                    f" reaches {qualname} again through its own bases"
+                )
+            on_path.add(base_qualname)
+            bases[base_qualname] = base_rows(conn, base)
+            stack.append((base, 0))
+            continue
+        stack.pop()
+        on_path.discard(qualname)
+        # Every base is linearized by now, so this class can be: C3 puts the class first, then
+        # merges its bases' orders with the base list itself, which is what keeps the bases in the
+        # order the class declared them.
+        order[qualname] = [node] + c3_merge(
+            [list(order[base["qualname"]]) for base in node_bases] + [list(node_bases)],
+            qualname,
+        )
+    return order[sym["qualname"]]
 
 
 def own_members(conn: sqlite3.Connection, symbol_id: int) -> Iterator[sqlite3.Row]:
@@ -375,11 +470,12 @@ def own_member_count(conn: sqlite3.Connection, symbol_id: int) -> int:
 class MemberPlan(NamedTuple):
     """Where each member name reachable from a queried class is declared.
 
-    `owners` is the queried class and its ancestors, nearest first. `declared_by` maps a member name
-    to the qualname of the nearest owner that declares it, and `counts` gives each owner how many
-    names it declares that nothing nearer hides. A listing is printed by streaming each owner's rows
-    against this plan, so no set of rows is ever held whole; what is held is the names, which the
-    hiding rule needs however the listing is produced.
+    `owners` is the queried class and its ancestors in resolution order (see ancestry()).
+    `declared_by` maps a member name to the qualname of the first owner in that order that declares
+    it, and `counts` gives each owner how many names it declares that nothing earlier hides. A
+    listing is printed by streaming each owner's rows against this plan, so no set of rows is ever
+    held whole; what is held is the names, which the hiding rule needs however the listing is
+    produced.
     """
 
     owners: list[sqlite3.Row]
@@ -389,7 +485,7 @@ class MemberPlan(NamedTuple):
     def rows_of(
         self, conn: sqlite3.Connection, owner: sqlite3.Row
     ) -> Iterator[sqlite3.Row]:
-        """Stream the members of `owner` that nothing nearer the queried class hides."""
+        """Stream the members of `owner` that no earlier class in the resolution order hides."""
         qualname = owner["qualname"]
         for row in own_members(conn, owner["id"]):
             if self.declared_by.get(row["name"]) == qualname:
@@ -399,11 +495,11 @@ class MemberPlan(NamedTuple):
 def member_plan(conn: sqlite3.Connection, sym: sqlite3.Row) -> MemberPlan:
     """Resolve the hiding rule for `sym` and its ancestors, reading names and no other column.
 
-    A name declared closer to `sym` hides the same name on a farther ancestor, so an override is
-    reported once, against the class that overrides it. Names are compared exactly: only the same
-    name is an override, so a base's `foo` survives a subclass's `Foo` and both are listed. One
-    class declaring one name twice keeps both rows, because a class cannot hide itself: an owner's
-    claims are recorded only once the whole owner has been read.
+    A name declared earlier in the resolution order hides the same name on a class later in it, so
+    an override is reported once, against the class that overrides it. Names are compared exactly:
+    only the same name is an override, so a base's `foo` survives a subclass's `Foo` and both are
+    listed. One class declaring one name twice keeps both rows, because a class cannot hide itself:
+    an owner's claims are recorded only once the whole owner has been read.
     """
     owners = ancestry(conn, sym)
     declared_by: dict[str, str] = {}
@@ -530,7 +626,11 @@ def anywhere_named(
 def owned_named(
     conn: sqlite3.Connection, member: str, owner: str, fold_case: bool
 ) -> list[MemberHit]:
-    """Every member of that name reachable from a class named `owner`, nearest declaration only.
+    """Every member of that name reachable from a class named `owner`, first declaration only.
+
+    "First" is first in the resolution order (see ancestry()), which is what Python itself would
+    reach, so the class this reports as the declaring one is the class the attribute really comes
+    from.
 
     One hit per class named `owner`, never per member row. Two classes of the same name in
     different modules that inherit one member share the row that declares it, and collapsing those
@@ -552,7 +652,7 @@ def owned_named(
             hits.extend(
                 MemberHit(sym["qualname"], declaring["qualname"], row) for row in rows
             )
-            break  # nearest declaration wins; stop climbing this chain
+            break  # first declaration in resolution order wins; stop walking this chain
     return hits
 
 
@@ -561,13 +661,14 @@ def find_members(
 ) -> list[MemberHit]:
     """Every member named `member`, optionally restricted to the class named `owner`.
 
-    With an owner, each candidate class is searched together with its ancestors and the nearest
-    declaration wins, so an inherited member resolves exactly like an own one.
+    With an owner, each candidate class is searched together with its ancestors and the first
+    declaration in the resolution order wins, so an inherited member resolves exactly like an own
+    one.
 
     The exact-name search runs over the whole chain first, and case is folded only when it found
-    nothing at all. So a differently-cased member on a nearer class can never stop the exactly
-    named one further up the chain from being found, while a case-folded query still resolves when
-    no member carries the queried spelling.
+    nothing at all. So a differently-cased member on a class earlier in the order can never stop
+    the exactly named one later in it from being found, while a case-folded query still resolves
+    when no member carries the queried spelling.
     """
     if owner is None:
         return anywhere_named(conn, member, fold_case=False) or anywhere_named(
@@ -633,6 +734,9 @@ def cmd_tree(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
     # hold (a class from outside the adsk package) still appears in the chain. Each name is
     # visited once and taken off a deque, so a repeated base or a cycle terminates the walk and a
     # long frontier costs no more per step than a short one.
+    # This is what a class can REACH, deliberately not the order a member lookup resolves in: a
+    # name with no row cannot be linearized, and reporting it is the whole point of this listing.
+    # ancestry() owns the resolution order, and the `ancestors:` line below never claims to be it.
     ancestors: list[str] = []
     frontier: deque[str] = deque(json.loads(sym["bases"]))
     seen: set[str] = {sym["qualname"]}
@@ -730,6 +834,11 @@ def main() -> int:
     }
     try:
         return handlers[args.command](conn, args)
+    except InconsistentHierarchy as exc:
+        # A real failure, not a lookup miss: the database records a hierarchy that cannot exist, so
+        # there is no member answer to give. Reported on stderr, where the other real failures go.
+        err(f"error: {exc}")
+        return 1
     except sqlite3.Error as exc:
         db_path = args.db if args.db is not None else default_db_path()
         err(

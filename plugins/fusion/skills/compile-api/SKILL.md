@@ -25,9 +25,12 @@ Invocation: Claude Code `/fusion:compile-api`; Codex `$fusion:compile-api`.
      this plugin only) → `--output <plugin>/skills/query-api/data/fusion-api.db`, then commit the result.
 4. Report the script's final line on stdout (path, symbol count, member count) and the
    `compiling <source>@<commit>` line stderr opens with, as the source record. Every path emits that
-   line: a download names the reference repo and the resolved commit, a `--source` compile names the
-   local directory and `local` in place of a commit. Relay a `warning:` line on stderr too — it
-   reports how many statements used a construct the compiler does not index. Non-zero exit → relay
+   line: a download names the reference repo, the resolved commit, and the ref that was requested
+   (`compiling <repo>@<sha> (requested ref '<ref>')`), a `--source` compile names the local directory
+   and `local` in place of a commit. Report the requested ref as well as the commit — the resolved
+   commit alone cannot be checked against the ref the user named. Relay every `warning:` line on
+   stderr too: one kind reports how many statements used a construct the compiler does not index,
+   and one kind reports a warning Python raised while parsing a named stub. Non-zero exit → relay
    stderr as-is and stop.
 
 The script rebuilds the whole database from scratch; there is no incremental mode. It compiles into a

@@ -17,7 +17,7 @@ Invocation: Claude Code `/fusion:query-api`; Codex `$fusion:query-api`.
 
    | Question | Subcommand |
    |----------|------------|
-   | Provenance / source commit of the data | `info` |
+   | Provenance and counts for the database in use | `info` |
    | Find names matching a term | `search <term>` |
    | Full detail for a class, function, or one member | `show <name>` |
    | All members of a class | `members <class>` (`--own` drops inherited ones) |
@@ -30,7 +30,9 @@ Invocation: Claude Code `/fusion:query-api`; Codex `$fusion:query-api`.
    Member lookups include inherited members by default, and every one is reported against the class
    that declares it: `show Class.member` resolves a member declared on any base, `show Class` lists
    inherited members after the class's own, and `members <class>` groups them by declaring class.
-   `members` and `tree` take a class; given anything else they report no such class.
+   The bases are walked in the order Python itself resolves an attribute, so the class reported is
+   the class the member really comes from. `members` and `tree` take a class; given anything else
+   they report no such class.
 3. Database resolution order (explicit `--db`, then user cache, then the bundled copy) is owned by the
    script's module docstring; pass `--db` only when the user names a database, and pass it **before**
    the subcommand — after it, it is a usage error and exits 2:
@@ -43,7 +45,10 @@ Invocation: Claude Code `/fusion:query-api`; Codex `$fusion:query-api`.
    (Codex `$fusion:compile-api`).
 4. Answer from script output only. Exit code 1 with a candidate list or "no matches" on stdout is a
    lookup miss, not a failure — refine the name and re-run, or report the miss. Exit code 1 with an
-   `error:` line on stderr is a real failure (no database, or the file is not one) — relay it and stop.
+   `error:` line on stderr is a real failure — relay it and stop. The causes are: no database, the
+   file is not one, and a class whose recorded bases have no consistent resolution order, which is
+   refused rather than answered from a guessed order. The last one names the class; report it as a
+   defect in the database, and recompile with `/fusion:compile-api` (Codex `$fusion:compile-api`).
 
 Read-only. The bundled database ships with the plugin; NEVER edit or regenerate it here — regeneration
 is `compile-api`'s job.
