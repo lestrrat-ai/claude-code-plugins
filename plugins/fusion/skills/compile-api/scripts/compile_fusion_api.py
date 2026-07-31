@@ -9,9 +9,11 @@ extracted with its signature, docstring, and inheritance links; ``async def``
 declares a function or a method wherever ``def`` does and is indexed the same
 way. A class attribute is indexed whatever it was declared with — a value (an
 enum value), an annotation, both, or neither, the last being a name bound by an
-unpacked assignment. Any statement the compiler does not index is counted
-into ``meta.unhandled_statements`` and reported on stderr, so a construct it
-does not understand shows up as a number rather than a missing symbol.
+unpacked assignment. A statement that yields no symbol and is not one of the
+declared exemptions — ``is_exempt_statement`` is where they are named — is
+counted into ``meta.unhandled_statements`` and reported on stderr, so a
+construct it does not understand shows up as a number rather than a missing
+symbol. An assignment target that binds no name counts the same way.
 
 Default output is the user-level cache (``~/.cache/fusion-api-db/fusion-api.db``),
 which the query script prefers over the database bundled with the plugin. Pass
@@ -28,7 +30,8 @@ holds the ref that was asked for and ``meta.source_commit`` the commit it
 resolved to, and the ``compiling`` line on stderr names the same pair.
 
 Stdlib only. Network access is needed unless ``--source`` points at a local
-checkout of the stub directory.
+checkout of the stub directory. A local compile resolves no ref, so ``--source``
+and ``--ref`` are refused together rather than one of them being ignored.
 """
 
 from __future__ import annotations
@@ -56,6 +59,12 @@ if TYPE_CHECKING:  # the stream type argparse hands _print_message; no runtime i
 
 REPO = "AutodeskFusion360/FusionAPIReference"
 STUB_DIR = "Fusion_API_Python_Reference/defs/adsk"
+# Versions the TABLE schema below — the CREATE statements in SCHEMA — and nothing else. It is still
+# "1" because those statements have not changed since the first compile. `meta` rows are deliberately
+# NOT covered: a key is added without touching any table, every reader looks its keys up by name, and
+# a reader that wants a key it does not find already learns that from the lookup. Bumping this for an
+# added `meta` key would make an old database unreadable to nothing (no reader compares the value) or,
+# if one were taught to, would reject a user's cached database over a purely additive change.
 SCHEMA_VERSION = "1"
 USER_AGENT = "fusion-plugin-compile-api"
 
@@ -277,6 +286,25 @@ def http_get(url: str, max_bytes: int, budget: ByteBudget | None = None) -> byte
     return data
 
 
+def decode_object(raw: bytes, what: str) -> dict[str, object]:
+    """Decode a response body into a JSON object, or refuse it naming what arrived instead.
+
+    Nothing at this end decides what a response carries: a proxy, an error page, or an API that
+    changed can answer with a list, a string, a number, or null where an object was expected.
+    Indexing or calling a method on one of those raises TypeError or AttributeError, and neither is
+    in main()'s except tuple, so the operator would get a traceback where an ``error:`` line was
+    promised. Every decoded response is therefore shape-checked before it is read, and a wrong shape
+    fails the compile closed with a message that names it.
+    """
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"{what} did not return JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError(f"{what} returned {type(data).__name__}, not a JSON object")
+    return data
+
+
 def resolve_head_sha(ref: str, budget: ByteBudget | None = None) -> str:
     """Resolve an operator-supplied git ref to the commit id GitHub reports for it.
 
@@ -289,14 +317,17 @@ def resolve_head_sha(ref: str, budget: ByteBudget | None = None) -> str:
     ``main``). ``/`` is kept unescaped because a hierarchical ref such as ``release/2.0`` is one
     path, not a segment containing a separator.
     """
-    data = json.loads(
+    data = decode_object(
         http_get(
             f"https://api.github.com/repos/{REPO}/commits/{urllib.parse.quote(ref, safe='/')}",
             MAX_METADATA_BYTES,
             budget,
-        )
+        ),
+        f"commit lookup for {ref!r}",
     )
-    sha = data["sha"]
+    # `.get` and not `[...]`: a response object without the key is one more malformed shape, and the
+    # check below already states what a value that is not an object id looks like.
+    sha = data.get("sha")
     # This value reaches both fetch URLs and stderr, so it is checked before either. The rejected
     # value is quoted through repr, which escapes control characters, and clipped: a response may
     # carry up to MAX_METADATA_BYTES here.
@@ -308,20 +339,38 @@ def resolve_head_sha(ref: str, budget: ByteBudget | None = None) -> str:
 
 
 def list_stub_files(sha: str, budget: ByteBudget | None = None) -> list[str]:
-    data = json.loads(
+    what = f"stub listing for {sha}"
+    data = decode_object(
         http_get(
             f"https://api.github.com/repos/{REPO}/git/trees/{sha}:{STUB_DIR}",
             MAX_METADATA_BYTES,
             budget,
-        )
+        ),
+        what,
     )
     if data.get("truncated"):
         raise RuntimeError("stub directory listing was truncated")
-    names = [
-        e["path"]
-        for e in data["tree"]
-        if e["type"] == "blob" and e["path"].endswith(".py")
-    ]
+    # Every level of this response is checked before it is read, for the reason decode_object()
+    # gives: a tree that is not a list, an entry that is not an object, or a name that is not a
+    # string would otherwise raise TypeError or AttributeError past main()'s except tuple.
+    tree = data.get("tree")
+    if not isinstance(tree, list):
+        raise RuntimeError(f"{what} carried {type(tree).__name__} as its tree, not a list")
+    names: list[str] = []
+    for entry in tree:
+        if not isinstance(entry, dict):
+            raise RuntimeError(
+                f"{what} carried {type(entry).__name__} as a tree entry, not an object"
+            )
+        kind = entry.get("type")
+        path = entry.get("path")
+        if not isinstance(kind, str) or not isinstance(path, str):
+            raise RuntimeError(
+                f"{what} carried a tree entry whose type is {type(kind).__name__} and whose"
+                f" path is {type(path).__name__}, not two strings"
+            )
+        if kind == "blob" and path.endswith(".py"):
+            names.append(path)
     if not names:
         raise RuntimeError(f"no .py stubs found under {STUB_DIR} at {sha}")
     # One request per name follows, and each may cost nothing against the byte budget, so the
@@ -409,24 +458,29 @@ def decorator_names(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
     return [ast.unparse(d) for d in fn.decorator_list]
 
 
-def assignment_names(target: ast.expr) -> list[str]:
-    """Every plain name an assignment target binds, in source order.
+def assignment_targets(target: ast.expr) -> tuple[list[str], int]:
+    """Every plain name an assignment target binds, in source order, and how many parts bind none.
 
     A tuple or list target binds one name per element (`first, second = ...`) and may nest, so the
     elements are walked rather than the target alone. A starred element binds its own inner target.
-    A subscript or attribute target assigns somewhere other than this class, so it binds nothing
-    here and yields no names.
+    A subscript or attribute target assigns somewhere other than this class, so it binds no name;
+    it is RETURNED AS A COUNT rather than as silence, because the caller has already claimed the
+    statement and nothing after it would notice the loss. A partial target list — one element
+    binding a name and another binding none — reports both halves for the same reason.
     """
     if isinstance(target, ast.Name):
-        return [target.id]
+        return [target.id], 0
     if isinstance(target, (ast.Tuple, ast.List)):
         names: list[str] = []
+        unbound = 0
         for element in target.elts:
-            names.extend(assignment_names(element))
-        return names
+            element_names, element_unbound = assignment_targets(element)
+            names.extend(element_names)
+            unbound += element_unbound
+        return names, unbound
     if isinstance(target, ast.Starred):
-        return assignment_names(target.value)
-    return []
+        return assignment_targets(target.value)
+    return [], 1
 
 
 def normalize_base(base: ast.expr, module: str) -> str:
@@ -485,12 +539,26 @@ class DocDb:
         self.conn.execute("INSERT OR REPLACE INTO meta VALUES(?, ?)", (key, value))
 
 
-# Statements that carry no API of their own, so not indexing one is a decision rather than a gap:
-# a docstring or an `...`/`pass` body is an `ast.Expr` or `ast.Pass` whose content is already stored
-# with its owner, and an import declares a name that belongs to another module. Every statement
-# outside this set that the enumerations below do not handle is counted as unhandled, so a stub
-# construct this compiler does not understand is reported as a number instead of vanishing.
-IGNORED_STATEMENTS = (ast.Expr, ast.Import, ast.ImportFrom, ast.Pass)
+def is_exempt_statement(node: ast.stmt, index: int) -> bool:
+    """True for a statement that carries no API of its own, so passing it over is not a gap.
+
+    The test is STRUCTURAL, not by node type, and that is the whole point: `ast.Expr` covers a
+    docstring, a bare `...`, AND a live expression such as a second string literal, `1 + 1`, or
+    `print(...)`. Exempting the node type would drop the third kind without counting it, which is
+    the one thing meta.unhandled_statements exists to prevent.
+
+    `index` is the statement's position in the body it belongs to. A string constant is a docstring
+    only in the leading position — the only position ast.get_docstring() reads — and that docstring
+    is stored with its owner. `...` is a body placeholder, `pass` declares nothing, and an import
+    declares a name belonging to another module. Everything else, this returns False for, and the
+    callers count it.
+    """
+    if isinstance(node, (ast.Pass, ast.Import, ast.ImportFrom)):
+        return True
+    if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
+        value = node.value.value
+        return value is Ellipsis or (index == 0 and isinstance(value, str))
+    return False
 
 
 def compile_class(db: DocDb, module: str, node: ast.ClassDef) -> int:
@@ -501,7 +569,7 @@ def compile_class(db: DocDb, module: str, node: ast.ClassDef) -> int:
     )
     properties: dict[str, dict[str, object]] = {}
     unhandled = 0
-    for item in node.body:
+    for index, item in enumerate(node.body):
         # `async def` declares a member exactly as `def` does, so both node types are indexed.
         if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
             decorators = decorator_names(item)
@@ -530,7 +598,7 @@ def compile_class(db: DocDb, module: str, node: ast.ClassDef) -> int:
         elif isinstance(item, (ast.Assign, ast.AnnAssign)):
             # Both statements declare class attributes. An annotated one may carry no value at all
             # (`x: int`), so having a value is not what makes an attribute worth indexing, and a
-            # chained `a = b = 3` declares every one of its targets. assignment_names() decides
+            # chained `a = b = 3` declares every one of its targets. assignment_targets() decides
             # which names a target binds.
             targets: list[ast.expr] = (
                 item.targets if isinstance(item, ast.Assign) else [item.target]
@@ -546,7 +614,13 @@ def compile_class(db: DocDb, module: str, node: ast.ClassDef) -> int:
                 # piece is not decidable from the source alone (`a, b = pair()`). So the value is
                 # recorded only where a target is one name; every name is indexed either way.
                 unpacked = not isinstance(target, ast.Name)
-                for name in assignment_names(target):
+                names, unbound = assignment_targets(target)
+                # A part that binds no name — `external.attr = 1`, `c[0] = 5`, or the second half
+                # of `a, external.b = pair()` — assigns somewhere this database does not index.
+                # This branch has already claimed the statement, so the exemption test below will
+                # never see it: counting here is what keeps it from being dropped in silence.
+                unhandled += unbound
+                for name in names:
                     db.add_member(
                         symbol_id,
                         name,
@@ -557,7 +631,7 @@ def compile_class(db: DocDb, module: str, node: ast.ClassDef) -> int:
                         None if unpacked else value,
                         None,
                     )
-        elif not isinstance(item, IGNORED_STATEMENTS):
+        elif not is_exempt_statement(item, index):
             unhandled += 1
     for name, entry in properties.items():
         returns_val = entry["returns"]
@@ -608,7 +682,7 @@ def compile_module(db: DocDb, path: Path) -> int:
             f"warning: {path}:{entry.lineno}: {entry.category.__name__}: {entry.message}"
         )
     unhandled = 0
-    for node in tree.body:
+    for index, node in enumerate(tree.body):
         if isinstance(node, ast.ClassDef):
             unhandled += compile_class(db, module, node)
         # `async def` declares a module function exactly as `def` does, so both are indexed.
@@ -622,7 +696,7 @@ def compile_module(db: DocDb, path: Path) -> int:
                 signature,
                 ast.get_docstring(node),
             )
-        elif not isinstance(node, IGNORED_STATEMENTS):
+        elif not is_exempt_statement(node, index):
             unhandled += 1
     return unhandled
 
@@ -703,15 +777,23 @@ def build_database(
 
 def main() -> int:
     parser = SanitizedParser(description=__doc__)
-    parser.add_argument(
+    # Mutually exclusive, because a `--source` compile resolves no ref: it parses the directory it
+    # was handed, whatever ref the operator also named. Accepting both would record `source_ref` as
+    # `local` while the operator was told nothing, so the pair is refused as the usage error it is
+    # (exit 2, through SanitizedParser like every other argparse message). `--ref` keeps its default
+    # for the download path, which a group only constrains when both options are actually given.
+    origin = parser.add_mutually_exclusive_group()
+    origin.add_argument(
         "--source",
         type=Path,
-        help="local directory containing the adsk stub .py files (skips download)",
+        help="local directory containing the adsk stub .py files (skips download;"
+        " not combinable with --ref)",
     )
-    parser.add_argument(
+    origin.add_argument(
         "--ref",
         default="main",
-        help="git ref of the reference repo to compile (default: %(default)s)",
+        help="git ref of the reference repo to compile (default: %(default)s;"
+        " not combinable with --source)",
     )
     parser.add_argument(
         "--output",

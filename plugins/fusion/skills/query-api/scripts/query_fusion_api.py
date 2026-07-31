@@ -19,7 +19,10 @@ Subcommands:
                              member names
     show <name>              full detail for a class, function, or member;
                              accepts qualnames (adsk.core.Application), bare
-                             class names, and Class.member forms
+                             class names, and Class.member forms. A name that
+                             reaches more than one of them — including a name
+                             that is both a class and another class's member —
+                             lists every candidate instead of picking one
     members <class>          list a class's members; --own omits inherited ones
     tree <class>             base chain and direct subclasses
     doc-search <term>        substring search over docstrings
@@ -33,8 +36,9 @@ recorded bases have no such order is refused rather than answered with a guess.
 A member declared earlier in that order hides a same-named member declared
 later. Member names are compared exactly,
 so ``foo`` and ``Foo`` are two members and neither hides the other; a lookup
-that matches no member exactly is retried ignoring case, which lets a
-mistyped-case name still resolve without ever shadowing an exact match.
+that resolved to nothing — no member of that exact name and no symbol either —
+is retried ignoring case, which lets a mistyped-case name still resolve without
+ever shadowing an exact match.
 
 Stdlib only. Read-only: the database is opened with ``mode=ro``.
 """
@@ -657,7 +661,10 @@ def owned_named(
 
 
 def find_members(
-    conn: sqlite3.Connection, member: str, owner: str | None
+    conn: sqlite3.Connection,
+    member: str,
+    owner: str | None,
+    retry_folded: bool = True,
 ) -> list[MemberHit]:
     """Every member named `member`, optionally restricted to the class named `owner`.
 
@@ -669,44 +676,76 @@ def find_members(
     nothing at all. So a differently-cased member on a class earlier in the order can never stop
     the exactly named one later in it from being found, while a case-folded query still resolves
     when no member carries the queried spelling.
+
+    `retry_folded=False` drops that second pass. A caller that has already resolved the name some
+    other way passes it: the retry exists for a name nothing matched, so letting it run anyway
+    would answer a resolved lookup with members that merely share the spelling in another case.
     """
     if owner is None:
-        return anywhere_named(conn, member, fold_case=False) or anywhere_named(
-            conn, member, fold_case=True
+        return anywhere_named(conn, member, fold_case=False) or (
+            anywhere_named(conn, member, fold_case=True) if retry_folded else []
         )
-    return owned_named(conn, member, owner, fold_case=False) or owned_named(
-        conn, member, owner, fold_case=True
+    return owned_named(conn, member, owner, fold_case=False) or (
+        owned_named(conn, member, owner, fold_case=True) if retry_folded else []
     )
 
 
+def ambiguity_header(name: str, symbols: int, members: int) -> str:
+    """The first line of `show`'s candidate list, naming which kinds of candidate follow.
+
+    There are three shapes because there are three ways one name reaches more than one answer:
+    several symbols, several members, or a symbol and a member at once.
+    """
+    if not members:
+        return f"{name!r} is ambiguous:"
+    if not symbols:
+        return f"{name!r} matches {members} members:"
+    return f"{name!r} matches {symbols} symbol(s) and {members} member(s):"
+
+
 def cmd_show(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
+    """Print the one thing `name` reaches, or every candidate when it reaches more than one.
+
+    A name can be a class AND a member of some other class at the same time — the bundled database
+    has `Features` as a class in `adsk.fusion` and as a member of two `adsk.core` classes — so both
+    lookups run and their results answer the same question. Returning the class alone at exit 0
+    would be one answer to a question with three, and the reader would never learn the rest exist.
+
+    The member lookup's case-folded retry is suppressed once a symbol has matched: that retry is
+    for a name nothing matched at all, and letting it compete here would turn every class whose
+    name some member spells differently — several hundred of them — into a candidate list.
+    """
     name: str = args.name
     symbols = find_symbol(conn, name)
-    if len(symbols) == 1:
-        print_symbol(conn, symbols[0], with_members=True)
-        return 0
-    if len(symbols) > 1:
-        out(f"{name!r} is ambiguous:")
-        for sym in symbols:
-            out(f"  {sym['qualname']}")
-        return 1
     owner: str | None = None
     member = name
     if "." in name:
         owner, member = name.rsplit(".", 1)
-    hits = find_members(conn, member, owner)
-    if not hits:
+    hits = find_members(conn, member, owner, retry_folded=not symbols)
+    total = len(symbols) + len(hits)
+    if total == 0:
         out(f"no symbol or member named {name!r}; try the search subcommand")
         return 1
-    if len(hits) > 1:
-        out(f"{name!r} matches {len(hits)} members:")
-        for hit in hits[:SEARCH_CAP]:
-            out(candidate_line(hit))
-        if len(hits) > SEARCH_CAP:
-            out(omitted_line(len(hits), SEARCH_CAP))
-        return 1
-    print_member(hits[0])
-    return 0
+    if total == 1:
+        if symbols:
+            print_symbol(conn, symbols[0], with_members=True)
+        else:
+            print_member(hits[0])
+        return 0
+    out(ambiguity_header(name, len(symbols), len(hits)))
+    # One cap over the whole candidate list, and one omitted-result line accounting for both parts
+    # of it: two caps would let a list print more than SEARCH_CAP lines, and two counts would each
+    # be true of half a list nobody asked for in halves.
+    shown = 0
+    for sym in symbols[:SEARCH_CAP]:
+        out(f"  {sym['qualname']}")
+        shown += 1
+    for hit in hits[: SEARCH_CAP - shown]:
+        out(candidate_line(hit))
+        shown += 1
+    if total > shown:
+        out(omitted_line(total, shown))
+    return 1
 
 
 def cmd_members(conn: sqlite3.Connection, args: argparse.Namespace) -> int:

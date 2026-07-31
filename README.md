@@ -36,17 +36,22 @@ Start a new Codex session after installation so its bundled skills are loaded.
 
 ## Prerequisites
 
-The plugins shell out to a few external tools. Have these available before installing.
+What you need depends on which plugins you install. Only `gauntlet` shells out to external tools.
 
-Required:
+Required by every plugin:
+
+- **Python 3 (`python3`)** — runs the bundled scripts. Standard library only, nothing to `pip install`.
+
+Required by `gauntlet` as well:
 
 - **git** — the skills use worktrees and branch operations.
 - **GitHub CLI (`gh`)** — every GitHub interaction (PRs, reviews, labels, checks) goes through `gh`, so it must be authenticated (`gh auth login`) and the repo needs a GitHub remote.
-- **Python 3 (`python3`)** — runs the bundled scripts (campaign ledger, progress emitter, review-item deduper). Standard library only, nothing to `pip install`.
 - **`jq`** — parses `gh` JSON in the Copilot review-item fetcher.
 - **`bash`** — runs the bundled shell scripts (standard on macOS/Linux).
 
-Optional when Claude Code is the orchestrator:
+Required by `fusion` as well: nothing. Its scripts invoke `python3` and shell out to no external tool, and its bundled database answers queries offline. Rebuilding that database needs network access to the hosts [`plugins/fusion/README.md`](plugins/fusion/README.md) names.
+
+Optional when Claude Code is the orchestrator, and used by `gauntlet` only:
 
 - **Codex CLI (`codex`)** — the default independent reviewer for `gauntlet:campaign` under Claude Code.
   When Codex is installed, campaign reviews with it (`codex exec`) for engine diversity — a different

@@ -15,12 +15,16 @@ Invocation: Claude Code `/fusion:compile-api`; Codex `$fusion:compile-api`.
    ["python3", "<absolute-compile_fusion_api.py>"]
    ```
 
-   Needs network access to github.com. The default output is the user cache
+   Needs network access to `api.github.com` (commit and file listing) and `raw.githubusercontent.com`
+   (the stub files themselves), and to no other host: `github.com` is only the source string recorded
+   in the database. The default output is the user cache
    (`~/.cache/fusion-api-db/fusion-api.db`), which `query-api` prefers over the database bundled with
    the plugin — a recompile takes effect immediately, no plugin reinstall.
 3. Options, only when the user asks for them:
    - `--ref <git-ref>` compiles a specific ref of the reference repo (default `main`).
-   - `--source <dir>` parses a local directory of `adsk/*.py` stubs instead of downloading.
+   - `--source <dir>` parses a local directory of `adsk/*.py` stubs instead of downloading. It
+     resolves no ref, so the two options are refused together (usage error, exit 2) rather than
+     `--ref` being ignored; a user asking for both wants a download of that ref.
    - `--output <path>` writes elsewhere. Refreshing the plugin's bundled copy (authoring checkout of
      this plugin only) → `--output <plugin>/skills/query-api/data/fusion-api.db`, then commit the result.
 4. Report the script's final line on stdout (path, symbol count, member count) and the

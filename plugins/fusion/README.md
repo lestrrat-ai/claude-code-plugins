@@ -22,4 +22,7 @@ with the plugin, so queries work offline out of the box.
 ## Prerequisites
 
 - **Python 3 (`python3`)** — runs both bundled scripts. Standard library only.
-- Network access to github.com, only when recompiling the database.
+- Network access to `api.github.com` (commit and file listing) and `raw.githubusercontent.com`
+  (the stub files themselves), only when recompiling the database. Those two hosts are the whole
+  egress: `github.com` appears in a recompiled database as the recorded source, never as a host
+  anything is fetched from.
