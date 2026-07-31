@@ -5,9 +5,13 @@ Source: the auto-generated intellisense stubs under
 ``Fusion_API_Python_Reference/defs/adsk`` in
 https://github.com/AutodeskFusion360/FusionAPIReference. Every class, module
 function, method (``__init__`` included), property, and class attribute is
-extracted with its signature, docstring, and inheritance links. A class
-attribute is indexed whether it carries a value (an enum value), an annotation,
-or both.
+extracted with its signature, docstring, and inheritance links; ``async def``
+declares a function or a method wherever ``def`` does and is indexed the same
+way. A class attribute is indexed whatever it was declared with — a value (an
+enum value), an annotation, both, or neither, the last being a name bound by an
+unpacked assignment. Any statement the compiler does not index is counted
+into ``meta.unhandled_statements`` and reported on stderr, so a construct it
+does not understand shows up as a number rather than a missing symbol.
 
 Default output is the user-level cache (``~/.cache/fusion-api-db/fusion-api.db``),
 which the query script prefers over the database bundled with the plugin. Pass
@@ -32,6 +36,9 @@ import re
 import sqlite3
 import sys
 import tempfile
+import time
+import unicodedata
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -57,6 +64,15 @@ MAX_STUB_BYTES = 32 * 1024 * 1024
 MAX_TOTAL_BYTES = 128 * 1024 * 1024
 MAX_STUB_ENTRIES = 256
 
+# Time caps. `urlopen(timeout=...)` bounds one socket operation, not a response: a server that
+# sends a byte at a time resets that timer with every byte and can hold the compile open for as
+# long as it likes. So the body is read in bounded chunks against a wall-clock deadline for the
+# whole response, and the socket timeout keeps its separate job of bounding a single stalled read.
+# One response therefore costs at most MAX_RESPONSE_SECONDS plus the one read already in flight.
+SOCKET_TIMEOUT_SECONDS = 60
+MAX_RESPONSE_SECONDS = 120
+READ_CHUNK_BYTES = 64 * 1024
+
 # A tree entry name must be a plain `.py` file name that lands directly in the staging directory:
 # no separator, no leading dot, no `..`, nothing absolute.
 STUB_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]*\.py")
@@ -64,6 +80,44 @@ STUB_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]*\.py")
 # A git object id: 40 hex digits today, 64 under the SHA-256 object format. The commit lookup's
 # answer is interpolated into fetch URLs and printed, so anything else is refused before either.
 OBJECT_ID = re.compile(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}")
+
+# Everything outside printable ASCII, newline, and tab is a candidate for escaping; the category
+# test in escape_char() decides. Printable ASCII is never Cc or Cf, so skipping it changes nothing
+# and keeps ordinary text off the per-character path entirely.
+ESCAPE_CANDIDATE = re.compile(r"[^\n\t\x20-\x7e]")
+
+
+def escape_char(match: re.Match[str]) -> str:
+    char = match.group()
+    if unicodedata.category(char) not in ("Cc", "Cf"):
+        return char
+    code = ord(char)
+    return f"\\x{code:02x}" if code < 0x100 else f"\\u{code:04x}"
+
+
+def sanitize(text: str) -> str:
+    """Escape control and format characters in text on its way to the terminal.
+
+    A server chooses the error reasons, redirect targets, and stub contents this compiler reports,
+    so anything a response carries can reach this terminal. Newlines and tabs are kept because
+    messages and docstrings are laid out with them; every other control or format character is
+    shown as an escape rather than executed by the terminal.
+
+    query_fusion_api.py carries the same function for the same reason. The two scripts are
+    standalone by design (each skill runs its own), so the copies must be changed together.
+    """
+    return ESCAPE_CANDIDATE.sub(escape_char, text)
+
+
+def out(text: str) -> None:
+    """The only stdout write in this script, so nothing reaches stdout unsanitized."""
+    print(sanitize(text))
+
+
+def err(text: str) -> None:
+    """The only stderr write in this script, so nothing reaches stderr unsanitized."""
+    print(sanitize(text), file=sys.stderr)
+
 
 SCHEMA = """
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -113,14 +167,55 @@ class ByteBudget:
         self.used += count
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuses every redirect instead of following it.
+
+    urllib's default handler follows a 3xx to any http, https, or ftp target it is given, so a
+    response could move a request to an origin this compiler never chose — and no caller inspects
+    the URL a body actually came from. Every URL fetched here is built from a constant HTTPS host,
+    so a redirect is a reason to stop, never a reason to open a second origin.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(
+            req.full_url,
+            code,
+            f"refusing redirect to {newurl!r:.120}",
+            headers,
+            fp,
+        )
+
+
+OPENER = urllib.request.build_opener(NoRedirect)
+
+
 def http_get(url: str, max_bytes: int, budget: ByteBudget | None = None) -> bytes:
     # Read one byte past the tighter of the two caps. Past the per-response cap tells the body is
     # oversized; past what the budget can still afford tells the same for the compile as a whole.
     # Either way the read stops there, so the check below never runs on a fully buffered body.
     ceiling = max_bytes if budget is None else min(max_bytes, budget.remaining)
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        data = resp.read(ceiling + 1)
+    deadline = time.monotonic() + MAX_RESPONSE_SECONDS
+    chunks: list[bytes] = []
+    read = 0
+    with OPENER.open(req, timeout=SOCKET_TIMEOUT_SECONDS) as resp:
+        # Chunked so the deadline is tested between reads: a body delivered a byte at a time never
+        # trips the socket timeout, and without this loop nothing else would stop it.
+        # `read1` and not `read`: `read` is served by a buffered reader that keeps issuing socket
+        # reads until it has the whole amount asked for, so a drip would sit inside one `read` call
+        # and the deadline would only be reached once the body had already arrived. `read1` returns
+        # what one socket read produced, which is what makes the check below periodic.
+        while read <= ceiling:
+            if time.monotonic() > deadline:
+                raise RuntimeError(
+                    f"{url} did not finish within {MAX_RESPONSE_SECONDS} seconds"
+                )
+            chunk = resp.read1(min(READ_CHUNK_BYTES, ceiling + 1 - read))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            read += len(chunk)
+    data = b"".join(chunks)
     if len(data) > max_bytes:
         raise RuntimeError(f"{url} returned more than the {max_bytes}-byte limit")
     if budget is not None:
@@ -196,7 +291,7 @@ def download_stubs(sha: str, dest: Path, budget: ByteBudget | None = None) -> li
         target = staging_target(dest, name)
         target.write_bytes(http_get(url, MAX_STUB_BYTES, budget))
         paths.append(target)
-        print(f"fetched {name} ({target.stat().st_size} bytes)", file=sys.stderr)
+        err(f"fetched {name} ({target.stat().st_size} bytes)")
     return paths
 
 
@@ -214,7 +309,9 @@ def render_arg(arg: ast.arg, default: ast.expr | None) -> str:
     return text
 
 
-def render_signature(fn: ast.FunctionDef) -> tuple[str, str | None]:
+def render_signature(
+    fn: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[str, str | None]:
     """Return ("(a, b: int) -> Ret", "Ret") for a function definition."""
     a = fn.args
     parts: list[str] = []
@@ -243,8 +340,28 @@ def render_signature(fn: ast.FunctionDef) -> tuple[str, str | None]:
     return signature, returns
 
 
-def decorator_names(fn: ast.FunctionDef) -> list[str]:
+def decorator_names(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
     return [ast.unparse(d) for d in fn.decorator_list]
+
+
+def assignment_names(target: ast.expr) -> list[str]:
+    """Every plain name an assignment target binds, in source order.
+
+    A tuple or list target binds one name per element (`first, second = ...`) and may nest, so the
+    elements are walked rather than the target alone. A starred element binds its own inner target.
+    A subscript or attribute target assigns somewhere other than this class, so it binds nothing
+    here and yields no names.
+    """
+    if isinstance(target, ast.Name):
+        return [target.id]
+    if isinstance(target, (ast.Tuple, ast.List)):
+        names: list[str] = []
+        for element in target.elts:
+            names.extend(assignment_names(element))
+        return names
+    if isinstance(target, ast.Starred):
+        return assignment_names(target.value)
+    return []
 
 
 def normalize_base(base: ast.expr, module: str) -> str:
@@ -303,14 +420,25 @@ class DocDb:
         self.conn.execute("INSERT OR REPLACE INTO meta VALUES(?, ?)", (key, value))
 
 
-def compile_class(db: DocDb, module: str, node: ast.ClassDef) -> None:
+# Statements that carry no API of their own, so not indexing one is a decision rather than a gap:
+# a docstring or an `...`/`pass` body is an `ast.Expr` or `ast.Pass` whose content is already stored
+# with its owner, and an import declares a name that belongs to another module. Every statement
+# outside this set that the enumerations below do not handle is counted as unhandled, so a stub
+# construct this compiler does not understand is reported as a number instead of vanishing.
+IGNORED_STATEMENTS = (ast.Expr, ast.Import, ast.ImportFrom, ast.Pass)
+
+
+def compile_class(db: DocDb, module: str, node: ast.ClassDef) -> int:
+    """Index one class; return how many of its body statements went unhandled."""
     bases = [normalize_base(b, module) for b in node.bases]
     symbol_id = db.add_symbol(
         module, node.name, "class", bases, None, ast.get_docstring(node)
     )
     properties: dict[str, dict[str, object]] = {}
+    unhandled = 0
     for item in node.body:
-        if isinstance(item, ast.FunctionDef):
+        # `async def` declares a member exactly as `def` does, so both node types are indexed.
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
             decorators = decorator_names(item)
             signature, returns = render_signature(item)
             doc = ast.get_docstring(item)
@@ -337,8 +465,8 @@ def compile_class(db: DocDb, module: str, node: ast.ClassDef) -> None:
         elif isinstance(item, (ast.Assign, ast.AnnAssign)):
             # Both statements declare class attributes. An annotated one may carry no value at all
             # (`x: int`), so having a value is not what makes an attribute worth indexing, and a
-            # chained `a = b = 3` declares every one of its targets. Only `Name` targets are
-            # attributes of this class; a subscript or attribute target assigns somewhere else.
+            # chained `a = b = 3` declares every one of its targets. assignment_names() decides
+            # which names a target binds.
             targets: list[ast.expr] = (
                 item.targets if isinstance(item, ast.Assign) else [item.target]
             )
@@ -349,17 +477,23 @@ def compile_class(db: DocDb, module: str, node: ast.ClassDef) -> None:
             )
             value = ast.unparse(item.value) if item.value is not None else None
             for target in targets:
-                if isinstance(target, ast.Name):
+                # An unpacked target gives each of its names one piece of the value, and which
+                # piece is not decidable from the source alone (`a, b = pair()`). So the value is
+                # recorded only where a target is one name; every name is indexed either way.
+                unpacked = not isinstance(target, ast.Name)
+                for name in assignment_names(target):
                     db.add_member(
                         symbol_id,
-                        target.id,
+                        name,
                         "attribute",
                         None,
                         annotation,
                         False,
-                        value,
+                        None if unpacked else value,
                         None,
                     )
+        elif not isinstance(item, IGNORED_STATEMENTS):
+            unhandled += 1
     for name, entry in properties.items():
         returns_val = entry["returns"]
         doc_val = entry["doc"]
@@ -373,15 +507,19 @@ def compile_class(db: DocDb, module: str, node: ast.ClassDef) -> None:
             None,
             doc_val if isinstance(doc_val, str) else None,
         )
+    return unhandled
 
 
-def compile_module(db: DocDb, path: Path) -> None:
+def compile_module(db: DocDb, path: Path) -> int:
+    """Index one stub module; return how many statements went unhandled, its classes included."""
     module = module_name_for(path)
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    unhandled = 0
     for node in tree.body:
         if isinstance(node, ast.ClassDef):
-            compile_class(db, module, node)
-        elif isinstance(node, ast.FunctionDef):
+            unhandled += compile_class(db, module, node)
+        # `async def` declares a module function exactly as `def` does, so both are indexed.
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             signature, _ = render_signature(node)
             db.add_symbol(
                 module,
@@ -391,14 +529,24 @@ def compile_module(db: DocDb, path: Path) -> None:
                 signature,
                 ast.get_docstring(node),
             )
+        elif not isinstance(node, IGNORED_STATEMENTS):
+            unhandled += 1
+    return unhandled
 
 
 def fill_database(
     db: DocDb, stub_paths: list[Path], source_desc: str, sha: str
-) -> tuple[int, int]:
-    """Compile every stub and its metadata into `db`; return (symbol count, member count)."""
+) -> tuple[int, int, int]:
+    """Compile every stub and its metadata into `db`.
+
+    Returns (symbol count, member count, unhandled statement count). The last is recorded in `meta`
+    as well as returned, so a database carries the number of constructs its compiler did not
+    understand rather than only the symbols it did.
+    """
+    unhandled = 0
     for path in stub_paths:
-        compile_module(db, path)
+        unhandled += compile_module(db, path)
+    db.set_meta("unhandled_statements", str(unhandled))
     db.set_meta("schema_version", SCHEMA_VERSION)
     db.set_meta("source", source_desc)
     db.set_meta("source_commit", sha)
@@ -410,12 +558,12 @@ def fill_database(
     db.conn.commit()
     symbols = db.conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
     members = db.conn.execute("SELECT COUNT(*) FROM members").fetchone()[0]
-    return symbols, members
+    return symbols, members, unhandled
 
 
 def build_database(
     stub_paths: list[Path], output: Path, source_desc: str, sha: str
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     """Compile into a staging file beside `output` and replace `output` only once it is complete.
 
     A stub that fails to parse — or any other error — therefore leaves an existing database
@@ -432,7 +580,9 @@ def build_database(
     try:
         db = DocDb(staging)
         try:
-            symbols, members = fill_database(db, stub_paths, source_desc, sha)
+            symbols, members, unhandled = fill_database(
+                db, stub_paths, source_desc, sha
+            )
         finally:
             db.conn.close()
         if symbols == 0 or members == 0:
@@ -450,7 +600,7 @@ def build_database(
         for leftover in (staging, Path(f"{staging}-journal"), Path(f"{staging}-wal")):
             leftover.unlink(missing_ok=True)
         raise
-    return symbols, members
+    return symbols, members, unhandled
 
 
 def main() -> int:
@@ -477,27 +627,39 @@ def main() -> int:
         if args.source is not None:
             stub_paths = sorted(args.source.glob("*.py"))
             if not stub_paths:
-                print(f"error: no .py stubs in {args.source}", file=sys.stderr)
+                err(f"error: no .py stubs in {args.source}")
                 return 1
-            symbols, members = build_database(
+            # Every path emits this source record, so what a compile compiled is reportable
+            # whichever way the stubs were obtained. A local compile has no commit to name, so
+            # the commit field reads `local` — the same value `meta.source_commit` records.
+            err(f"compiling {args.source}@local")
+            symbols, members, unhandled = build_database(
                 stub_paths, args.output, str(args.source), "local"
             )
         else:
             # Built before the first request, so the commit lookup spends from it too.
             budget = ByteBudget(MAX_TOTAL_BYTES)
             sha = resolve_head_sha(args.ref, budget)
-            print(f"compiling {REPO}@{sha}", file=sys.stderr)
+            err(f"compiling {REPO}@{sha}")
             # The staging directory goes away on success and on failure alike.
             with tempfile.TemporaryDirectory(prefix="fusion-stubs-") as tmpdir:
                 stub_paths = download_stubs(sha, Path(tmpdir), budget)
-                symbols, members = build_database(
+                symbols, members, unhandled = build_database(
                     stub_paths, args.output, f"https://github.com/{REPO}", sha
                 )
     except (OSError, RuntimeError, SyntaxError, ValueError, KeyError, sqlite3.Error) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        err(f"error: {exc}")
         return 1
 
-    print(f"wrote {args.output}: {symbols} symbols, {members} members")
+    if unhandled:
+        # Not a failure: the database is usable and every symbol the compiler understood is in it.
+        # It is reported because a construct this compiler does not handle would otherwise be an
+        # absent symbol nobody can distinguish from a symbol the stubs never declared.
+        err(
+            f"warning: {unhandled} statement(s) used a construct this compiler does not index;"
+            " they are counted in meta.unhandled_statements"
+        )
+    out(f"wrote {args.output}: {symbols} symbols, {members} members")
     return 0
 
 

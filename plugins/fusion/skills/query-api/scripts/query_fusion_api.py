@@ -32,17 +32,33 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sqlite3
 import sys
 import unicodedata
 from pathlib import Path
-from typing import NamedTuple, NoReturn
+from typing import Callable, NamedTuple, NoReturn
 
 SEARCH_CAP = 100
 
 # LIKE's own wildcards, plus the character that escapes them. Every LIKE in this script says
 # ESCAPE '\', so the two must stay together: see like_pattern().
 LIKE_ESCAPE = "\\"
+
+
+# Everything outside printable ASCII, newline, and tab is a candidate for escaping; the category
+# test in escape_char() decides. Printable ASCII is never Cc or Cf, so skipping it changes nothing
+# and keeps ordinary text off the per-character path entirely: a field with nothing to escape is
+# returned as the same string object rather than rebuilt one character at a time.
+ESCAPE_CANDIDATE = re.compile(r"[^\n\t\x20-\x7e]")
+
+
+def escape_char(match: re.Match[str]) -> str:
+    char = match.group()
+    if unicodedata.category(char) not in ("Cc", "Cf"):
+        return char
+    code = ord(char)
+    return f"\\x{code:02x}" if code < 0x100 else f"\\u{code:04x}"
 
 
 def sanitize(text: str) -> str:
@@ -52,22 +68,30 @@ def sanitize(text: str) -> str:
     repository contains reaches this terminal. Newlines and tabs are kept because docstrings are
     laid out with them; every other control or format character is shown as an escape rather than
     executed by the terminal.
+
+    compile_fusion_api.py carries the same function for the same reason. The two scripts are
+    standalone by design (each skill runs its own), so the copies must be changed together.
     """
-    parts: list[str] = []
-    for char in text:
-        if char in "\n\t":
-            parts.append(char)
-        elif unicodedata.category(char) in ("Cc", "Cf"):
-            code = ord(char)
-            parts.append(f"\\x{code:02x}" if code < 0x100 else f"\\u{code:04x}")
-        else:
-            parts.append(char)
-    return "".join(parts)
+    return ESCAPE_CANDIDATE.sub(escape_char, text)
 
 
 def out(text: str = "") -> None:
-    """The only stdout write in this script, so nothing reaches the terminal unsanitized."""
+    """The only stdout write in this script; err() is the only stderr write.
+
+    Between them nothing reaches the terminal unsanitized. Being the only stdout write would say
+    nothing about stderr, which is why the error path has its own writer rather than its own
+    `print`.
+    """
     print(sanitize(text))
+
+
+def err(text: str) -> None:
+    """The only stderr write in this script, so nothing reaches stderr unsanitized.
+
+    A database is an operator-supplied file and its own schema errors quote names out of it, so an
+    error message carries text this script never chose, exactly as stdout does.
+    """
+    print(sanitize(text), file=sys.stderr)
 
 
 def like_pattern(term: str) -> str:
@@ -102,7 +126,7 @@ def rebuild_command(path: Path) -> str:
 
 
 def fail(message: str) -> NoReturn:
-    print(f"error: {message}", file=sys.stderr)
+    err(f"error: {message}")
     raise SystemExit(1)
 
 
@@ -144,30 +168,78 @@ def cmd_info(conn: sqlite3.Connection, _args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_search(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
-    pattern = like_pattern(args.term)
-    hits: list[str] = []
-    for row in conn.execute(
+class HitSource(NamedTuple):
+    """One query behind a capped listing.
+
+    `rows_sql` ends in ``LIMIT ?`` and is called with the pattern plus the number of rows still
+    printable; `count_sql` counts the same matches without retrieving them.
+    """
+
+    rows_sql: str
+    count_sql: str
+    render: Callable[[sqlite3.Row], str]
+
+
+def capped_listing(
+    conn: sqlite3.Connection, pattern: str, sources: list[HitSource]
+) -> tuple[list[str], int]:
+    """Return up to SEARCH_CAP rendered lines, and how many rows matched in total.
+
+    Only the rows that can be printed are ever retrieved, so the cost of a term matching the whole
+    database is the cost of the lines it prints. The total is counted separately, and only when the
+    cap was actually reached: below the cap every matching row was already fetched, so the lines
+    are the total and no counting query is needed.
+    """
+    lines: list[str] = []
+    for source in sources:
+        remaining = SEARCH_CAP - len(lines)
+        if remaining <= 0:
+            break
+        lines.extend(
+            source.render(row)
+            for row in conn.execute(source.rows_sql, (pattern, remaining))
+        )
+    if len(lines) < SEARCH_CAP:
+        return lines, len(lines)
+    total = 0
+    for source in sources:
+        total += conn.execute(source.count_sql, (pattern,)).fetchone()[0]
+    return lines, total
+
+
+def print_capped(lines: list[str], total: int, empty: str) -> int:
+    """Print a capped listing and the omitted-result count; 1 when nothing matched."""
+    if not lines:
+        out(empty)
+        return 1
+    for line in lines:
+        out(line)
+    if total > len(lines):
+        out(f"... {total - len(lines)} more (narrow the term)")
+    return 0
+
+
+SEARCH_SOURCES = [
+    HitSource(
         "SELECT qualname, kind FROM symbols WHERE name LIKE ? ESCAPE '\\'"
-        " ORDER BY qualname",
-        (pattern,),
-    ):
-        hits.append(f"{row['qualname']}  [{row['kind']}]")
-    for row in conn.execute(
+        " ORDER BY qualname LIMIT ?",
+        "SELECT COUNT(*) FROM symbols WHERE name LIKE ? ESCAPE '\\'",
+        lambda row: f"{row['qualname']}  [{row['kind']}]",
+    ),
+    HitSource(
         "SELECT s.qualname AS q, m.name AS n, m.kind AS k FROM members m"
         " JOIN symbols s ON s.id = m.symbol_id WHERE m.name LIKE ? ESCAPE '\\'"
-        " ORDER BY s.qualname, m.name",
-        (pattern,),
-    ):
-        hits.append(f"{row['q']}.{row['n']}  [{row['k']}]")
-    if not hits:
-        out(f"no matches for {args.term!r}")
-        return 1
-    for line in hits[:SEARCH_CAP]:
-        out(line)
-    if len(hits) > SEARCH_CAP:
-        out(f"... {len(hits) - SEARCH_CAP} more (narrow the term)")
-    return 0
+        " ORDER BY s.qualname, m.name LIMIT ?",
+        "SELECT COUNT(*) FROM members m JOIN symbols s ON s.id = m.symbol_id"
+        " WHERE m.name LIKE ? ESCAPE '\\'",
+        lambda row: f"{row['q']}.{row['n']}  [{row['k']}]",
+    ),
+]
+
+
+def cmd_search(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
+    lines, total = capped_listing(conn, like_pattern(args.term), SEARCH_SOURCES)
+    return print_capped(lines, total, f"no matches for {args.term!r}")
 
 
 def find_symbol(conn: sqlite3.Connection, name: str) -> list[sqlite3.Row]:
@@ -250,8 +322,8 @@ def member_line(row: sqlite3.Row) -> str:
         access = "read/write" if row["settable"] else "read-only"
         return f"  {name}: {row['returns'] or '?'}  [property, {access}]"
     if kind == "attribute":
-        # An attribute may be declared with a value, an annotation, or both, so neither part is
-        # rendered when the compiler did not record it.
+        # Either part may be absent, and both are absent for a name the compiler could not attach
+        # a value to (one bound by an unpacked assignment), so each is rendered only if recorded.
         text = f"  {name}"
         if row["returns"] is not None:
             text += f": {row['returns']}"
@@ -459,29 +531,27 @@ def cmd_tree(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_doc_search(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
-    pattern = like_pattern(args.term)
-    hits: list[str] = []
-    for row in conn.execute(
-        "SELECT qualname FROM symbols WHERE doc LIKE ? ESCAPE '\\' ORDER BY qualname",
-        (pattern,),
-    ):
-        hits.append(row["qualname"])
-    for row in conn.execute(
+DOC_SEARCH_SOURCES = [
+    HitSource(
+        "SELECT qualname FROM symbols WHERE doc LIKE ? ESCAPE '\\'"
+        " ORDER BY qualname LIMIT ?",
+        "SELECT COUNT(*) FROM symbols WHERE doc LIKE ? ESCAPE '\\'",
+        lambda row: row["qualname"],
+    ),
+    HitSource(
         "SELECT s.qualname AS q, m.name AS n FROM members m"
         " JOIN symbols s ON s.id = m.symbol_id WHERE m.doc LIKE ? ESCAPE '\\'"
-        " ORDER BY s.qualname, m.name",
-        (pattern,),
-    ):
-        hits.append(f"{row['q']}.{row['n']}")
-    if not hits:
-        out(f"no docstrings mention {args.term!r}")
-        return 1
-    for line in hits[:SEARCH_CAP]:
-        out(line)
-    if len(hits) > SEARCH_CAP:
-        out(f"... {len(hits) - SEARCH_CAP} more (narrow the term)")
-    return 0
+        " ORDER BY s.qualname, m.name LIMIT ?",
+        "SELECT COUNT(*) FROM members m JOIN symbols s ON s.id = m.symbol_id"
+        " WHERE m.doc LIKE ? ESCAPE '\\'",
+        lambda row: f"{row['q']}.{row['n']}",
+    ),
+]
+
+
+def cmd_doc_search(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
+    lines, total = capped_listing(conn, like_pattern(args.term), DOC_SEARCH_SOURCES)
+    return print_capped(lines, total, f"no docstrings mention {args.term!r}")
 
 
 def main() -> int:
@@ -527,10 +597,9 @@ def main() -> int:
         return handlers[args.command](conn, args)
     except sqlite3.Error as exc:
         db_path = args.db if args.db is not None else default_db_path()
-        print(
+        err(
             f"error: {db_path} could not answer {args.command!r} ({exc});"
-            f" rebuild it with: {rebuild_command(db_path)}",
-            file=sys.stderr,
+            f" rebuild it with: {rebuild_command(db_path)}"
         )
         return 1
     finally:

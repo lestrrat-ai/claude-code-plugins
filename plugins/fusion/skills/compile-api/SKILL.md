@@ -23,8 +23,12 @@ Invocation: Claude Code `/fusion:compile-api`; Codex `$fusion:compile-api`.
    - `--source <dir>` parses a local directory of `adsk/*.py` stubs instead of downloading.
    - `--output <path>` writes elsewhere. Refreshing the plugin's bundled copy (authoring checkout of
      this plugin only) → `--output <plugin>/skills/query-api/data/fusion-api.db`, then commit the result.
-4. Report the script's final line (path, symbol count, member count) and the `compiling <repo>@<sha>`
-   line as the new source commit. Non-zero exit → relay stderr as-is and stop.
+4. Report the script's final line on stdout (path, symbol count, member count) and the
+   `compiling <source>@<commit>` line stderr opens with, as the source record. Every path emits that
+   line: a download names the reference repo and the resolved commit, a `--source` compile names the
+   local directory and `local` in place of a commit. Relay a `warning:` line on stderr too — it
+   reports how many statements used a construct the compiler does not index. Non-zero exit → relay
+   stderr as-is and stop.
 
 The script rebuilds the whole database from scratch; there is no incremental mode. It compiles into a
 staging file next to the output and replaces the output only after every stub has parsed and the result
