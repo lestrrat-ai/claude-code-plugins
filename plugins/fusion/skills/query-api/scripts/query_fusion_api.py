@@ -20,7 +20,10 @@ Subcommands:
 Member lookups resolve inherited members by default: ``show Class.member``,
 ``show Class``, and ``members Class`` all walk the class's bases and report
 which class declares each member. A member declared closer to the queried class
-hides a same-named member on a farther base.
+hides a same-named member on a farther base. Member names are compared exactly,
+so ``foo`` and ``Foo`` are two members and neither hides the other; a lookup
+that matches no member exactly is retried ignoring case, which lets a
+mistyped-case name still resolve without ever shadowing an exact match.
 
 Stdlib only. Read-only: the database is opened with ``mode=ro``.
 """
@@ -226,17 +229,16 @@ def member_groups(
     """(declaring class, its members) for `sym` and each ancestor, nearest first.
 
     A name declared closer to `sym` hides the same name on a farther ancestor, so an override is
-    reported once, against the class that overrides it.
+    reported once, against the class that overrides it. Names are compared exactly: only the same
+    name is an override, so a base's `foo` survives a subclass's `Foo` and both are listed.
     """
     groups: list[tuple[sqlite3.Row, list[sqlite3.Row]]] = []
     claimed: set[str] = set()
     for owner in ancestry(conn, sym):
         rows = [
-            row
-            for row in own_members(conn, owner["id"])
-            if row["name"].lower() not in claimed
+            row for row in own_members(conn, owner["id"]) if row["name"] not in claimed
         ]
-        claimed.update(row["name"].lower() for row in rows)
+        claimed.update(row["name"] for row in rows)
         groups.append((owner, rows))
     return groups
 
@@ -248,7 +250,14 @@ def member_line(row: sqlite3.Row) -> str:
         access = "read/write" if row["settable"] else "read-only"
         return f"  {name}: {row['returns'] or '?'}  [property, {access}]"
     if kind == "attribute":
-        return f"  {name} = {row['value']}  [attribute]"
+        # An attribute may be declared with a value, an annotation, or both, so neither part is
+        # rendered when the compiler did not record it.
+        text = f"  {name}"
+        if row["returns"] is not None:
+            text += f": {row['returns']}"
+        if row["value"] is not None:
+            text += f" = {row['value']}"
+        return f"{text}  [attribute]"
     return f"  {name}{row['signature'] or '()'}  [{kind}]"
 
 
@@ -300,39 +309,44 @@ def print_member(hit: MemberHit) -> None:
         access = "read/write" if row["settable"] else "read-only"
         out(f"type: {row['returns'] or '?'}  ({access})")
     elif row["kind"] == "attribute":
-        out(f"value: {row['value']}")
+        if row["returns"] is not None:
+            out(f"type: {row['returns']}")
+        if row["value"] is not None:
+            out(f"value: {row['value']}")
     elif row["signature"]:
         out(f"signature: {row['signature']}")
     if row["doc"]:
         out(row["doc"])
 
 
-def find_members(
-    conn: sqlite3.Connection, member: str, owner: str | None
+def anywhere_named(
+    conn: sqlite3.Connection, member: str, fold_case: bool
 ) -> list[MemberHit]:
-    """Every member named `member`, optionally restricted to the class named `owner`.
+    """Every member of that name, on any class."""
+    sql = (
+        "SELECT s.qualname AS q, m.* FROM members m JOIN symbols s ON s.id = m.symbol_id"
+        " WHERE m.name = ? COLLATE NOCASE ORDER BY s.qualname"
+        if fold_case
+        else "SELECT s.qualname AS q, m.* FROM members m JOIN symbols s ON s.id = m.symbol_id"
+        " WHERE m.name = ? ORDER BY s.qualname"
+    )
+    return [MemberHit(row["q"], row["q"], row) for row in conn.execute(sql, (member,))]
 
-    With an owner, each candidate class is searched together with its ancestors and the nearest
-    declaration wins, so an inherited member resolves exactly like an own one.
-    """
-    if owner is None:
-        return [
-            MemberHit(row["q"], row["q"], row)
-            for row in conn.execute(
-                "SELECT s.qualname AS q, m.* FROM members m"
-                " JOIN symbols s ON s.id = m.symbol_id"
-                " WHERE m.name = ? COLLATE NOCASE ORDER BY s.qualname",
-                (member,),
-            )
-        ]
+
+def owned_named(
+    conn: sqlite3.Connection, member: str, owner: str, fold_case: bool
+) -> list[MemberHit]:
+    """Every member of that name reachable from a class named `owner`, nearest declaration only."""
+    sql = (
+        "SELECT * FROM members WHERE symbol_id = ? AND name = ? COLLATE NOCASE"
+        if fold_case
+        else "SELECT * FROM members WHERE symbol_id = ? AND name = ?"
+    )
     hits: list[MemberHit] = []
     seen_rows: set[int] = set()
     for sym in find_symbol(conn, owner):
         for declaring in ancestry(conn, sym):
-            rows = conn.execute(
-                "SELECT * FROM members WHERE symbol_id = ? AND name = ? COLLATE NOCASE",
-                (declaring["id"], member),
-            ).fetchall()
+            rows = conn.execute(sql, (declaring["id"], member)).fetchall()
             if not rows:
                 continue
             for row in rows:
@@ -342,6 +356,28 @@ def find_members(
                 hits.append(MemberHit(sym["qualname"], declaring["qualname"], row))
             break  # nearest declaration wins; stop climbing this chain
     return hits
+
+
+def find_members(
+    conn: sqlite3.Connection, member: str, owner: str | None
+) -> list[MemberHit]:
+    """Every member named `member`, optionally restricted to the class named `owner`.
+
+    With an owner, each candidate class is searched together with its ancestors and the nearest
+    declaration wins, so an inherited member resolves exactly like an own one.
+
+    The exact-name search runs over the whole chain first, and case is folded only when it found
+    nothing at all. So a differently-cased member on a nearer class can never stop the exactly
+    named one further up the chain from being found, while a case-folded query still resolves when
+    no member carries the queried spelling.
+    """
+    if owner is None:
+        return anywhere_named(conn, member, fold_case=False) or anywhere_named(
+            conn, member, fold_case=True
+        )
+    return owned_named(conn, member, owner, fold_case=False) or owned_named(
+        conn, member, owner, fold_case=True
+    )
 
 
 def cmd_show(conn: sqlite3.Connection, args: argparse.Namespace) -> int:

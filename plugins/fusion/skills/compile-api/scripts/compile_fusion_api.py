@@ -4,8 +4,10 @@
 Source: the auto-generated intellisense stubs under
 ``Fusion_API_Python_Reference/defs/adsk`` in
 https://github.com/AutodeskFusion360/FusionAPIReference. Every class, module
-function, method (``__init__`` included), property, and class attribute (enum
-value) is extracted with its signature, docstring, and inheritance links.
+function, method (``__init__`` included), property, and class attribute is
+extracted with its signature, docstring, and inheritance links. A class
+attribute is indexed whether it carries a value (an enum value), an annotation,
+or both.
 
 Default output is the user-level cache (``~/.cache/fusion-api-db/fusion-api.db``),
 which the query script prefers over the database bundled with the plugin. Pass
@@ -38,17 +40,30 @@ STUB_DIR = "Fusion_API_Python_Reference/defs/adsk"
 SCHEMA_VERSION = "1"
 USER_AGENT = "fusion-plugin-compile-api"
 
-# Download caps. Nothing here is negotiated with the server, so an unbounded read would let a
-# runaway or hostile response decide this process's memory use. The whole stub set measured about
-# 4 MB when these were chosen (2026-07); the caps sit far above that so a normal compile never
-# trips one.
+# Download caps. Nothing here is negotiated with the server, so an unbounded compile would let a
+# runaway or hostile response decide this process's memory use and request count. What the caps
+# below actually guarantee:
+#   * every download one compile makes — the commit lookup included — spends from a single
+#     MAX_TOTAL_BYTES budget, so the bytes this process buffers over a whole compile are bounded;
+#   * one response is read to at most one byte past the smaller of its own cap
+#     (MAX_METADATA_BYTES or MAX_STUB_BYTES) and what the budget still allows, so a body far past
+#     either limit is never buffered whole just to be rejected afterwards;
+#   * MAX_STUB_ENTRIES bounds how many files one tree listing may ask this process to fetch, which
+#     no byte cap can do: a tree naming thousands of empty blobs costs almost no bytes.
+# The whole stub set measured about 4 MB across 8 files when these were chosen (2026-07); every cap
+# sits far above that, so a normal compile never trips one.
 MAX_METADATA_BYTES = 8 * 1024 * 1024
 MAX_STUB_BYTES = 32 * 1024 * 1024
 MAX_TOTAL_BYTES = 128 * 1024 * 1024
+MAX_STUB_ENTRIES = 256
 
 # A tree entry name must be a plain `.py` file name that lands directly in the staging directory:
 # no separator, no leading dot, no `..`, nothing absolute.
 STUB_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]*\.py")
+
+# A git object id: 40 hex digits today, 64 under the SHA-256 object format. The commit lookup's
+# answer is interpolated into fetch URLs and printed, so anything else is refused before either.
+OBJECT_ID = re.compile(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}")
 
 SCHEMA = """
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -86,6 +101,10 @@ class ByteBudget:
         self.limit = limit
         self.used = 0
 
+    @property
+    def remaining(self) -> int:
+        return max(self.limit - self.used, 0)
+
     def spend(self, count: int, what: str) -> None:
         if self.used + count > self.limit:
             raise RuntimeError(
@@ -95,10 +114,13 @@ class ByteBudget:
 
 
 def http_get(url: str, max_bytes: int, budget: ByteBudget | None = None) -> bytes:
+    # Read one byte past the tighter of the two caps. Past the per-response cap tells the body is
+    # oversized; past what the budget can still afford tells the same for the compile as a whole.
+    # Either way the read stops there, so the check below never runs on a fully buffered body.
+    ceiling = max_bytes if budget is None else min(max_bytes, budget.remaining)
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=60) as resp:
-        # One byte past the cap: enough to tell that the body is oversized without buffering it.
-        data = resp.read(max_bytes + 1)
+        data = resp.read(ceiling + 1)
     if len(data) > max_bytes:
         raise RuntimeError(f"{url} returned more than the {max_bytes}-byte limit")
     if budget is not None:
@@ -106,13 +128,23 @@ def http_get(url: str, max_bytes: int, budget: ByteBudget | None = None) -> byte
     return data
 
 
-def resolve_head_sha(ref: str) -> str:
+def resolve_head_sha(ref: str, budget: ByteBudget | None = None) -> str:
     data = json.loads(
         http_get(
-            f"https://api.github.com/repos/{REPO}/commits/{ref}", MAX_METADATA_BYTES
+            f"https://api.github.com/repos/{REPO}/commits/{ref}",
+            MAX_METADATA_BYTES,
+            budget,
         )
     )
-    return data["sha"]
+    sha = data["sha"]
+    # This value reaches both fetch URLs and stderr, so it is checked before either. The rejected
+    # value is quoted through repr, which escapes control characters, and clipped: a response may
+    # carry up to MAX_METADATA_BYTES here.
+    if not isinstance(sha, str) or not OBJECT_ID.fullmatch(sha):
+        raise RuntimeError(
+            f"commit lookup for {ref!r} returned {sha!r:.80}, not a git object id"
+        )
+    return sha
 
 
 def list_stub_files(sha: str, budget: ByteBudget | None = None) -> list[str]:
@@ -132,6 +164,13 @@ def list_stub_files(sha: str, budget: ByteBudget | None = None) -> list[str]:
     ]
     if not names:
         raise RuntimeError(f"no .py stubs found under {STUB_DIR} at {sha}")
+    # One request per name follows, and each may cost nothing against the byte budget, so the
+    # listing's own length is what bounds the work. Refused here, before the first stub download.
+    if len(names) > MAX_STUB_ENTRIES:
+        raise RuntimeError(
+            f"stub listing named {len(names)} .py files, above the"
+            f" {MAX_STUB_ENTRIES}-entry limit"
+        )
     return sorted(names)
 
 
@@ -295,19 +334,32 @@ def compile_class(db: DocDb, module: str, node: ast.ClassDef) -> None:
                 db.add_member(
                     symbol_id, item.name, kind, signature, returns, False, None, doc
                 )
-        elif isinstance(item, ast.Assign) and len(item.targets) == 1:
-            target = item.targets[0]
-            if isinstance(target, ast.Name):
-                db.add_member(
-                    symbol_id,
-                    target.id,
-                    "attribute",
-                    None,
-                    None,
-                    False,
-                    ast.unparse(item.value),
-                    None,
-                )
+        elif isinstance(item, (ast.Assign, ast.AnnAssign)):
+            # Both statements declare class attributes. An annotated one may carry no value at all
+            # (`x: int`), so having a value is not what makes an attribute worth indexing, and a
+            # chained `a = b = 3` declares every one of its targets. Only `Name` targets are
+            # attributes of this class; a subscript or attribute target assigns somewhere else.
+            targets: list[ast.expr] = (
+                item.targets if isinstance(item, ast.Assign) else [item.target]
+            )
+            annotation = (
+                ast.unparse(item.annotation)
+                if isinstance(item, ast.AnnAssign)
+                else None
+            )
+            value = ast.unparse(item.value) if item.value is not None else None
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    db.add_member(
+                        symbol_id,
+                        target.id,
+                        "attribute",
+                        None,
+                        annotation,
+                        False,
+                        value,
+                        None,
+                    )
     for name, entry in properties.items():
         returns_val = entry["returns"]
         doc_val = entry["doc"]
@@ -431,9 +483,10 @@ def main() -> int:
                 stub_paths, args.output, str(args.source), "local"
             )
         else:
-            sha = resolve_head_sha(args.ref)
-            print(f"compiling {REPO}@{sha}", file=sys.stderr)
+            # Built before the first request, so the commit lookup spends from it too.
             budget = ByteBudget(MAX_TOTAL_BYTES)
+            sha = resolve_head_sha(args.ref, budget)
+            print(f"compiling {REPO}@{sha}", file=sys.stderr)
             # The staging directory goes away on success and on failure alike.
             with tempfile.TemporaryDirectory(prefix="fusion-stubs-") as tmpdir:
                 stub_paths = download_stubs(sha, Path(tmpdir), budget)
