@@ -41,15 +41,18 @@ run_argv(
 ```
 
 `fetch` builds the fixed `gh pr list` argv internally. It captures stdout as bytes without shell source,
-validates JSON shape + every required field + every row's run label, rejects a response at its result cap,
-then promotes those bytes through a same-directory atomic rename. Any command, validation, or promotion
-failure leaves the previous `prs.json` intact.
+validates the complete snapshot contract on EVERY entry, and rejects a response at its result cap. Every
+check refuses the WHOLE response except the run-label check, which in `fetch` alone SKIPS the entry (see
+GHOST below). What it promotes through a same-directory atomic rename therefore depends on the response:
+a CLEAN one promotes the captured bytes unchanged, and one carrying a ghost promotes a re-serialized,
+ghost-free array. Any command, validation, or promotion failure leaves the previous `prs.json` intact.
 
 Every part is load-bearing:
 
 - **Use the typed project root + output path.** `fetch` refuses relative paths and output paths outside
   project root before it launches GitHub CLI.
-- **Use the exact run ID.** `fetch` forms the owner label as an argv value and verifies it on every row.
+- **Use the exact run ID.** `fetch` forms the owner label as an argv value and checks it on every row; the
+  GHOST paragraph below owns what a row failing that check costs.
 - **Treat exit 0 as promotion success.** A refusal emits no replacement artifact.
 
 **`fetch` refuses the query's result-cap boundary.** At that exact row count, completeness is unknown and

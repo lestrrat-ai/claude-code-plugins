@@ -313,6 +313,41 @@ def t_fetch_ghost_still_refused_by_detect():
     check("run-isolation" in err, f"detect's refusal must still name the isolation property, got {err!r}")
 
 
+def t_fetch_ghost_is_validated_not_skipped_instead():
+    # A GHOST IS VALIDATED AND *THEN* SKIPPED — never skipped INSTEAD of validated. The skip relaxes the
+    # scope check and nothing else, so a ghost from a DRIFTED command (a `--json` set that lost a field, a
+    # field at the wrong shape) still refuses the WHOLE response. Only the ORDER inside `_validated_entries`
+    # makes that true: validate every canonical field, then decide the entry's outcome.
+    with tempfile.TemporaryDirectory() as d:
+        project_root, output = fetch_paths(d)
+        old = b"previous snapshot\n"
+        output.write_bytes(old)
+
+        missing = entry(201, label_names=[])
+        del missing["headRefName"]
+        expect_fetch_refusal(project_root, output, RUN_ID,
+                             completed(response_bytes([missing, entry(199)])), "headRefName")
+        check(output.read_bytes() == old, "a ghost missing a canonical field replaced the old snapshot")
+
+        wrong_shape = entry(201, headRefOid=12345, label_names=[])  # type: ignore[arg-type]
+        expect_fetch_refusal(project_root, output, RUN_ID,
+                             completed(response_bytes([wrong_shape, entry(199)])), "headRefOid")
+        check(output.read_bytes() == old, "a wrong-shaped ghost field replaced the old snapshot")
+
+
+def t_fetch_ghost_duplicate_number_refused():
+    # A ghost registers its `number` like any other entry, so a response naming one PR twice is refused
+    # even when one of the two is unlabelled. Dropping the ghost's registration would make the ambiguity
+    # depend on which of the pair the search index went stale on.
+    with tempfile.TemporaryDirectory() as d:
+        project_root, output = fetch_paths(d)
+        output.write_bytes(b"old")
+        payload = response_bytes([entry(199, label_names=[]), entry(199)])
+        expect_fetch_refusal(project_root, output, RUN_ID, completed(payload),
+                             "lists PR #199 at both entry #0 and #1")
+        check(output.read_bytes() == b"old", "a duplicate naming a ghost replaced the old snapshot")
+
+
 def t_fetch_limit_boundary_refused():
     with tempfile.TemporaryDirectory() as d:
         project_root, output = fetch_paths(d)
@@ -713,6 +748,10 @@ CASES = [
      t_fetch_all_ghosts_promotes_an_empty_snapshot),
     ("fetch-skip-detect-refuses", "the SAME bytes fetch skips are refused whole by detect",
      t_fetch_ghost_still_refused_by_detect),
+    ("fetch-ghost-still-validated", "a ghost is validated and THEN skipped, so a drifted one still refuses",
+     t_fetch_ghost_is_validated_not_skipped_instead),
+    ("fetch-ghost-duplicate-number", "a ghost registers its number, so a duplicated PR still refuses",
+     t_fetch_ghost_duplicate_number_refused),
     ("fetch-refuse-limit", "a response at the limit boundary may be truncated and is refused",
      t_fetch_limit_boundary_refused),
     ("fetch-limit-counts-ghosts", "the limit guard counts the response, so a ghost cannot slip it",

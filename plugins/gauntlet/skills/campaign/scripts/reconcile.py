@@ -212,24 +212,21 @@ def _validated_entries(data: "list[object]", run_id: str, source: str,
       `fetch_snapshot`), so an unlabelled entry there is a stale-search-index GHOST, not an escaped query.
 
     Skipping is the ONLY thing the scope check relaxes. Every other refusal — shape, null, malformed
-    label, duplicate PR — still fails the whole response on both paths, ghost entries included.
+    label, duplicate PR — still fails the whole response on both paths, ghost entries included. What
+    makes that TRUE rather than merely intended is the ORDER: the scope check runs LAST, after the entry
+    has been validated for every canonical field and has registered its number. Move it earlier and a
+    ghost stops being validated at all — it is skipped INSTEAD of validated, and the missing-field and
+    duplicate-PR refusals quietly stop applying to it. **Validate first, then decide the outcome.**
     """
     run_label = RUN_LABEL_PREFIX + run_id
     entries: list[dict] = []
     seen: dict[str, int] = {}
     for index, entry in enumerate(data):
         names = label_names(entry, index)          # reads `labels` through sfield; refuses malformed
-        if run_label not in names:
-            if ghosts is None:
-                raise Refusal(
-                    f"prs.json entry #{index} does not carry this run's label {run_label!r} (it has "
-                    f"{names!r}) — the snapshot escaped the run's label scope, which is the run-isolation "
-                    f"violation the canonical fetch's `--label` exists to prevent ({CANONICAL_BLOCK}). "
-                    f"Refusing the whole response; a snapshot scoped to the wrong PRs is not evidence.")
-            # A ghost is still named by its `number`, which enters through `sfield` like any other field:
-            # a ghost we cannot name is a drifted command, not a stale index.
-            ghosts.append({"index": index, "number": sfield(entry, "number", index), "labels": names})
-            continue
+        # EVERY entry is validated in FULL and registers its number BEFORE the scope check decides its
+        # outcome. That order is what makes the guarantee below true: a ghost from a DRIFTED command is
+        # still a drifted command, and a snapshot naming one PR twice is still ambiguous, whether or not
+        # the second entry happens to be unlabelled.
         fact = {k: sfield(entry, k, index) for k in CANONICAL_FIELDS if k != "labels"}
         fact["label_names"] = names
         number_key = str(fact["number"])
@@ -239,6 +236,15 @@ def _validated_entries(data: "list[object]", run_id: str, source: str,
                 f"snapshot that names one PR twice cannot be reconciled deterministically. Refusing the "
                 f"whole response.")
         seen[number_key] = index
+        if run_label not in names:
+            if ghosts is None:
+                raise Refusal(
+                    f"prs.json entry #{index} does not carry this run's label {run_label!r} (it has "
+                    f"{names!r}) — the snapshot escaped the run's label scope, which is the run-isolation "
+                    f"violation the canonical fetch's `--label` exists to prevent ({CANONICAL_BLOCK}). "
+                    f"Refusing the whole response; a snapshot scoped to the wrong PRs is not evidence.")
+            ghosts.append({"index": index, "number": fact["number"], "labels": names})
+            continue
         entries.append(fact)
     return entries
 
