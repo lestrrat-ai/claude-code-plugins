@@ -19,7 +19,9 @@ which the query script prefers over the database bundled with the plugin. Pass
 
 The output database is replaced only after every stub has been parsed and the
 result has been checked, so a failed compile leaves the previous database in
-place rather than a truncated one.
+place rather than a truncated one. A stub larger than the per-stub parse limit
+is refused before it is parsed and fails the compile, whether it was downloaded
+or given by ``--source``.
 
 Stdlib only. Network access is needed unless ``--source`` points at a local
 checkout of the stub directory.
@@ -41,6 +43,10 @@ import unicodedata
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # the stream type argparse hands _print_message; no runtime import
+    from _typeshed import SupportsWrite
 
 REPO = "AutodeskFusion360/FusionAPIReference"
 STUB_DIR = "Fusion_API_Python_Reference/defs/adsk"
@@ -58,11 +64,22 @@ USER_AGENT = "fusion-plugin-compile-api"
 #   * MAX_STUB_ENTRIES bounds how many files one tree listing may ask this process to fetch, which
 #     no byte cap can do: a tree naming thousands of empty blobs costs almost no bytes.
 # The whole stub set measured about 4 MB across 8 files when these were chosen (2026-07); every cap
-# sits far above that, so a normal compile never trips one.
+# in this block sits far above that, so a normal compile never trips one.
 MAX_METADATA_BYTES = 8 * 1024 * 1024
 MAX_STUB_BYTES = 32 * 1024 * 1024
 MAX_TOTAL_BYTES = 128 * 1024 * 1024
 MAX_STUB_ENTRIES = 256
+
+# Parse cap, which is not a download cap and does not follow from one. ast.parse() builds a tree
+# costing roughly two orders of magnitude what the source text costs — a 4 MB stub measured about
+# 570 MB peak RSS (2026-08) — so the byte caps above bound what a response may buffer and say
+# nothing about what parsing that response costs. A `--source` stub is never downloaded at all, so
+# no download cap reaches it either. Every stub is therefore measured and refused BEFORE it is
+# parsed, whichever way it arrived, instead of being parsed in full and rejected afterwards.
+# The largest stub measured about 2.8 MB when this was chosen (2026-08, adsk/fusion.py), so the cap
+# below leaves roughly 3x headroom over real data while keeping one parse to about a gigabyte at
+# the measured ratio, where the 32 MiB one download may carry would cost several.
+MAX_PARSE_BYTES = 8 * 1024 * 1024
 
 # Time caps. `urlopen(timeout=...)` bounds one socket operation, not a response: a server that
 # sends a byte at a time resets that timer with every byte and can hold the compile open for as
@@ -110,13 +127,43 @@ def sanitize(text: str) -> str:
 
 
 def out(text: str) -> None:
-    """The only stdout write in this script, so nothing reaches stdout unsanitized."""
+    """Write sanitized text to stdout; err() is the stderr half of the same pair.
+
+    Every line this script prints goes through one of the two, argparse's usage, help, and error
+    text included (SanitizedParser routes it here). What stays outside the pair is what the
+    interpreter itself writes: an unhandled exception's traceback is Python's own output and is not
+    sanitized.
+    """
     print(sanitize(text))
 
 
 def err(text: str) -> None:
-    """The only stderr write in this script, so nothing reaches stderr unsanitized."""
+    """Write sanitized text to stderr; see out() for what the pair does and does not cover."""
     print(sanitize(text), file=sys.stderr)
+
+
+class SanitizedParser(argparse.ArgumentParser):
+    """An argument parser whose own usage, help, and error text goes through out() and err().
+
+    argparse writes to the two streams itself, and it echoes argv back: an unrecognized option is
+    quoted verbatim into the message. That text is operator-supplied and needs the same escaping a
+    server's text gets. Every argparse write funnels through ``_print_message``, so overriding that
+    one method covers usage, ``--help``, and every error path at once.
+
+    query_fusion_api.py carries the same class for the same reason. The two scripts are standalone
+    by design (each skill runs its own), so the copies must be changed together.
+    """
+
+    def _print_message(
+        self, message: str, file: SupportsWrite[str] | None = None
+    ) -> None:
+        if not message:
+            return
+        # argparse's messages already end in a newline and print() adds one, so strip it: the
+        # output stays what argparse would have written, only sanitized. argparse defaults a
+        # message with no file to stderr, and so does this.
+        writer = out if file is sys.stdout else err
+        writer(message.rstrip("\n"))
 
 
 SCHEMA = """
@@ -511,7 +558,20 @@ def compile_class(db: DocDb, module: str, node: ast.ClassDef) -> int:
 
 
 def compile_module(db: DocDb, path: Path) -> int:
-    """Index one stub module; return how many statements went unhandled, its classes included."""
+    """Index one stub module; return how many statements went unhandled, its classes included.
+
+    A stub past MAX_PARSE_BYTES is refused here, before ast.parse() ever sees it, so the memory a
+    compile spends on an oversized stub is the size of the stub rather than two orders of magnitude
+    more. This is the one gate every stub passes, downloaded or handed over by `--source`, and it is
+    an addition: the checks that run after a parse still decide whether the result may replace an
+    existing database.
+    """
+    size = path.stat().st_size
+    if size > MAX_PARSE_BYTES:
+        raise RuntimeError(
+            f"{path} is {size} bytes, past the {MAX_PARSE_BYTES}-byte per-stub parse limit;"
+            " it was refused before parsing"
+        )
     module = module_name_for(path)
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     unhandled = 0
@@ -604,7 +664,7 @@ def build_database(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = SanitizedParser(description=__doc__)
     parser.add_argument(
         "--source",
         type=Path,

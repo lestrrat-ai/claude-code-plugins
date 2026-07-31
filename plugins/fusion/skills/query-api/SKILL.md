@@ -32,8 +32,15 @@ Invocation: Claude Code `/fusion:query-api`; Codex `$fusion:query-api`.
    inherited members after the class's own, and `members <class>` groups them by declaring class.
    `members` and `tree` take a class; given anything else they report no such class.
 3. Database resolution order (explicit `--db`, then user cache, then the bundled copy) is owned by the
-   script's module docstring; pass `--db` only when the user names a database. Database missing at every
-   location → tell user to run `/fusion:compile-api` (Codex `$fusion:compile-api`).
+   script's module docstring; pass `--db` only when the user names a database, and pass it **before**
+   the subcommand — after it, it is a usage error and exits 2:
+
+   ```text
+   ["python3", "<absolute-query_fusion_api.py>", "--db", "<path>", "<subcommand>", "<argument>"]
+   ```
+
+   Database missing at every location → tell user to run `/fusion:compile-api`
+   (Codex `$fusion:compile-api`).
 4. Answer from script output only. Exit code 1 with a candidate list or "no matches" on stdout is a
    lookup miss, not a failure — refine the name and re-run, or report the miss. Exit code 1 with an
    `error:` line on stderr is a real failure (no database, or the file is not one) — relay it and stop.

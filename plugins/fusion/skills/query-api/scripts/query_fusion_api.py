@@ -6,6 +6,13 @@ Database resolution order (first hit wins):
 2. ``~/.cache/fusion-api-db/fusion-api.db`` (written by compile_fusion_api.py)
 3. ``../data/fusion-api.db`` relative to this script (bundled with the plugin)
 
+``--db`` is an option of this script rather than of a subcommand, so it goes
+*before* the subcommand::
+
+    query_fusion_api.py --db <path> show adsk.core.Application
+
+Placing it after the subcommand is a usage error and exits 2.
+
 Subcommands:
     info                     database provenance and symbol counts
     search <term>            case-insensitive substring match over symbol and
@@ -36,9 +43,17 @@ import re
 import sqlite3
 import sys
 import unicodedata
+from collections import deque
 from pathlib import Path
-from typing import Callable, NamedTuple, NoReturn
+from typing import TYPE_CHECKING, Callable, Iterator, NamedTuple, NoReturn
 
+if TYPE_CHECKING:  # the stream type argparse hands _print_message; no runtime import
+    from _typeshed import SupportsWrite
+
+# How many lines any one listing prints before it stops and states the remainder through
+# omitted_line(). It governs `search`, `doc-search`, and `show`'s candidate list. A listing that
+# prints every row it counted — `members` and `tree`'s subclasses — is not capped and does not use
+# this: those two answer "what does this class have", where a partial answer is the wrong answer.
 SEARCH_CAP = 100
 
 # LIKE's own wildcards, plus the character that escapes them. Every LIKE in this script says
@@ -76,22 +91,53 @@ def sanitize(text: str) -> str:
 
 
 def out(text: str = "") -> None:
-    """The only stdout write in this script; err() is the only stderr write.
+    """Write sanitized text to stdout; err() is the stderr half of the same pair.
 
-    Between them nothing reaches the terminal unsanitized. Being the only stdout write would say
-    nothing about stderr, which is why the error path has its own writer rather than its own
-    `print`.
+    Every line this script prints goes through one of the two, argparse's usage, help, and error
+    text included (SanitizedParser routes it here). What stays outside the pair is what the
+    interpreter itself writes: an unhandled exception's traceback is Python's own output and is not
+    sanitized. Being the only stdout writer would say nothing about stderr, which is why the error
+    path has its own writer rather than its own `print`.
     """
     print(sanitize(text))
 
 
 def err(text: str) -> None:
-    """The only stderr write in this script, so nothing reaches stderr unsanitized.
+    """Write sanitized text to stderr; see out() for what the pair does and does not cover.
 
     A database is an operator-supplied file and its own schema errors quote names out of it, so an
-    error message carries text this script never chose, exactly as stdout does.
+    error message carries text this script never chose, exactly as stdout does. argv is
+    operator-supplied in the same way, and argparse quotes it back on this stream.
     """
     print(sanitize(text), file=sys.stderr)
+
+
+class SanitizedParser(argparse.ArgumentParser):
+    """An argument parser whose own usage, help, and error text goes through out() and err().
+
+    argparse writes to the two streams itself, and it echoes argv back: an unrecognized option or an
+    invalid subcommand name is quoted verbatim into the message. That text is operator-supplied and
+    needs the same escaping database text gets. Every argparse write funnels through
+    ``_print_message``, so overriding that one method covers usage, ``--help``, and every error path
+    at once.
+
+    ``add_subparsers()`` builds each subcommand parser from ``type(self)``, so the subcommand
+    parsers inherit this behavior without being named again.
+
+    compile_fusion_api.py carries the same class for the same reason. The two scripts are standalone
+    by design (each skill runs its own), so the copies must be changed together.
+    """
+
+    def _print_message(
+        self, message: str, file: SupportsWrite[str] | None = None
+    ) -> None:
+        if not message:
+            return
+        # argparse's messages already end in a newline and print() adds one, so strip it: the
+        # output stays what argparse would have written, only sanitized. argparse defaults a
+        # message with no file to stderr, and so does this.
+        writer = out if file is sys.stdout else err
+        writer(message.rstrip("\n"))
 
 
 def like_pattern(term: str) -> str:
@@ -207,6 +253,16 @@ def capped_listing(
     return lines, total
 
 
+def omitted_line(total: int, shown: int) -> str:
+    """The one line that reports what a listing counted but did not print.
+
+    Every listing in this script that prints fewer lines than the total it reports emits this line
+    and nothing else, so a reader that sees a count larger than the lines it got is always told the
+    difference the same way. Its callers are the only places where the two numbers can disagree.
+    """
+    return f"... {total - shown} more (narrow the term)"
+
+
 def print_capped(lines: list[str], total: int, empty: str) -> int:
     """Print a capped listing and the omitted-result count; 1 when nothing matched."""
     if not lines:
@@ -215,7 +271,7 @@ def print_capped(lines: list[str], total: int, empty: str) -> int:
     for line in lines:
         out(line)
     if total > len(lines):
-        out(f"... {total - len(lines)} more (narrow the term)")
+        out(omitted_line(total, len(lines)))
     return 0
 
 
@@ -271,14 +327,22 @@ def resolve_class(conn: sqlite3.Connection, name: str) -> sqlite3.Row | None:
 def ancestry(conn: sqlite3.Connection, sym: sqlite3.Row) -> list[sqlite3.Row]:
     """`sym` followed by every ancestor reachable through `bases`, nearest first.
 
-    Breadth-first, and each qualname is appended at most once, so a base listed twice and a cycle
-    in the recorded bases both terminate the walk instead of repeating or looping.
+    Breadth-first over a deque, so taking the next name off the frontier costs the same however
+    long the frontier is. Each base name is looked up at most once and each qualname is appended at
+    most once, so a class naming one base a hundred thousand times costs one lookup and one visit:
+    a repeated base and a cycle in the recorded bases both terminate the walk instead of repeating
+    or looping. Two spellings of one name (lookups fold case) still resolve to one visit, because
+    the qualname decides what is already in the chain.
     """
     chain = [sym]
     seen = {sym["qualname"]}
-    frontier: list[str] = list(json.loads(sym["bases"]))
+    frontier: deque[str] = deque(json.loads(sym["bases"]))
+    queried: set[str] = set()
     while frontier:
-        base_name = frontier.pop(0)
+        base_name = frontier.popleft()
+        if base_name in queried:
+            continue
+        queried.add(base_name)
         for base in find_symbol(conn, base_name):
             qualname = base["qualname"]
             if qualname in seen:
@@ -289,30 +353,73 @@ def ancestry(conn: sqlite3.Connection, sym: sqlite3.Row) -> list[sqlite3.Row]:
     return chain
 
 
-def own_members(conn: sqlite3.Connection, symbol_id: int) -> list[sqlite3.Row]:
+def own_members(conn: sqlite3.Connection, symbol_id: int) -> Iterator[sqlite3.Row]:
+    """Stream a class's own member rows in listing order.
+
+    A cursor rather than a list: `members` reports every member a class has, by design, so the rows
+    are handed on one at a time and what a large listing costs is what printing it costs, not what
+    holding all of it at once would.
+    """
     return conn.execute(
         "SELECT * FROM members WHERE symbol_id = ? ORDER BY kind, name", (symbol_id,)
-    ).fetchall()
+    )
 
 
-def member_groups(
-    conn: sqlite3.Connection, sym: sqlite3.Row
-) -> list[tuple[sqlite3.Row, list[sqlite3.Row]]]:
-    """(declaring class, its members) for `sym` and each ancestor, nearest first.
+def own_member_count(conn: sqlite3.Connection, symbol_id: int) -> int:
+    """How many members a class declares, counted without retrieving them."""
+    return conn.execute(
+        "SELECT COUNT(*) FROM members WHERE symbol_id = ?", (symbol_id,)
+    ).fetchone()[0]
+
+
+class MemberPlan(NamedTuple):
+    """Where each member name reachable from a queried class is declared.
+
+    `owners` is the queried class and its ancestors, nearest first. `declared_by` maps a member name
+    to the qualname of the nearest owner that declares it, and `counts` gives each owner how many
+    names it declares that nothing nearer hides. A listing is printed by streaming each owner's rows
+    against this plan, so no set of rows is ever held whole; what is held is the names, which the
+    hiding rule needs however the listing is produced.
+    """
+
+    owners: list[sqlite3.Row]
+    declared_by: dict[str, str]
+    counts: dict[str, int]
+
+    def rows_of(
+        self, conn: sqlite3.Connection, owner: sqlite3.Row
+    ) -> Iterator[sqlite3.Row]:
+        """Stream the members of `owner` that nothing nearer the queried class hides."""
+        qualname = owner["qualname"]
+        for row in own_members(conn, owner["id"]):
+            if self.declared_by.get(row["name"]) == qualname:
+                yield row
+
+
+def member_plan(conn: sqlite3.Connection, sym: sqlite3.Row) -> MemberPlan:
+    """Resolve the hiding rule for `sym` and its ancestors, reading names and no other column.
 
     A name declared closer to `sym` hides the same name on a farther ancestor, so an override is
     reported once, against the class that overrides it. Names are compared exactly: only the same
-    name is an override, so a base's `foo` survives a subclass's `Foo` and both are listed.
+    name is an override, so a base's `foo` survives a subclass's `Foo` and both are listed. One
+    class declaring one name twice keeps both rows, because a class cannot hide itself: an owner's
+    claims are recorded only once the whole owner has been read.
     """
-    groups: list[tuple[sqlite3.Row, list[sqlite3.Row]]] = []
-    claimed: set[str] = set()
-    for owner in ancestry(conn, sym):
-        rows = [
-            row for row in own_members(conn, owner["id"]) if row["name"] not in claimed
+    owners = ancestry(conn, sym)
+    declared_by: dict[str, str] = {}
+    counts: dict[str, int] = {}
+    for owner in owners:
+        qualname = owner["qualname"]
+        mine = [
+            row["name"]
+            for row in conn.execute(
+                "SELECT name FROM members WHERE symbol_id = ?", (owner["id"],)
+            )
+            if row["name"] not in declared_by
         ]
-        claimed.update(row["name"] for row in rows)
-        groups.append((owner, rows))
-    return groups
+        counts[qualname] = len(mine)
+        declared_by.update((name, qualname) for name in mine)
+    return MemberPlan(owners, declared_by, counts)
 
 
 def member_line(row: sqlite3.Row) -> str:
@@ -346,17 +453,18 @@ def print_symbol(
         out(sym["doc"])
     if not with_members or sym["kind"] != "class":
         return
-    groups = member_groups(conn, sym)
-    own = groups[0][1]
-    if own:
-        out(f"members ({len(own)}):")
-        for row in own:
+    plan = member_plan(conn, sym)
+    own_count = plan.counts[sym["qualname"]]
+    if own_count:
+        out(f"members ({own_count}):")
+        for row in plan.rows_of(conn, plan.owners[0]):
             out(member_line(row))
-    for owner, rows in groups[1:]:
-        if not rows:
+    for owner in plan.owners[1:]:
+        count = plan.counts[owner["qualname"]]
+        if not count:
             continue
-        out(f"inherited from {owner['qualname']} ({len(rows)}):")
-        for row in rows:
+        out(f"inherited from {owner['qualname']} ({count}):")
+        for row in plan.rows_of(conn, owner):
             out(member_line(row))
 
 
@@ -370,6 +478,20 @@ class MemberHit(NamedTuple):
     lookup: str
     declared_on: str
     row: sqlite3.Row
+
+
+def candidate_line(hit: MemberHit) -> str:
+    """One line of a candidate list, naming the lookup that reaches the member.
+
+    The lookup is what a re-run has to be handed, and two same-named classes inheriting one member
+    differ only there, so a line built from the declaring class alone would print twice over and
+    leave the reader nothing to choose between. Where the two agree the line says so by staying
+    silent, which is every lookup that names no owning class.
+    """
+    text = f"  {hit.lookup}.{hit.row['name']}  [{hit.row['kind']}]"
+    if hit.declared_on != hit.lookup:
+        text += f"  (inherited from {hit.declared_on})"
+    return text
 
 
 def print_member(hit: MemberHit) -> None:
@@ -408,24 +530,28 @@ def anywhere_named(
 def owned_named(
     conn: sqlite3.Connection, member: str, owner: str, fold_case: bool
 ) -> list[MemberHit]:
-    """Every member of that name reachable from a class named `owner`, nearest declaration only."""
+    """Every member of that name reachable from a class named `owner`, nearest declaration only.
+
+    One hit per class named `owner`, never per member row. Two classes of the same name in
+    different modules that inherit one member share the row that declares it, and collapsing those
+    to a single hit would turn an ambiguous lookup into one arbitrary answer at exit 0. They are two
+    answers, so both are returned and the caller lists them. Within one candidate class a row cannot
+    repeat: the walk visits each ancestor once and stops at the first that declares the name.
+    """
     sql = (
         "SELECT * FROM members WHERE symbol_id = ? AND name = ? COLLATE NOCASE"
         if fold_case
         else "SELECT * FROM members WHERE symbol_id = ? AND name = ?"
     )
     hits: list[MemberHit] = []
-    seen_rows: set[int] = set()
     for sym in find_symbol(conn, owner):
         for declaring in ancestry(conn, sym):
             rows = conn.execute(sql, (declaring["id"], member)).fetchall()
             if not rows:
                 continue
-            for row in rows:
-                if row["id"] in seen_rows:
-                    continue
-                seen_rows.add(row["id"])
-                hits.append(MemberHit(sym["qualname"], declaring["qualname"], row))
+            hits.extend(
+                MemberHit(sym["qualname"], declaring["qualname"], row) for row in rows
+            )
             break  # nearest declaration wins; stop climbing this chain
     return hits
 
@@ -474,7 +600,9 @@ def cmd_show(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
     if len(hits) > 1:
         out(f"{name!r} matches {len(hits)} members:")
         for hit in hits[:SEARCH_CAP]:
-            out(f"  {hit.declared_on}.{hit.row['name']}  [{hit.row['kind']}]")
+            out(candidate_line(hit))
+        if len(hits) > SEARCH_CAP:
+            out(omitted_line(len(hits), SEARCH_CAP))
         return 1
     print_member(hits[0])
     return 0
@@ -485,12 +613,14 @@ def cmd_members(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
     if sym is None:
         return 1
     if args.own:
-        groups = [(sym, own_members(conn, sym["id"]))]
-    else:
-        groups = member_groups(conn, sym)
-    for owner, rows in groups:
-        out(f"{owner['qualname']} ({len(rows)} members):")
-        for row in rows:
+        out(f"{sym['qualname']} ({own_member_count(conn, sym['id'])} members):")
+        for row in own_members(conn, sym["id"]):
+            out(member_line(row))
+        return 0
+    plan = member_plan(conn, sym)
+    for owner in plan.owners:
+        out(f"{owner['qualname']} ({plan.counts[owner['qualname']]} members):")
+        for row in plan.rows_of(conn, owner):
             out(member_line(row))
     return 0
 
@@ -501,12 +631,13 @@ def cmd_tree(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
         return 1
     # Walks recorded base NAMES rather than ancestry()'s rows, so a base the database does not
     # hold (a class from outside the adsk package) still appears in the chain. Each name is
-    # visited once, so a repeated base or a cycle terminates the walk.
+    # visited once and taken off a deque, so a repeated base or a cycle terminates the walk and a
+    # long frontier costs no more per step than a short one.
     ancestors: list[str] = []
-    frontier: list[str] = list(json.loads(sym["bases"]))
+    frontier: deque[str] = deque(json.loads(sym["bases"]))
     seen: set[str] = {sym["qualname"]}
     while frontier:
-        base_name = frontier.pop(0)
+        base_name = frontier.popleft()
         if base_name in seen:
             continue
         seen.add(base_name)
@@ -516,18 +647,20 @@ def cmd_tree(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
     out(f"{sym['qualname']}")
     if ancestors:
         out("ancestors: " + " <- ".join(ancestors))
-    subclasses = [
-        row["qualname"]
+    # Counted first and then streamed, the way a member listing is: every subclass is printed, and
+    # the header needs the number before the first one, but neither needs the rows held at once.
+    pattern = like_pattern(f'"{sym["qualname"]}"')
+    subclasses = conn.execute(
+        "SELECT COUNT(*) FROM symbols WHERE bases LIKE ? ESCAPE '\\'", (pattern,)
+    ).fetchone()[0]
+    if subclasses:
+        out(f"direct subclasses ({subclasses}):")
         for row in conn.execute(
             "SELECT qualname FROM symbols WHERE bases LIKE ? ESCAPE '\\'"
             " ORDER BY qualname",
-            (like_pattern(f'"{sym["qualname"]}"'),),
-        )
-    ]
-    if subclasses:
-        out(f"direct subclasses ({len(subclasses)}):")
-        for name in subclasses:
-            out(f"  {name}")
+            (pattern,),
+        ):
+            out(f"  {row['qualname']}")
     return 0
 
 
@@ -555,8 +688,10 @@ def cmd_doc_search(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", type=Path, help="explicit database path")
+    parser = SanitizedParser(description=__doc__)
+    parser.add_argument(
+        "--db", type=Path, help="explicit database path (goes before the subcommand)"
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("info", help="database provenance and counts")
