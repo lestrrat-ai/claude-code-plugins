@@ -48,6 +48,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shlex
 import sqlite3
 import sys
 import unicodedata
@@ -176,7 +177,8 @@ def rebuild_command(path: Path) -> str:
         / "compile_fusion_api.py"
     )
     script = compiler if compiler.exists() else Path("compile_fusion_api.py")
-    return f"python3 {script} --output {path}"
+    # Quoted, so a space in the install directory or in `path` still yields a runnable command.
+    return shlex.join(["python3", str(script), "--output", str(path)])
 
 
 def fail(message: str) -> NoReturn:
