@@ -1,0 +1,12 @@
+{
+  "name": "fusion",
+  "version": "0.1.0",
+  "description": "Query the Autodesk Fusion 360 Python API from a pre-compiled reference database.",
+  "author": {
+    "name": "lestrrat"
+  },
+  "homepage": "https://github.com/lestrrat-ai/claude-code-plugins",
+  "repository": "https://github.com/lestrrat-ai/claude-code-plugins",
+  "license": "MIT",
+  "keywords": ["fusion-360", "autodesk", "api-reference", "python", "cad"]
+}
