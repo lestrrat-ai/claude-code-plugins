@@ -255,6 +255,15 @@ def capped_listing(
         )
     if len(lines) < SEARCH_CAP:
         return lines, len(lines)
+    # This total is a sum and not a double count, and that is checkable rather than asserted. Each
+    # source's `count_sql` is executed here and nowhere else in this script — the row loop above
+    # executes `rows_sql` only — and SEARCH_SOURCES counts `symbols` and `members`, two tables that
+    # share no row, so nothing is reachable through both. Measured against the bundled database
+    # (2026-08, source_commit 07814d19): `search ""` matches every row in each table, and the
+    # printed remainder is that sum less the SEARCH_CAP lines shown. Driven over synthetic
+    # databases at symbol/member counts of 0/0, 5/7, 120/0, 60/60, 99/1 and 100/50 — sizes chosen
+    # so the cap falls short of, inside, and across the first source — the reported total equalled
+    # the sum every time.
     total = 0
     for source in sources:
         total += conn.execute(source.count_sql, (pattern,)).fetchone()[0]

@@ -9,11 +9,14 @@ extracted with its signature, docstring, and inheritance links; ``async def``
 declares a function or a method wherever ``def`` does and is indexed the same
 way. A class attribute is indexed whatever it was declared with — a value (an
 enum value), an annotation, both, or neither, the last being a name bound by an
-unpacked assignment. A statement that yields no symbol and is not one of the
+unpacked assignment. A statement that binds no name and is not one of the
 declared exemptions — ``is_exempt_statement`` is where they are named — is
 counted into ``meta.unhandled_statements`` and reported on stderr, so a
 construct it does not understand shows up as a number rather than a missing
-symbol. An assignment target that binds no name counts the same way.
+symbol. That count is derived from what a statement bound, not from which node
+types were recognised, so a shape this compiler never anticipated is counted
+too. A target part that binds no name counts the same way, even where another
+part of the same statement did bind one.
 
 Default output is the user-level cache (``~/.cache/fusion-api-db/fusion-api.db``),
 which the query script prefers over the database bundled with the plugin. Pass
@@ -463,13 +466,20 @@ def assignment_targets(target: ast.expr) -> tuple[list[str], int]:
 
     A tuple or list target binds one name per element (`first, second = ...`) and may nest, so the
     elements are walked rather than the target alone. A starred element binds its own inner target.
-    A subscript or attribute target assigns somewhere other than this class, so it binds no name;
-    it is RETURNED AS A COUNT rather than as silence, because the caller has already claimed the
-    statement and nothing after it would notice the loss. A partial target list — one element
-    binding a name and another binding none — reports both halves for the same reason.
+    A part that binds no name is RETURNED AS A COUNT rather than as silence, because the caller has
+    already claimed the statement and nothing after it would notice the loss. A partial target list
+    — one element binding a name and another binding none — reports both halves for the same reason.
+
+    Which parts those are is DERIVED, never enumerated by node type. A subtree that yielded neither
+    a name nor an already-counted part bound nothing, so it is itself one part that binds no name.
+    That covers a subscript or attribute (which assigns somewhere other than this class) and an
+    empty element list such as `()` or `[]` (which assigns nowhere at all) by the same test, and it
+    covers whatever shape comes next without naming it.
     """
     if isinstance(target, ast.Name):
         return [target.id], 0
+    if isinstance(target, ast.Starred):
+        return assignment_targets(target.value)
     if isinstance(target, (ast.Tuple, ast.List)):
         names: list[str] = []
         unbound = 0
@@ -477,9 +487,10 @@ def assignment_targets(target: ast.expr) -> tuple[list[str], int]:
             element_names, element_unbound = assignment_targets(element)
             names.extend(element_names)
             unbound += element_unbound
-        return names, unbound
-    if isinstance(target, ast.Starred):
-        return assignment_targets(target.value)
+        if names or unbound:
+            return names, unbound
+        # Nothing came back from the elements, so this target binds nothing: fall through to the
+        # line below and be counted as one part, exactly as a subscript target is.
     return [], 1
 
 
@@ -570,6 +581,17 @@ def compile_class(db: DocDb, module: str, node: ast.ClassDef) -> int:
     properties: dict[str, dict[str, object]] = {}
     unhandled = 0
     for index, item in enumerate(node.body):
+        # No branch below decides the count. Each one reports what the statement ACTUALLY BOUND into
+        # this class (`declared`) and how many of its parts bound nothing (`unbound`), and the single
+        # site after the branches derives the count from those two facts. That is what makes the rule
+        # structural instead of per node type: a class-body statement is counted unless it is a
+        # declared exemption or it bound at least one name. A shape no branch anticipated is
+        # therefore counted for having produced no member, not for being unrecognised — which is how
+        # an empty target (`() = ()`, `[] = []`) is counted despite reaching the assignment branch
+        # and being claimed by it.
+        declared: list[str] = []
+        unbound = 0
+        exempt = False
         # `async def` declares a member exactly as `def` does, so both node types are indexed.
         if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
             decorators = decorator_names(item)
@@ -595,6 +617,9 @@ def compile_class(db: DocDb, module: str, node: ast.ClassDef) -> int:
                 db.add_member(
                     symbol_id, item.name, kind, signature, returns, False, None, doc
                 )
+            # Every path above binds `item.name` into the class: a property entry, a setter on one,
+            # or a member row. A definition always carries a name, so this is unconditional.
+            declared.append(item.name)
         elif isinstance(item, (ast.Assign, ast.AnnAssign)):
             # Both statements declare class attributes. An annotated one may carry no value at all
             # (`x: int`), so having a value is not what makes an attribute worth indexing, and a
@@ -614,12 +639,14 @@ def compile_class(db: DocDb, module: str, node: ast.ClassDef) -> int:
                 # piece is not decidable from the source alone (`a, b = pair()`). So the value is
                 # recorded only where a target is one name; every name is indexed either way.
                 unpacked = not isinstance(target, ast.Name)
-                names, unbound = assignment_targets(target)
-                # A part that binds no name — `external.attr = 1`, `c[0] = 5`, or the second half
-                # of `a, external.b = pair()` — assigns somewhere this database does not index.
-                # This branch has already claimed the statement, so the exemption test below will
-                # never see it: counting here is what keeps it from being dropped in silence.
-                unhandled += unbound
+                names, target_unbound = assignment_targets(target)
+                # A part that binds no name — `external.attr = 1`, `c[0] = 5`, the second half of
+                # `a, external.b = pair()`, or an empty `()` — assigns somewhere this database does
+                # not index. This branch has already claimed the statement, so the exemption test
+                # below never sees it: reporting the parts is what keeps them from being dropped in
+                # silence.
+                unbound += target_unbound
+                declared.extend(names)
                 for name in names:
                     db.add_member(
                         symbol_id,
@@ -631,8 +658,16 @@ def compile_class(db: DocDb, module: str, node: ast.ClassDef) -> int:
                         None if unpacked else value,
                         None,
                     )
-        elif not is_exempt_statement(item, index):
-            unhandled += 1
+        else:
+            exempt = is_exempt_statement(item, index)
+        if declared:
+            # It bound something, so only the parts that bound nothing are missing.
+            unhandled += unbound
+        elif not exempt:
+            # It bound nothing at all, so the statement itself is the gap. `unbound or 1` and not
+            # `unbound + 1`: where parts were already reported they describe this same statement,
+            # and where none were the statement still counts once.
+            unhandled += unbound or 1
     for name, entry in properties.items():
         returns_val = entry["returns"]
         doc_val = entry["doc"]

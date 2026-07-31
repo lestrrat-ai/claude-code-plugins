@@ -45,10 +45,12 @@ Invocation: Claude Code `/fusion:query-api`; Codex `$fusion:query-api`.
    (Codex `$fusion:compile-api`).
 4. Answer from script output only. Exit code 1 with a candidate list or "no matches" on stdout is a
    lookup miss, not a failure — refine the name and re-run, or report the miss. Exit code 1 with an
-   `error:` line on stderr is a real failure — relay it and stop. The causes are: no database, the
-   file is not one, and a class whose recorded bases have no consistent resolution order, which is
-   refused rather than answered from a guessed order. The last one names the class; report it as a
-   defect in the database, and recompile with `/fusion:compile-api` (Codex `$fusion:compile-api`).
+   `error:` line on stderr is a real failure — relay it and stop. The causes are: no database; the
+   file is not one; a database that opened but could not answer the subcommand (`could not answer
+   '<subcommand>'`); and a class whose recorded bases have no consistent resolution order, which is
+   refused rather than answered from a guessed order and names the class. The last two are defects
+   in the database — report them as such, and recompile with `/fusion:compile-api` (Codex
+   `$fusion:compile-api`).
 
 Read-only. The bundled database ships with the plugin; NEVER edit or regenerate it here — regeneration
 is `compile-api`'s job.
