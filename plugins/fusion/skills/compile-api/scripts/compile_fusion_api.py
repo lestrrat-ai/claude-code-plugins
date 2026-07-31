@@ -42,6 +42,7 @@ from __future__ import annotations
 import argparse
 import ast
 import datetime
+import http.client
 import json
 import os
 import re
@@ -868,7 +869,18 @@ def main() -> int:
                 symbols, members, unhandled = build_database(
                     stub_paths, args.output, f"https://github.com/{REPO}", sha, args.ref
                 )
-    except (OSError, RuntimeError, SyntaxError, ValueError, KeyError, sqlite3.Error) as exc:
+    # http.client.HTTPException is here because it is NOT an OSError: a response that ends early
+    # (a truncated chunked body) raises IncompleteRead, which would otherwise reach the interpreter
+    # as a traceback rather than the `error:` line every other failure produces.
+    except (
+        OSError,
+        RuntimeError,
+        SyntaxError,
+        ValueError,
+        KeyError,
+        sqlite3.Error,
+        http.client.HTTPException,
+    ) as exc:
         err(f"error: {exc}")
         return 1
 
