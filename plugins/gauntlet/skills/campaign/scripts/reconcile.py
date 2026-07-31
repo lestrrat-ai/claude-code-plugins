@@ -16,10 +16,23 @@ the query whose bytes detection consumes.
     reconcile.py fetch --project-root <project-root> --run-id <id> --output <rundir>/prs.json
     reconcile.py detect --ledger <state.jsonl> --prs <rundir>/prs.json --run-id <id>
 
-`--run-id` selects the label for `fetch` and validates label scope for both commands: every snapshot entry
-MUST carry this run's `gauntlet-run-<run-id>` label. A snapshot that escaped that scope is the run-isolation
-violation the label exists to prevent, so the whole file is refused — never silently reconciled against
-another run's PRs.
+`--run-id` selects the label for `fetch` and validates label scope for both commands: every entry the
+snapshot KEEPS carries this run's `gauntlet-run-<run-id>` label. What an entry WITHOUT it means differs
+between the two commands, so the two commands answer it differently:
+
+* In `detect`, `--prs` and `--run-id` are INDEPENDENT arguments, so an unlabelled entry can mean the caller
+  pointed one run at another run's snapshot. That is the run-isolation violation the label exists to
+  prevent, so the WHOLE file is refused — never partly trusted, never silently reconciled against another
+  run's PRs. **That refusal is load-bearing and unconditional.**
+* In `fetch`, the `--label` selector and this validator are built from the SAME `run_id` (`fetch_argv` and
+  `fetch_snapshot`), so they cannot disagree about scope at runtime. An unlabelled entry there can only
+  mean GitHub's two sources disagree about that one PR: `gh pr list --label` compiles to the issues SEARCH
+  INDEX, while each entry's `labels` field resolves from the primary database, and the search index does
+  not durably apply label REMOVALS — it clears only when that PR receives a later label write, so the
+  disagreement does not time out. Such an entry is a GHOST. `fetch` SKIPS it, reports it on stderr and in
+  `skipped_unlabelled`, and promotes the rest — one ghost must not destroy drift detection for every other
+  PR in the run. DISCLOSED COST: a run label removed BY HAND from a still-live PR is indistinguishable
+  from a ghost here, so that PR now reads as `absent_from_snapshot` instead of refusing the fetch.
 
 FACTS ONLY, and NEUTRAL. The headline signal — a live row that is ABSENT from the snapshot — is the
 MERGED/CLOSED-BY-ABSENCE fact: the canonical command lists `--state open`, so a merged or closed PR simply
@@ -31,8 +44,9 @@ active work — see the repo's CLAUDE.md. Absence is a FACT to report, not a bug
 
 `detect` performs NO NETWORK or writes. It is a pure function of two files to one JSON object on stdout.
 `fetch` performs one fixed `gh` read and one atomic local promotion. Both fail closed with exit 2 when an
-input or response is not evidence. A failed command, malformed response, wrong-label row, possible
-limit-boundary truncation, or failed promotion leaves any previous `prs.json` byte-for-byte intact.
+input or response is not evidence. A failed command, malformed response, possible limit-boundary
+truncation, or failed promotion leaves any previous `prs.json` byte-for-byte intact — as does a
+wrong-label row in `detect`'s `--prs` file (in `fetch` a wrong-label row is a skipped ghost, above).
 
 The fixture suite is the SIBLING `reconcile-test.py`, this tool's executable contract; `self-test` loads
 it by a `__file__`-relative path and FAILS LOUDLY if it is missing — a self-test that passes because it
@@ -180,28 +194,39 @@ def label_names(entry: object, index: int) -> list[str]:
     return names
 
 
-def _validated_entries(data: object, run_id: str, source: str) -> "list[dict]":
-    """Validate decoded snapshot JSON and return typed fact dictionaries.
+def _validated_entries(data: "list[object]", run_id: str, source: str,
+                       *, ghosts: "list[dict] | None" = None) -> "list[dict]":
+    """Validate a decoded snapshot ARRAY and return typed fact dictionaries.
 
     Each returned dict carries ONLY the canonical fields, at their validated shapes, plus the extracted
-    `label_names`. The run-label scope check runs here: an entry that does not carry `gauntlet-run-<run-id>`
-    refuses the WHOLE response because a snapshot that escaped the run's scope cannot be partly trusted.
+    `label_names`.
+
+    The run-label scope check runs here, and the CALLER chooses its outcome, because the same observation
+    means different things on the two paths (module docstring, `--run-id`):
+
+    * `ghosts is None` — the default, used by `read_snapshot` and therefore by `detect`. An entry that
+      does not carry `gauntlet-run-<run-id>` refuses the WHOLE response, because a snapshot that escaped
+      the run's scope cannot be partly trusted. **Unconditional; do not add a skip here.**
+    * `ghosts` is a list — used by `fetch` only. The entry is SKIPPED and a `{index, number, labels}`
+      record is appended to that list, so the caller can report it. `fetch` cannot be mis-scoped (see
+      `fetch_snapshot`), so an unlabelled entry there is a stale-search-index GHOST, not an escaped query.
+
+    Skipping is the ONLY thing the scope check relaxes. Every other refusal — shape, null, malformed
+    label, duplicate PR — still fails the whole response on both paths, ghost entries included. What
+    makes that TRUE rather than merely intended is the ORDER: the scope check runs LAST, after the entry
+    has been validated for every canonical field and has registered its number. Move it earlier and a
+    ghost stops being validated at all — it is skipped INSTEAD of validated, and the missing-field and
+    duplicate-PR refusals quietly stop applying to it. **Validate first, then decide the outcome.**
     """
-    if not isinstance(data, list):
-        raise Refusal(
-            f"{source} is {_SHAPE_NAME.get(type(data), type(data).__name__)}, not a JSON array — "
-            f"the canonical `gh pr list --json …` response is an ARRAY of PR objects ({CANONICAL_BLOCK}).")
     run_label = RUN_LABEL_PREFIX + run_id
     entries: list[dict] = []
     seen: dict[str, int] = {}
     for index, entry in enumerate(data):
         names = label_names(entry, index)          # reads `labels` through sfield; refuses malformed
-        if run_label not in names:
-            raise Refusal(
-                f"prs.json entry #{index} does not carry this run's label {run_label!r} (it has "
-                f"{names!r}) — the snapshot escaped the run's label scope, which is the run-isolation "
-                f"violation the canonical fetch's `--label` exists to prevent ({CANONICAL_BLOCK}). "
-                f"Refusing the whole response; a snapshot scoped to the wrong PRs is not evidence.")
+        # EVERY entry is validated in FULL and registers its number BEFORE the scope check decides its
+        # outcome. That order is what makes the guarantee below true: a ghost from a DRIFTED command is
+        # still a drifted command, and a snapshot naming one PR twice is still ambiguous, whether or not
+        # the second entry happens to be unlabelled.
         fact = {k: sfield(entry, k, index) for k in CANONICAL_FIELDS if k != "labels"}
         fact["label_names"] = names
         number_key = str(fact["number"])
@@ -211,12 +236,26 @@ def _validated_entries(data: object, run_id: str, source: str) -> "list[dict]":
                 f"snapshot that names one PR twice cannot be reconciled deterministically. Refusing the "
                 f"whole response.")
         seen[number_key] = index
+        if run_label not in names:
+            if ghosts is None:
+                raise Refusal(
+                    f"prs.json entry #{index} does not carry this run's label {run_label!r} (it has "
+                    f"{names!r}) — the snapshot escaped the run's label scope, which is the run-isolation "
+                    f"violation the canonical fetch's `--label` exists to prevent ({CANONICAL_BLOCK}). "
+                    f"Refusing the whole response; a snapshot scoped to the wrong PRs is not evidence.")
+            ghosts.append({"index": index, "number": fact["number"], "labels": names})
+            continue
         entries.append(fact)
     return entries
 
 
-def validate_snapshot_bytes(payload: bytes, run_id: str, source: str = "gh response") -> "list[dict]":
-    """Decode and validate raw fetch bytes. No write happens until this returns successfully."""
+def _decode_snapshot(payload: bytes, source: str) -> "list[object]":
+    """Decode raw snapshot bytes to the JSON ARRAY the canonical response is. Refuses anything else.
+
+    Split out from `validate_snapshot_bytes` because `fetch` needs the decoded entries themselves — it
+    promotes a snapshot with its ghost entries removed, and re-decoding the same bytes a second time to
+    get them would be a second reader of the same contract.
+    """
     try:
         raw = payload.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -226,7 +265,20 @@ def validate_snapshot_bytes(payload: bytes, run_id: str, source: str = "gh respo
     except json.JSONDecodeError as exc:
         raise Refusal(f"{source} is not valid JSON ({exc}) — the canonical fetch must return a JSON array "
                       f"({CANONICAL_BLOCK}).") from exc
-    return _validated_entries(data, run_id, source)
+    if not isinstance(data, list):
+        raise Refusal(
+            f"{source} is {_SHAPE_NAME.get(type(data), type(data).__name__)}, not a JSON array — "
+            f"the canonical `gh pr list --json …` response is an ARRAY of PR objects ({CANONICAL_BLOCK}).")
+    return data
+
+
+def validate_snapshot_bytes(payload: bytes, run_id: str, source: str = "gh response") -> "list[dict]":
+    """Decode and validate raw snapshot bytes, REFUSING any entry outside the run's label scope.
+
+    This is the `read_snapshot`/`detect` door, so the whole-file scope refusal applies. `fetch` does not
+    come through here — it decodes and validates in two steps so it can skip ghosts (`fetch_snapshot`).
+    """
+    return _validated_entries(_decode_snapshot(payload, source), run_id, source)
 
 
 def read_snapshot(prs_path: Path, run_id: str) -> "list[dict]":
@@ -276,8 +328,21 @@ def fetch_snapshot(
     run_id: str,
     *,
     runner: "Callable[..., subprocess.CompletedProcess[bytes]]" = subprocess.run,
+    ghosts: "list[dict] | None" = None,
 ) -> int:
-    """Fetch, validate, and atomically promote one canonical snapshot. Return validated row count."""
+    """Fetch, validate, and atomically promote one canonical snapshot. Return the PROMOTED row count.
+
+    The `--label` selector and the scope validator are both built from THIS `run_id`, so they cannot
+    disagree at runtime and the query cannot escape its scope. An entry GitHub returned for the label
+    while its own `labels` omit that label is therefore a stale-search-index GHOST (module docstring):
+    it is SKIPPED, left out of the promoted bytes, and appended to `ghosts` when a list is passed. The
+    caller reports them; skipping happens whether or not anyone is listening, because one ghost must not
+    cost the run drift detection on every other PR.
+
+    Pass a list for `ghosts` to see them; `cmd_fetch` does. Nothing else about the response is relaxed —
+    the promoted file still satisfies `read_snapshot` in full, ghost-free, so `detect` reads it without
+    ever meeting a skipped entry.
+    """
     _validate_fetch_paths(project_root, output)
     argv = fetch_argv(run_id)
     try:
@@ -287,15 +352,29 @@ def fetch_snapshot(
     if proc.returncode != 0:
         stderr = proc.stderr.decode("utf-8", errors="replace").strip()
         raise Refusal(f"canonical `gh pr list` exited {proc.returncode}: {stderr}")
-    entries = validate_snapshot_bytes(proc.stdout, run_id)
-    if len(entries) >= SNAPSHOT_LIMIT:
+    data = _decode_snapshot(proc.stdout, "gh response")
+    # Collected LOCALLY and handed to the caller only on success: the indices below must describe THIS
+    # response, and a refusal must not leave a report of a promotion that did not happen.
+    found: list[dict] = []
+    entries = _validated_entries(data, run_id, "gh response", ghosts=found)
+    # The truncation guard counts the RESPONSE, not the survivors. The result cap applies to what the
+    # query RETURNED, so skipped ghosts still count toward it — otherwise a capped response carrying one
+    # ghost would slip under the boundary and absence would be read as evidence from a truncated list.
+    if len(data) >= SNAPSHOT_LIMIT:
         raise Refusal(
-            f"canonical `gh pr list` returned {len(entries)} rows at its --limit {SNAPSHOT_LIMIT} boundary; "
+            f"canonical `gh pr list` returned {len(data)} rows at its --limit {SNAPSHOT_LIMIT} boundary; "
             "the response may be truncated, so absence is not evidence and no snapshot was promoted.")
+    payload = proc.stdout
+    if found:
+        # Only a response WITH ghosts is re-serialized; a clean one promotes gh's exact captured bytes.
+        dropped = {ghost["index"] for ghost in found}
+        payload = json.dumps([e for i, e in enumerate(data) if i not in dropped]).encode("utf-8")
     try:
-        _replace_bytes(output, proc.stdout)
+        _replace_bytes(output, payload)
     except OSError as exc:
         raise Refusal(f"could not atomically promote the validated snapshot to {output}: {exc}") from exc
+    if ghosts is not None:
+        ghosts.extend(found)
     return len(entries)
 
 
@@ -416,17 +495,41 @@ def cmd_detect(ledger_path: Path, prs_path: Path, run_id: str) -> int:
     return 0
 
 
-def cmd_fetch(project_root: Path, output: Path, run_id: str) -> int:
-    """Run the canonical fetch and print its result. A refusal emits no stdout and preserves `output`."""
+def cmd_fetch(
+    project_root: Path,
+    output: Path,
+    run_id: str,
+    *,
+    runner: "Callable[..., subprocess.CompletedProcess[bytes]]" = subprocess.run,
+) -> int:
+    """Run the canonical fetch and print its result. A refusal emits no stdout and preserves `output`.
+
+    A skipped ghost is REPORTED TWICE and can never happen silently: once per entry on stderr, where a
+    driver reading the log sees it, and as `skipped_unlabelled` in the result JSON, which is ALWAYS
+    present (empty on a clean fetch) so a machine reader can test it without guessing at a missing key.
+
+    `runner` is forwarded to `fetch_snapshot` for the same reason it exists there — the fixtures drive
+    THIS reporting over a fixed response instead of monkey-patching the module.
+    """
+    ghosts: list[dict] = []
     try:
-        entries = fetch_snapshot(project_root, output, run_id)
+        entries = fetch_snapshot(project_root, output, run_id, runner=runner, ghosts=ghosts)
     except Refusal as exc:
         print(f"reconcile: {exc}", file=sys.stderr)
         return 2
+    run_label = RUN_LABEL_PREFIX + run_id
+    for ghost in ghosts:
+        print(f"reconcile: SKIPPED GHOST PR #{ghost['number']} (response entry #{ghost['index']}): "
+              f"`gh pr list --label {run_label}` returned it, but its own labels are {ghost['labels']!r} "
+              f"and do not carry {run_label!r}. GitHub's issue search index does not durably apply label "
+              f"REMOVALS, so it keeps listing a PR whose label is already gone. The entry was left OUT of "
+              f"the promoted snapshot; the rest of the run was promoted normally, and this PR now reads "
+              f"as `absent_from_snapshot` in `detect`.", file=sys.stderr)
     print(json.dumps({
         "entries": entries,
         "output": str(output),
         "run_id": run_id,
+        "skipped_unlabelled": ghosts,
     }, sort_keys=True))
     return 0
 
