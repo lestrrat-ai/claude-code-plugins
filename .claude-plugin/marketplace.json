@@ -11,6 +11,13 @@
       "description": "Adversarial review-to-merge pipeline for Claude Code.",
       "license": "MIT",
       "keywords": ["code-review", "adversarial-review", "pull-request", "ci", "codex"]
+    },
+    {
+      "name": "fusion",
+      "source": "./plugins/fusion",
+      "description": "Query the Autodesk Fusion 360 Python API from a pre-compiled reference database.",
+      "license": "MIT",
+      "keywords": ["fusion-360", "autodesk", "api-reference", "python", "cad"]
     }
   ]
 }

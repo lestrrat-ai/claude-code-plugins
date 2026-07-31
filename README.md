@@ -61,6 +61,7 @@ Optional when Claude Code is the orchestrator:
 | Plugin | What it is |
 |--------|------------|
 | [`gauntlet`](plugins/gauntlet/README.md) | Adversarial review that gates PRs to merge: `review` reports findings (report-only by default, can opt in to opening PRs); `campaign` adopts existing PRs and defends each through repeated context-isolated reviews and green CI, then merges. |
+| [`fusion`](plugins/fusion/README.md) | Autodesk Fusion 360 Python API lookups: `query-api` answers symbol questions (classes, methods, properties, enum values) from a bundled reference database; `compile-api` rebuilds that database from AutodeskFusion360/FusionAPIReference. |
 
 ## License
 

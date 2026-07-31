@@ -1,0 +1,28 @@
+{
+  "name": "fusion",
+  "version": "0.1.0",
+  "description": "Query the Autodesk Fusion 360 Python API from a pre-compiled reference database.",
+  "author": {
+    "name": "lestrrat",
+    "url": "https://github.com/lestrrat-ai"
+  },
+  "homepage": "https://github.com/lestrrat-ai/claude-code-plugins",
+  "repository": "https://github.com/lestrrat-ai/claude-code-plugins",
+  "license": "MIT",
+  "keywords": ["fusion-360", "autodesk", "api-reference", "python", "cad"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Fusion",
+    "shortDescription": "Fusion 360 Python API lookups",
+    "longDescription": "Compile the Autodesk Fusion 360 Python API reference into a local database and query it for classes, methods, properties, functions, and enum values.",
+    "developerName": "lestrrat",
+    "category": "Productivity",
+    "capabilities": ["Read"],
+    "defaultPrompt": [
+      "What members does adsk.fusion.ExtrudeFeatures have?",
+      "Show the signature of ExtrudeFeatures.addSimple.",
+      "Search the Fusion API for sweep features.",
+      "Recompile the Fusion API database."
+    ]
+  }
+}

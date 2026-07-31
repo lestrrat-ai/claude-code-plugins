@@ -1,0 +1,25 @@
+# fusion
+
+Look up the Autodesk Fusion 360 Python API (`adsk.core`, `adsk.fusion`, `adsk.cam`, …) without leaving
+your session. A SQLite database compiled from the official
+[FusionAPIReference](https://github.com/AutodeskFusion360/FusionAPIReference) intellisense stubs ships
+with the plugin, so queries work offline out of the box.
+
+## Skills
+
+| Skill | Invocation | What it does |
+|-------|------------|--------------|
+| `query-api` | `/fusion:query-api` (Codex `$fusion:query-api`) | Answers questions about Fusion API symbols: full class detail, member signatures, inheritance trees, name and docstring search. |
+| `compile-api` | `/fusion:compile-api` (Codex `$fusion:compile-api`) | Rebuilds the database from the reference repo's current `main` into `~/.cache/fusion-api-db/`, which `query-api` prefers over the bundled copy — upgrades need no plugin reinstall. |
+
+## Examples
+
+- "What members does `adsk.fusion.ExtrudeFeatures` have?"
+- "Show me the signature and docs of `ExtrudeFeatures.addSimple`."
+- "Which Fusion API docstrings mention sweep profiles?"
+- "Recompile the Fusion API database."
+
+## Prerequisites
+
+- **Python 3 (`python3`)** — runs both bundled scripts. Standard library only.
+- Network access to github.com, only when recompiling the database.
