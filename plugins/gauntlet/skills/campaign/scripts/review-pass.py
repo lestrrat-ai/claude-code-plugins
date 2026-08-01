@@ -1488,6 +1488,14 @@ def parse_report(progress: Path) -> ReportResult:
     """
     path = report_path(progress)
     text = read_text(path, "active review report")
+    # `splitlines()` — the SAME line reader every other artifact in this file uses, and deliberately so.
+    # It ends a line at more than LF (U+001C, U+0085, U+2028 and the rest), so a record holding one of
+    # those loses its tail. That is NOT a residual-risk rule and NOT this change's to alter: the SAME
+    # split decides which line the terminal `VERDICT:` is, so a scan that ended lines only at LF would
+    # splice the verdict into a preceding record — a report reading `RESIDUAL-RISK: x<U+001C>VERDICT:
+    # SATISFIED` would file the gate's own answer as calibration text. The base voids the entire pass on
+    # those same bytes, so nothing here lost a record the base kept. To falsify: show a line reader this
+    # file uses that splits differently, or a base run preserving that tail.
     lines = text.splitlines()
     nonblank = [n for n, line in enumerate(lines) if line.strip()]
     if not nonblank:
