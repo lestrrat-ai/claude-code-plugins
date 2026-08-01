@@ -802,8 +802,9 @@ truncated, duplicate, nonterminal or malformed — and one from the wrong attemp
 the existing if-and-only-if rule: **`not-satisfied` exactly when at least one GATING finding stands.** A
 verdict that blocks a PR must name what blocks it, and a finding that blocks a PR cannot be waved through.
 
-**NOTHING ABOUT A `RESIDUAL-RISK:` LINE CAN MAKE A PASS `unusable` — not its absence, not its shape, not
-its count, not where it sits.** The line is calibration metadata for the final report and never a gate
+**NOTHING ABOUT A `RESIDUAL-RISK:` LINE STANDING BEFORE THE VERDICT CAN MAKE A PASS `unusable` — not its
+absence, not its shape, not its count, not where above the verdict it sits.** The line is calibration
+metadata for the final report and never a gate
 input, so `verify` READS it and does not judge it: it is carried as the reviewer wrote it, minus only an
 invisible prefix and trailing whitespace, and two of them are carried as TWO SEPARATE RECORDS — never
 merged into one, and never with a separator the tool supplied. `verify` prints each record after its own
@@ -814,6 +815,13 @@ still ASKS for `RESIDUAL-RISK: <area> — <why>` standing last before the verdic
 keeps the line readable — it is a request, not a gate, and a reviewer who misses it has not spoiled its
 pass. On a NOT SATISFIED or DEFERRED result the line is DROPPED, not refused: the final report records
 the least-certain area of each ACCEPTING pass, so on any other result there is nothing to carry.
+
+**The one exception is a line written AFTER the terminal verdict, and it is the VERDICT rule refusing it,
+not this one.** A `RESIDUAL-RISK:` line below the `VERDICT:` line is trailing text like any other, so the
+unchanged terminal rule — one result, on the **last nonblank line** — refuses that report as nonterminal
+and the pass is `unusable`. Nothing is special-cased for this line there, in either direction: it buys no
+exemption from the verdict rule, and it triggers no refusal a postscript of ordinary prose would not.
+Above the verdict, the paragraph above holds without qualification.
 
 **The reason that is a rule and not laxity:** a formatting check on this line can only ever lose
 evidence. It answers no question the gate asks, so refusing over it spends a whole review — a complete
@@ -845,7 +853,7 @@ pass is a trapdoor, not a disclosure:
 | `ok` | 0 | the artifacts are sound: one strict result from the active attempt's report; a `pass_identity` naming **this** PR, **this** pass, **this** launch attempt, **the live head SHA**, and a bound **`default_non_goals` still equal to the run's live defaults**; a **usable intent block** for this PR; every planned unit `done` **once**, with concrete evidence, after a `started` for it; every `done` for a unit that is **actually in the plan**; no unruled amendment; and the parsed result **coheres** with the findings | tally the parsed binary result through `ledger.py verdict` |
 | `incomplete` | 1 | sound, but a planned unit has no `done` — the pass has not covered its plan | it is still working (or it stopped early — the meaningful-progress rule decides which). **Never tally a verdict from it** |
 | `amended` | 1 | sound, but the reviewer raised a `plan_amendment_request` nobody has ruled on | fold it into the plan and restart the pass, or ignore it with a note — then re-run with `--amendments-ruled N` |
-| `unusable` | 1 | the artifacts are **defective** — the active report is missing, empty, truncated, duplicate, nonterminal, or malformed **in its VERDICT** (its `RESIDUAL-RISK:` line never makes a report defective, however it is written); a short SHA or other malformed identifier; invalid progress/identity/findings; **no usable intent block**; a bound `default_non_goals` that no longer matches the run's live defaults (scope drift); a parsed result that does not cohere with findings; or a spurious DEFERRED result | the pass **CANNOT count**. Fix skipped adoption inputs when named; otherwise retry — the same pass, next launch attempt (`runtime-adapter.md`, "Review preparation mapping") — or take the fresh-worker fallback |
+| `unusable` | 1 | the artifacts are **defective** — the active report is missing, empty, truncated, duplicate, nonterminal, or malformed **in its VERDICT** (a `RESIDUAL-RISK:` line standing BEFORE the verdict never makes a report defective, however it is written; one written AFTER it is trailing text and lands in `nonterminal` above); a short SHA or other malformed identifier; invalid progress/identity/findings; **no usable intent block**; a bound `default_non_goals` that no longer matches the run's live defaults (scope drift); a parsed result that does not cohere with findings; or a spurious DEFERRED result | the pass **CANNOT count**. Fix skipped adoption inputs when named; otherwise retry — the same pass, next launch attempt (`runtime-adapter.md`, "Review preparation mapping") — or take the fresh-worker fallback |
 
 **`ok` is not SATISFIED.** The tool parses the reviewer's exact terminal result but does not judge the
 report's prose, raise `reviews_ok`, or merge. `ledger.py verdict` remains the only tally writer.
@@ -975,9 +983,10 @@ structurally; the sweep finds a defect now, regardless of the plan.)
 certainty, relative to the rest. It is calibration metadata, never a finding and never a verdict
 input: a SATISFIED with a residual-risk line is a **full** SATISFIED, and the line NEVER withholds the
 gate, NEVER enters the fix loop, and is NEVER fed into the corroborating review (which stays
-context-isolated). Because it is not a gate input, **no way of writing it — including not writing it —
-can cost the pass its verdict**; "Does this pass COUNT?" above owns that rule and what `verify` records
-instead. It reflects the gauntlet's purpose —
+context-isolated). Because it is not a gate input, **no way of writing it ABOVE the verdict — including
+not writing it — can cost the pass its verdict**; written BELOW the verdict it is trailing text and the
+unchanged terminal-verdict rule refuses the report as nonterminal. "Does this pass COUNT?" above owns
+that rule, that one exception, and what `verify` records instead. It reflects the gauntlet's purpose —
 lower the odds a defect survives stochastic variation, not claim certainty — by making residual
 uncertainty explicit instead of hidden behind a binary verdict. Record it with the verdict and carry
 **every record each accepting pass wrote** into the final report, grouped by PR (a pass that wrote none

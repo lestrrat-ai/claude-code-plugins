@@ -289,8 +289,10 @@
   **five** kinds of defect that make a pass `unusable` (Stage 2a, "Does this pass
   COUNT?", owns the enumeration):
   - **the active REPORT result is unusable** — the `VERDICT:` line missing, empty, truncated, duplicate,
-    nonterminal, malformed, or from the wrong launch attempt. **The `RESIDUAL-RISK:` line is NOT part of
-    this**: omitted, misspelled, doubled, or misplaced, it never makes a report unusable (Stage 2a);
+    nonterminal, malformed, or from the wrong launch attempt. **A `RESIDUAL-RISK:` line standing BEFORE
+    the verdict is NOT part of this**: omitted, misspelled, doubled, or anywhere above the verdict, it
+    never makes a report unusable. One written AFTER the verdict is trailing text, so the `VERDICT:` rule
+    above — not any rule about this line — refuses that report as nonterminal (Stage 2a);
   - **the ARTIFACTS are malformed** — a short SHA or any other malformed identifier, a `done` for a unit
     that was never planned, an evidence-free `done`, a `done` that no `started` precedes, a SECOND `done`
     for one unit, a hand-written line of the wrong shape, an identity naming another commit or attempt;
@@ -351,9 +353,10 @@
   found" as a fine result; no speculative "might be fragile" notes (Stage 2a).
 - A SATISFIED verdict SHOULD carry one `RESIDUAL-RISK: <area> — <why>` line (the least-certain part of
   the diff). It is calibration metadata, never a finding: it never withholds the gate, never enters the
-  fix loop, and is never fed into the corroborating review. **NOTHING about how it is written — including
-  not writing it — can make the pass unusable**; `verify` records what the reviewer wrote and judges only
-  the verdict (Stage 2a). Do not manufacture a concern to fill it; a real
+  fix loop, and is never fed into the corroborating review. **NOTHING about how it is written ABOVE the
+  verdict — including not writing it — can make the pass unusable**; `verify` records what the reviewer
+  wrote and judges only the verdict. Below the verdict it is trailing text, and the terminal-verdict rule
+  refuses the report as nonterminal — write it above the verdict, as the prompt asks (Stage 2a). Do not manufacture a concern to fill it; a real
   **GATING** defect found while identifying it is a normal finding → NOT SATISFIED (Stage 2a).
 - One decision at N sites is the most common root cause. Trigger the §2a-deep root-cause pass on the
   **first** "missing/wrong at site X" finding (its shape, not a round count), map the whole space with

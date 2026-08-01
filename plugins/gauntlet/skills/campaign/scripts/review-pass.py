@@ -556,10 +556,14 @@ FINDINGS_NAME_RE = re.compile(rf"^review-(?P<pr>{COUNT})-{COUNT}(?:\.a{ATTEMPT})
 # exact lines; `parse_report` is their executable reader. A deferred result includes a reason because it is
 # a request the orchestrator must route.
 #
-# **THE RESIDUAL-RISK LINE IS NOT PART OF THAT CONTRACT: NOTHING ABOUT IT CAN MAKE A PASS UNUSABLE.** It is
-# calibration metadata carried into the campaign's final report — never a gate input — so its inner shape,
-# its count, and its placement decide no question this tool answers, and `parse_report` SALVAGES whatever
-# the reviewer wrote (`salvage_residual`) instead of judging it. The rule reached that form the expensive
+# **THE RESIDUAL-RISK LINE IS NOT PART OF THAT CONTRACT: NOTHING ABOUT ONE WRITTEN ABOVE THE VERDICT CAN
+# MAKE A PASS UNUSABLE.** It is calibration metadata carried into the campaign's final report — never a
+# gate input — so its inner shape, its count, and where above the verdict it sits decide no question this
+# tool answers, and `parse_report` SALVAGES whatever the reviewer wrote (`salvage_residual`) instead of
+# judging it. The one placement that costs the pass is BELOW the verdict, and the VERDICT contract is what
+# refuses it: such a line is trailing text, so the terminal rule below ("last nonblank line") reports the
+# result as nonterminal exactly as it would for a postscript of prose. No branch here treats this token
+# specially in either direction. The rule reached that form the expensive
 # way, twice: REQUIRING the line discarded four complete, substantive review passes across two engines, and
 # requiring its exact inner form then discarded a sixth-round SATISFIED whose only defect was a hyphen
 # where an em dash was asked for. A formatting rule that decides nothing but can void a substantive review
@@ -1475,9 +1479,12 @@ def parse_report(progress: Path) -> ReportResult:
 
     Report prose remains the reviewer's judgment. This parser owns only the framing that makes that
     judgment usable, and that framing is the VERDICT: one terminal result, on the last nonblank line, in
-    exactly one of three spellings, with a reason for DEFERRED. Nothing else in the file can refuse the
-    pass — the residual-risk line is read (`salvage_residual`) and never judged, because no answer this
-    function gives depends on it.
+    exactly one of three spellings, with a reason for DEFERRED. No CONTENT above that result can refuse
+    the pass — a residual-risk line there is read (`salvage_residual`) and never judged, because no answer
+    this function gives depends on it. Content BELOW the result is a different question and the terminal
+    rule already answers it: anything after the verdict, a residual-risk line included, makes the claimed
+    result nonterminal. That is the trailing-text rule, not a rule about this line, and it is why the
+    prompt asks for the line LAST BEFORE the verdict rather than after it.
     """
     path = report_path(progress)
     text = read_text(path, "active review report")

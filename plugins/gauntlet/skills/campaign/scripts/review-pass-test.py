@@ -781,14 +781,18 @@ class Tables:
                 "want": OK, "needle": "report verdict satisfied",
                 "why": "the active attempt's result wins while the dead attempt stays inert",
             },
-            # THE CALIBRATION LINE DECIDES NOTHING, SO NOTHING ABOUT IT CAN COST A PASS. The seven cases
-            # below are ONE claim in seven shapes: the line absent, misspelled, invisibly prefixed,
-            # misplaced, doubled, or written under a blocking verdict — and the pass counts every time,
-            # because the gate reads the VERDICT line and this one is metadata for the final report.
+            # THE CALIBRATION LINE DECIDES NOTHING, SO NOTHING ABOUT ONE WRITTEN ABOVE THE VERDICT CAN
+            # COST A PASS. The `OK` cases below are ONE claim in many shapes: the line absent, misspelled,
+            # invisibly prefixed, anywhere above the verdict, doubled, or written under a blocking verdict
+            # — and the pass counts every time, because the gate reads the VERDICT line and this one is
+            # metadata for the final report.
             # Requiring the line at all discarded four complete review passes across two engines;
             # requiring its exact inner form then discarded a SIXTH-round SATISFIED that had found no
-            # gating defect. What each of these reports CONTRIBUTES to the record is
-            # `check_residual_salvage`'s to pin; these pin only that none of them costs a verdict.
+            # gating defect. `residual-after-verdict` is the BOUNDARY of that claim and the reason it is
+            # stated as "above the verdict": below it, the line is trailing text and the untouched
+            # terminal-verdict rule refuses the report, exactly as `trailing-text` above shows it doing
+            # for ordinary prose. What each of these reports CONTRIBUTES to the record is
+            # `check_residual_salvage`'s to pin; these pin only what each one costs the verdict.
             "satisfied-without-residual-risk": {
                 "report": "Report body.\nVERDICT: SATISFIED\n", "want": OK,
                 "needle": "report verdict satisfied",
@@ -832,7 +836,18 @@ class Tables:
             "misplaced-residual-risk": {
                 "report": "RESIDUAL-RISK: parser — hard\nand then more prose\nVERDICT: SATISFIED\n",
                 "want": OK, "needle": "report verdict satisfied",
-                "why": "where the reviewer put the line is not a question the gate asks",
+                "why": "where above the verdict the reviewer put the line is not a question the gate asks",
+            },
+            # THE BOUNDARY of the claim its neighbours make, and the reason that claim says ABOVE the
+            # verdict. Nothing here is a rule about this line: the report is refused because SOMETHING
+            # follows the verdict, and `trailing-text` above pins the same refusal for ordinary prose. The
+            # two cases must keep agreeing — if this one ever returns OK while `trailing-text` does not,
+            # the token has been special-cased into an exemption from the terminal rule.
+            "residual-after-verdict": {
+                "report": "Report body.\nVERDICT: SATISFIED\nRESIDUAL-RISK: parser — hard\n",
+                "want": UNUSABLE, "needle": "not the last nonblank line",
+                "why": "a calibration line below the verdict is trailing text, so the terminal result is "
+                       "nonterminal",
             },
             # Real reviewers on two engines separated the two with a blank line.
             "blank-line-above-verdict-residual-risk": {
@@ -2230,7 +2245,8 @@ def _write_ledger(path: Path, defaults: "list[str] | str") -> Path:
 def check_residual_salvage(R: types.ModuleType, T: Tables, tmp: Path) -> int:
     """What each report CONTRIBUTES to the residual-risk record — the half `REPORT_CASES` cannot see.
 
-    Those cases pin that no shape of this line costs a verdict; a verdict is all `evaluate` returns, so
+    Those cases pin what each shape of this line costs the verdict — nothing, wherever it stands above
+    the verdict, and the pass itself when it stands below one; a verdict is all `evaluate` returns, so
     they cannot say what was KEPT. Salvage that keeps nothing would satisfy every one of them while
     quietly emptying the final report's calibration section, which is the only consumer the line has.
 
