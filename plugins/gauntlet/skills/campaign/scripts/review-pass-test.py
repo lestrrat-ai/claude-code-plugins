@@ -723,7 +723,7 @@ class Tables:
         self.REPORT_CASES: "dict[str, dict]" = {
             "valid-satisfied": {
                 "report": SAT_REPORT, "want": OK, "needle": "report verdict satisfied",
-                "why": "the parser derives SATISFIED and the residual risk last before the verdict",
+                "why": "the parser derives SATISFIED and carries the line the reviewer wrote with it",
             },
             "valid-not-satisfied": {
                 "report": NOT_SAT_REPORT, "findings": [finding()], "want": OK,
@@ -781,9 +781,18 @@ class Tables:
                 "want": OK, "needle": "report verdict satisfied",
                 "why": "the active attempt's result wins while the dead attempt stays inert",
             },
-            # The calibration line is OPTIONAL. It never was a gate input, so its absence never made a
-            # verdict less usable — but requiring it discarded four complete review passes across two
-            # engines. A SATISFIED report without one counts.
+            # THE CALIBRATION LINE DECIDES NOTHING, SO NOTHING ABOUT ONE WRITTEN ABOVE THE VERDICT CAN
+            # COST A PASS. The `OK` cases below are ONE claim in many shapes: the line absent, misspelled,
+            # invisibly prefixed, anywhere above the verdict, doubled, or written under a blocking verdict
+            # — and the pass counts every time, because the gate reads the VERDICT line and this one is
+            # metadata for the final report.
+            # Requiring the line at all discarded four complete review passes across two engines;
+            # requiring its exact inner form then discarded a SIXTH-round SATISFIED that had found no
+            # gating defect. `residual-after-verdict` is the BOUNDARY of that claim and the reason it is
+            # stated as "above the verdict": below it, the line is trailing text and the untouched
+            # terminal-verdict rule refuses the report, exactly as `trailing-text` above shows it doing
+            # for ordinary prose. What each of these reports CONTRIBUTES to the record is
+            # `check_residual_salvage`'s to pin; these pin only what each one costs the verdict.
             "satisfied-without-residual-risk": {
                 "report": "Report body.\nVERDICT: SATISFIED\n", "want": OK,
                 "needle": "report verdict satisfied",
@@ -791,22 +800,20 @@ class Tables:
             },
             "malformed-residual-risk": {
                 "report": "RESIDUAL-RISK: parser contract - wrong separator\nVERDICT: SATISFIED\n",
-                "want": UNUSABLE, "needle": "residual risk must be exactly",
-                "why": "the residual-risk fields and em dash have one exact shape",
+                "want": OK, "needle": "report verdict satisfied",
+                "why": "a separator the prompt did not ask for does not unmake a complete review",
             },
-            # The line being OPTIONAL is exactly what makes these three load-bearing: a detector that only
-            # sees column 0 reads an INVISIBLY PREFIXED line as ABSENT, so a malformed line is silently
-            # accepted instead of refused. Present-but-malformed and never-written must stay
-            # distinguishable. `visible_start` in review-pass.py owns which prefixes count as invisible;
-            # these three sample one prefix per branch of its rule: whitespace a reader sees as blank space
-            # (`isspace`), a format character that renders nothing (`not isprintable`), and a
-            # Default_Ignorable code point that is printable and non-space, which only the named Unicode
-            # property reaches. A VISIBLE prefix (`- `, `> `, a spacing combining mark) is NOT in this set:
-            # such a line does not present as the exact token, so it is read as absent by contract.
+            # `visible_start` in review-pass.py owns which prefixes count as invisible; these three sample
+            # one prefix per branch of its rule: whitespace a reader sees as blank space (`isspace`), a
+            # format character that renders nothing (`not isprintable`), and a Default_Ignorable code
+            # point that is printable and non-space, which only the named Unicode property reaches. What
+            # they pin is the DETECTOR, whose job is to CARRY such a line into the record rather than lose
+            # it. A VISIBLE prefix (`- `, `> `, a spacing combining mark) stays outside that set: a line a
+            # reader sees as quoted or bulleted is one the reviewer is talking ABOUT, not writing.
             "indented-residual-risk": {
                 "report": "Report body.\n  RESIDUAL-RISK: parser — hard\nVERDICT: SATISFIED\n",
-                "want": UNUSABLE, "needle": "residual risk must be exactly",
-                "why": "an indented line is present and malformed, not absent",
+                "want": OK, "needle": "report verdict satisfied",
+                "why": "an indented line is the reviewer's line, indented",
             },
             # U+FEFF is Cf, so `str.lstrip()` never removes it. Placed MID-FILE deliberately: reading the
             # report as `utf-8-sig` would not reach this line, so the case pins the DETECTOR, not a
@@ -814,8 +821,8 @@ class Tables:
             "bom-prefixed-residual-risk": {
                 "report": "Report body.\n\ufeffRESIDUAL-RISK: parser contract - wrong separator\n"
                           "VERDICT: SATISFIED\n",
-                "want": UNUSABLE, "needle": "residual risk must be exactly",
-                "why": "an invisible prefix hides a malformed line from the detector, not from the report",
+                "want": OK, "needle": "report verdict satisfied",
+                "why": "an invisible prefix is invisible to the reader and must not hide the line",
             },
             # U+034F COMBINING GRAPHEME JOINER is Mn, so it is BOTH printable and non-space: neither
             # `isspace()` nor `not isprintable()` reaches it, only Default_Ignorable_Code_Point does. Its
@@ -823,31 +830,42 @@ class Tables:
             "default-ignorable-prefixed-residual-risk": {
                 "report": "Report body.\n\u034fRESIDUAL-RISK: parser contract - wrong separator\n"
                           "VERDICT: SATISFIED\n",
-                "want": UNUSABLE, "needle": "residual risk must be exactly",
+                "want": OK, "needle": "report verdict satisfied",
                 "why": "a code point that renders as nothing is a prefix the reader cannot see",
             },
             "misplaced-residual-risk": {
                 "report": "RESIDUAL-RISK: parser — hard\nand then more prose\nVERDICT: SATISFIED\n",
-                "want": UNUSABLE, "needle": "last nonblank line",
-                "why": "prose between the line and the verdict detaches the signal from the verdict",
+                "want": OK, "needle": "report verdict satisfied",
+                "why": "where above the verdict the reviewer put the line is not a question the gate asks",
             },
-            # Real reviewers on two engines separated the two with a blank line. Nothing of substance
-            # intervenes, so the line still belongs to this verdict and the pass counts.
+            # THE BOUNDARY of the claim its neighbours make, and the reason that claim says ABOVE the
+            # verdict. Nothing here is a rule about this line: the report is refused because SOMETHING
+            # follows the verdict, and `trailing-text` above pins the same refusal for ordinary prose. The
+            # two cases must keep agreeing — if this one ever returns OK while `trailing-text` does not,
+            # the token has been special-cased into an exemption from the terminal rule.
+            "residual-after-verdict": {
+                "report": "Report body.\nVERDICT: SATISFIED\nRESIDUAL-RISK: parser — hard\n",
+                "want": UNUSABLE, "needle": "not the last nonblank line",
+                "why": "a calibration line below the verdict is trailing text, so the terminal result is "
+                       "nonterminal",
+            },
+            # Real reviewers on two engines separated the two with a blank line.
             "blank-line-above-verdict-residual-risk": {
                 "report": "Report body.\nRESIDUAL-RISK: parser — hard\n\nVERDICT: SATISFIED\n",
                 "want": OK, "needle": "report verdict satisfied",
-                "why": "blank lines between the residual risk and the verdict do not detach it",
+                "why": "blank lines between the residual risk and the verdict change nothing",
             },
             "duplicate-residual-risk": {
                 "report": "RESIDUAL-RISK: first — hard\nRESIDUAL-RISK: second — hard\n"
                           "VERDICT: SATISFIED\n",
-                "want": UNUSABLE, "needle": "at most one `RESIDUAL-RISK:`",
-                "why": "one accepting pass contributes at most one residual-risk record",
+                "want": OK, "needle": "report verdict satisfied",
+                "why": "two calibration lines are two remarks, not two verdicts to choose between",
             },
             "residual-on-not-satisfied": {
                 "report": "RESIDUAL-RISK: parser — hard\nVERDICT: NOT SATISFIED\n",
-                "want": UNUSABLE, "needle": "SATISFIED-only",
-                "why": "residual risk is forbidden on a blocking result",
+                "findings": [finding()], "want": OK, "needle": "report verdict not-satisfied",
+                "why": "a blocking verdict stands on its gating finding; the stray line is dropped, "
+                       "not fatal",
             },
             "deferred-without-reason": {
                 "report": "VERDICT: DEFERRED\n", "want": UNUSABLE,
@@ -2224,6 +2242,166 @@ def _write_ledger(path: Path, defaults: "list[str] | str") -> Path:
     return path
 
 
+def check_residual_salvage(R: types.ModuleType, T: Tables, tmp: Path) -> int:
+    """What each report CONTRIBUTES to the residual-risk record — the half `REPORT_CASES` cannot see.
+
+    Those cases pin what each shape of this line costs the verdict — nothing, wherever it stands above
+    the verdict, and the pass itself when it stands below one; a verdict is all `evaluate` returns, so
+    they cannot say what was KEPT. Salvage that keeps nothing would satisfy every one of them while
+    quietly emptying the final report's calibration section, which is the only consumer the line has.
+
+    The rule pinned here is one sentence: every such line is carried AS WRITTEN, as its OWN record, minus
+    the prefix and trailing whitespace a reader cannot see. Not repaired, not split into fields, not
+    chosen between, and not joined to the next one — every one of those would be this tool putting words
+    in a reviewer's mouth, and the join did exactly that with the ` | ` it spliced between two records.
+
+    Then `check_residual_rendering` leaves the fixtures and drives the real `verify` CLI, because the
+    record is only ever consumed through what that command PRINTS: the final report reproduces each record
+    as `verify` reports it, so a list kept faithfully in memory and flattened on the way to stdout would
+    be the same defect one layer down.
+    """
+    # U+FEFF, spelled rather than typed: a fixture whose point is an INVISIBLE prefix must not depend on
+    # an invisible byte surviving every editor that touches this file.
+    bom = chr(0xFEFF)
+    # report text -> the records it must produce (`[]` = this report contributes nothing).
+    cases: "dict[str, tuple[str, list[str]]]" = {
+        "canonical": ("Body.\nRESIDUAL-RISK: parser — hard\nVERDICT: SATISFIED\n",
+                      ["RESIDUAL-RISK: parser — hard"]),
+        "wrong-separator": ("Body.\nRESIDUAL-RISK: parser contract - hard\nVERDICT: SATISFIED\n",
+                            ["RESIDUAL-RISK: parser contract - hard"]),
+        "no-separator": ("Body.\nRESIDUAL-RISK: the whole diff read once\nVERDICT: SATISFIED\n",
+                         ["RESIDUAL-RISK: the whole diff read once"]),
+        "invisible-prefix-and-trailing-space": (
+            "Body.\n" + bom + "  RESIDUAL-RISK: parser — hard  \nVERDICT: SATISFIED\n",
+            ["RESIDUAL-RISK: parser — hard"]),
+        "midstream": ("RESIDUAL-RISK: parser — hard\nand then more prose\nVERDICT: SATISFIED\n",
+                      ["RESIDUAL-RISK: parser — hard"]),
+        # TWO LINES ARE TWO RECORDS. The joined form put a ` | ` the reviewer never typed inside the text
+        # the final report attributes to it; two elements carry both remarks with nothing added between.
+        "two-lines": ("RESIDUAL-RISK: first — hard\nRESIDUAL-RISK: second — harder\n"
+                      "VERDICT: SATISFIED\n",
+                      ["RESIDUAL-RISK: first — hard", "RESIDUAL-RISK: second — harder"]),
+        "none-written": ("Body.\nVERDICT: SATISFIED\n", []),
+        # SATISFIED-only: the final report records the least-certain area of each ACCEPTING pass, so on a
+        # blocking result there is no consumer and the line is dropped — dropped, never refused.
+        "not-satisfied": ("RESIDUAL-RISK: parser — hard\nVERDICT: NOT SATISFIED\n", []),
+        # A VISIBLE prefix is the reviewer QUOTING the instruction, not obeying it (`visible_start`).
+        "quoted-bullet": ("- RESIDUAL-RISK: <area> — <why> is asked of a SATISFIED report\n"
+                          "VERDICT: SATISFIED\n", []),
+    }
+    failures = 0
+    for name, (text, want) in cases.items():
+        path = build(tmp, f"residual-{name}", None, [], report=text)
+        got = R.parse_report(path)["residual_risk"]
+        if got != want:
+            print(f"FAIL     [residual] {name}: recorded {got!r}, expected {want!r}")
+            failures += 1
+        else:
+            print(f"ok       [residual] {name:36} -> {got!r}")
+    failures += check_residual_rendering(R, T, tmp)
+    return failures
+
+
+def recover_residual(R: types.ModuleType, line: str) -> "list[str]":
+    """The recovery `bailout-and-final-report.md` hands a driver, EXECUTED rather than described.
+
+    Find the field the tool names (`RESIDUAL_RISK_FIELD`, never a spelling retyped here), JSON-decode the
+    array that begins there, and stop where the array
+    ends — `raw_decode` returns at the closing `]`, so the human-readable reason printed after it is never
+    read as record text. The doc's procedure and this function must stay the same procedure: a doc that
+    says one thing while the suite proves another is how a driver ends up quoting a reviewer wrongly with
+    a green suite behind it.
+    """
+    marker = f"{R.RESIDUAL_RISK_FIELD}="
+    at = line.index(marker) + len(marker)
+    records, _ = json.JSONDecoder().raw_decode(line, at)
+    return records
+
+
+def check_residual_rendering(R: types.ModuleType, T: Tables, tmp: Path) -> int:
+    """What `verify` PRINTS — the only form the final report ever copies, and therefore the only form in
+    which the record boundary can survive at all.
+
+    A complete pass (`T.PLAN` + `T.WORKED`) is required: `verify` prints the detail line only for a report
+    it could parse, so a bare fixture would exercise nothing here.
+
+    **THE PROPERTY IS LOSSLESSNESS, NOT PRESENCE.** "Both records appear in the line" is satisfied by a
+    rendering that has already destroyed the boundary between them, which is exactly how the joined form
+    passed: `first-vs-one-record` below is TWO reports whose record lists differ (one element against
+    two), and under any separator-joined rendering their detail lines are BYTE-IDENTICAL. So every case
+    decodes the printed field back (`recover_residual`) and requires it to equal what `parse_report`
+    returned for that same report, and the pair is additionally required to print DIFFERENTLY.
+
+    `punctuated` carries `]`, `"`, `\\` and the old `; ` inside ONE record: a rendering that survives a
+    tidy record and loses one holding its own delimiter is a rendering that fails on precisely the
+    reviewer whose words most need carrying.
+
+    Each case also pins that stdout stays ONE line, since the detail is a field of a single printed line.
+    """
+    reports = {
+        # THE DEFECT'S OWN REPRODUCTION, both halves. One reviewer wrote a single remark that happens to
+        # contain the separator; the other wrote two remarks. `parse_report` tells them apart; before this
+        # rendering, `verify` printed the same bytes for both.
+        "one-record": "Body.\nRESIDUAL-RISK: first — hard; RESIDUAL-RISK: second — harder\n"
+                      "VERDICT: SATISFIED\n",
+        "two-records": "Body.\nRESIDUAL-RISK: first — hard\nRESIDUAL-RISK: second — harder\n"
+                       "VERDICT: SATISFIED\n",
+        "punctuated": 'Body.\nRESIDUAL-RISK: parser["x"] — holds ], a quote, a \\ and a ; too\n'
+                      "VERDICT: SATISFIED\n",
+        # The field is printed even when the reviewer wrote nothing, so a reader never has to tell "no
+        # records" apart from "the field is somewhere else".
+        "none-written": "Body.\nVERDICT: SATISFIED\n",
+    }
+    problems: "list[str]" = []
+    printed: "dict[str, str]" = {}
+    for name, text in reports.items():
+        path = build(tmp, f"residual-render-{name}", T.PLAN, T.WORKED, report=text)
+        ledger = _write_ledger(path.parent / "state.jsonl", [])
+        code, out = run_cli(R, ["verify", "--file", str(path), "--head-sha", SHA,
+                                "--ledger", str(ledger)])
+        if code != 0:
+            problems.append(f"{name}: verify exited {code}, so it never reached the detail line: "
+                            f"{out.strip()!r}")
+            continue
+        lines = out.splitlines()
+        if len(lines) != 1:
+            problems.append(f"{name}: verify printed {len(lines)} lines, not one: {out!r}")
+            continue
+        printed[name] = lines[0]
+        want = R.parse_report(path)["residual_risk"]
+        try:
+            got = recover_residual(R, lines[0])
+        except (ValueError, json.JSONDecodeError) as exc:
+            problems.append(f"{name}: the printed field does not decode ({exc}): {lines[0]!r}")
+            continue
+        if got != want:
+            problems.append(f"{name}: the line decodes to {got!r}, but the pass recorded {want!r}: "
+                            f"{lines[0]!r}")
+        elif " | " in out:
+            problems.append(f"{name}: the output splices a delimiter no reviewer wrote: {lines[0]!r}")
+        else:
+            print(f"ok       [residual] {'rendered ' + name:36} -> {lines[0].strip()!r}")
+    if printed.get("one-record") is not None and printed["one-record"] == printed.get("two-records"):
+        problems.append("one record and two records print the SAME line, so the boundary between the "
+                        f"reviewer's remarks cannot be recovered: {printed['one-record']!r}")
+    elif "one-record" in printed and "two-records" in printed:
+        print(f"ok       [residual] {'one record != two records':36} -> the detail lines differ")
+    # THE FIELD NAME IS ONE FACT IN TWO PLACES — the tool that prints it and the reference that tells a
+    # driver to look for it — so the link is made MECHANICAL rather than left to a sweep. Rename
+    # `RESIDUAL_RISK_FIELD` without touching that reference and a driver hunts a field that is no longer
+    # printed; nothing above this line would notice, because every case here asks the tool what it calls
+    # the field.
+    doc = OWNER.parent.parent / "references" / "bailout-and-final-report.md"
+    if f"{R.RESIDUAL_RISK_FIELD}=" in doc.read_text(encoding="utf-8"):
+        print(f"ok       [residual] {'final report names the field':36} -> {doc.name}")
+    else:
+        problems.append(f"{doc.name} no longer names the `{R.RESIDUAL_RISK_FIELD}=` field `verify` "
+                        f"prints, so its recovery procedure points at nothing")
+    for problem in problems:
+        print(f"FAIL     [residual] {problem}")
+    return len(problems)
+
+
 def check_intent_door(R: types.ModuleType, tmp: Path) -> int:
     """Drive intent-check through its real CLI: structural refusals, AND the run-default sync enforcement.
 
@@ -2621,6 +2799,8 @@ def run(R: types.ModuleType, tmp: Path) -> int:
     failures += check_boundaries(R, T)
     print()
     failures += check_docs(R)
+    print()
+    failures += check_residual_salvage(R, T, tmp)
     print()
     failures += check_intent_door(R, tmp)
     print()
