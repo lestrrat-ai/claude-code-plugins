@@ -807,9 +807,12 @@ absence, not its shape, not its count, not where above the verdict it sits.** Th
 metadata for the final report and never a gate
 input, so `verify` READS it and does not judge it: it is carried as the reviewer wrote it, minus only an
 invisible prefix and trailing whitespace, and two of them are carried as TWO SEPARATE RECORDS — never
-merged into one, and never with a separator the tool supplied. `verify` prints each record after its own
-`; ` on the one detail line it already writes, so the records stay distinguishable without any text being
-added inside one. Splicing two remarks into a single record is the same defect as rewriting one of them:
+merged into one, and never with a separator the tool supplied. `verify` prints that list as a JSON array
+in a named field of the one detail line it already writes, so the boundary between two records survives
+printing and a reader recovers exactly the records the parser kept — `bailout-and-final-report.md` owns
+that field's name and the recovery. Any join would lose the boundary, whatever the separator: a reviewer
+may write one remark containing the same characters, and then one record and two print
+identically. Splicing two remarks into a single record is the same defect as rewriting one of them:
 the final report attributes that record's words to the reviewer. `review-prompt.txt`
 still ASKS for `RESIDUAL-RISK: <area> — <why>` standing last before the verdict, and that request is what
 keeps the line readable — it is a request, not a gate, and a reviewer who misses it has not spoiled its

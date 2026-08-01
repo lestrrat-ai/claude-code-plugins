@@ -1455,10 +1455,52 @@ def salvage_residual(lines: "list[str]") -> "list[str]":
     joined form was the same invention by another route: it returned `first | second` for two lines, and
     the ` | ` in the middle was text no reviewer typed, carried into the final report attributed to that
     reviewer. A list has no delimiter to invent, so nothing the reviewer wrote is dropped and nothing it
-    did not write is added. Each record is a single line, because that is what the caller prints them on.
+    did not write is added. Keeping that property through PRINTING is a separate job, and
+    `render_residual` owns it: a boundary this function preserves and the printer then loses is a boundary
+    the final report never had.
     """
     return [line[visible_start(line):].rstrip() for line in lines
             if line.startswith(RESIDUAL_RISK_TOKEN, visible_start(line))]
+
+
+# The field name the `verify` detail line prints the records under. Named once, beside the encoder that
+# owns the format, because a reader is told to FIND this field before it decodes anything.
+RESIDUAL_RISK_FIELD = "residual-risk"
+
+
+def render_residual(records: "list[str]") -> str:
+    """`salvage_residual`'s list as ONE printable field — JSON, so the LIST survives being printed.
+
+    **The record boundary has to be recoverable from the printed line ALONE**, because the printed line is
+    the only form anything downstream ever sees: the final report reproduces each record as `verify`
+    reports it (`bailout-and-final-report.md`), and no consumer re-reads the report file. So a rendering
+    that cannot be decoded back to the list this function was handed is a rendering that invents or
+    destroys a reviewer's records one layer below `salvage_residual`, which exists to do neither.
+
+    **JOINING THE RECORDS WITH A SEPARATOR CANNOT DO THAT, AND NO CHOICE OF SEPARATOR CAN.** Whatever
+    string stands between two records is a string a reviewer may also have typed INSIDE one, and then the
+    two cases print the same bytes: one reviewer writing a single record that contains the separator and
+    another writing two records rendered identically under `; `, so a reader splitting on that separator
+    turns one remark into two — with the reviewer's name on the result. Escaping the separator inside the
+    records is the same problem again, one level down, and is just JSON with fewer readers.
+
+    **JSON answers all three requirements at once.** It is LOSSLESS — `json.loads` of this field is `==`
+    the list handed in. It is SELF-DELIMITING — the array ends at its own `]`, so the human-readable
+    reason printed after it can never be read as part of a record, and a record containing `; `, `]`, or a
+    quote needs no cooperation from the reader. And it stays ONE LINE: `parse_report` splits the report
+    with `str.splitlines()`, which ends a line at EVERY character that could begin a new one (LF, CR,
+    U+001C–U+001E, U+0085, U+2028, U+2029 among them), so no record can contain one; `json.dumps` escapes
+    the C0 controls, `"` and `\\` that remain.
+
+    `ensure_ascii=False` is deliberate: this field is printed for a human as well as decoded by a driver,
+    and the records are the reviewer's own words. Escaping every em dash and every non-Latin character
+    would be equally lossless and unreadable. Nothing it leaves unescaped can end the line or the array,
+    per the paragraph above.
+
+    An empty list renders `[]` rather than vanishing, so the field is present on EVERY parsed report and a
+    reader never has to tell "this pass wrote no records" apart from "the field is somewhere else".
+    """
+    return json.dumps(records, ensure_ascii=False)
 
 
 class ReportResult(TypedDict):
@@ -2600,15 +2642,13 @@ def cmd_verify(args) -> int:
     verdict, reason, report = evaluate_detail(path, args.head_sha, args.amendments_ruled, ledger)
     detail = ""
     if report is not None:
-        detail = f" report-verdict={report['verdict']}"
-        # EVERY record the reviewer wrote, each after this line's own `; ` — the same separator that
-        # already stands between the verdict field and the first record, and the tool's framing rather
-        # than anything spliced INTO a record. Each record still begins with the `RESIDUAL-RISK:` token
-        # the reviewer typed, so a reader (and the final report, which reproduces each record as this
-        # line reports it) can tell where one ends and the next begins without this tool inventing a
-        # delimiter of its own. The detail stays ONE line: every record is a single rstripped line.
-        for record in report["residual_risk"]:
-            detail += f"; {record}"
+        # EVERY record the reviewer wrote, in ONE self-delimiting JSON field (`render_residual`, which
+        # owns the format and the reasons for it). The final report reproduces each record as this line
+        # reports it, so what it prints has to be decodable back to the list `parse_report` returned —
+        # `json.loads` of the field is exactly that list, however a reviewer punctuated its own text. The
+        # field is always present, `[]` included, and the detail stays ONE line.
+        detail = (f" report-verdict={report['verdict']} "
+                  f"{RESIDUAL_RISK_FIELD}={render_residual(report['residual_risk'])}")
     print(f"{verdict}:{detail} {reason}")
     # `ok` is the ONLY exit-0 verdict — and it still is NOT `SATISFIED`.
     return 0 if verdict == OK else 1

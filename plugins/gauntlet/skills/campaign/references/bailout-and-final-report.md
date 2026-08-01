@@ -164,9 +164,13 @@ When the loop exits, summarize:
   `verify` reports it, including one that does not match the form the prompt asked for** — the parser
   carries the reviewer's words through unedited and never joins two records into one (Stage 2a), so
   tidying one here, or running two of them together into a single record, would be this report rewording
-  a reviewer. `verify` prints the records of one pass separated by `; ` on its detail line, each still
-  carrying the `RESIDUAL-RISK:` token the reviewer typed, which is where one record ends and the next
-  begins. This is non-actionable,
+  a reviewer. **How to READ the records off `verify`:** its detail line carries a `residual-risk=` field
+  holding a JSON array of that pass's records, always present and `[]` when the pass wrote none. Decode
+  that array and take one record per element — never split a record on its inner punctuation, and never
+  run two elements together. The array is where the record boundary lives, and it is the ONLY place it
+  survives: a reviewer may write a single remark containing anything the eye reads as a separator, so any
+  boundary you infer from the record text is a boundary you invented. The array ends at its own `]`, and
+  the human-readable reason follows it on the same line. This is non-actionable,
   non-gating calibration metadata — a place a human might look, never a reopened finding (Stage 2a).
 - **What each base REQUIRED** — the required-check set, now **per base** (`effective_required_set`;
   `stage-2-ci.md` owns its states), over the bases **this run GATED on and READ** — not every base the

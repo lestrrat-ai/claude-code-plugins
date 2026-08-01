@@ -2255,10 +2255,10 @@ def check_residual_salvage(R: types.ModuleType, T: Tables, tmp: Path) -> int:
     chosen between, and not joined to the next one — every one of those would be this tool putting words
     in a reviewer's mouth, and the join did exactly that with the ` | ` it spliced between two records.
 
-    The last case leaves the fixtures and drives the real `verify` CLI, because the record is only ever
-    consumed through what that command PRINTS: the final report reproduces each record as `verify` reports
-    it, so a list kept faithfully in memory and re-joined on the way to stdout would be the same defect
-    one layer down.
+    Then `check_residual_rendering` leaves the fixtures and drives the real `verify` CLI, because the
+    record is only ever consumed through what that command PRINTS: the final report reproduces each record
+    as `verify` reports it, so a list kept faithfully in memory and flattened on the way to stdout would
+    be the same defect one layer down.
     """
     # U+FEFF, spelled rather than typed: a fixture whose point is an INVISIBLE prefix must not depend on
     # an invisible byte surviving every editor that touches this file.
@@ -2302,38 +2302,103 @@ def check_residual_salvage(R: types.ModuleType, T: Tables, tmp: Path) -> int:
     return failures
 
 
+def recover_residual(R: types.ModuleType, line: str) -> "list[str]":
+    """The recovery `bailout-and-final-report.md` hands a driver, EXECUTED rather than described.
+
+    Find the field the tool names (`RESIDUAL_RISK_FIELD`, never a spelling retyped here), JSON-decode the
+    array that begins there, and stop where the array
+    ends — `raw_decode` returns at the closing `]`, so the human-readable reason printed after it is never
+    read as record text. The doc's procedure and this function must stay the same procedure: a doc that
+    says one thing while the suite proves another is how a driver ends up quoting a reviewer wrongly with
+    a green suite behind it.
+    """
+    marker = f"{R.RESIDUAL_RISK_FIELD}="
+    at = line.index(marker) + len(marker)
+    records, _ = json.JSONDecoder().raw_decode(line, at)
+    return records
+
+
 def check_residual_rendering(R: types.ModuleType, T: Tables, tmp: Path) -> int:
-    """What `verify` PRINTS for a pass that wrote two residual-risk lines — the human-facing end of the
-    record, and the only form the final report ever copies.
+    """What `verify` PRINTS — the only form the final report ever copies, and therefore the only form in
+    which the record boundary can survive at all.
 
     A complete pass (`T.PLAN` + `T.WORKED`) is required: `verify` prints the detail line only for a report
-    it could parse, so a bare fixture would exercise nothing here. What this pins is that both records
-    reach stdout whole, that the line stays ONE line (the detail is a field of a single printed line), and
-    that no ` | ` — the delimiter the old join spliced in — appears anywhere in the output.
+    it could parse, so a bare fixture would exercise nothing here.
+
+    **THE PROPERTY IS LOSSLESSNESS, NOT PRESENCE.** "Both records appear in the line" is satisfied by a
+    rendering that has already destroyed the boundary between them, which is exactly how the joined form
+    passed: `first-vs-one-record` below is TWO reports whose record lists differ (one element against
+    two), and under any separator-joined rendering their detail lines are BYTE-IDENTICAL. So every case
+    decodes the printed field back (`recover_residual`) and requires it to equal what `parse_report`
+    returned for that same report, and the pair is additionally required to print DIFFERENTLY.
+
+    `punctuated` carries `]`, `"`, `\\` and the old `; ` inside ONE record: a rendering that survives a
+    tidy record and loses one holding its own delimiter is a rendering that fails on precisely the
+    reviewer whose words most need carrying.
+
+    Each case also pins that stdout stays ONE line, since the detail is a field of a single printed line.
     """
-    first, second = "RESIDUAL-RISK: first — hard", "RESIDUAL-RISK: second — harder"
-    path = build(tmp, "residual-render", T.PLAN, T.WORKED,
-                 report=f"Body.\n{first}\n{second}\nVERDICT: SATISFIED\n")
-    ledger = _write_ledger(path.parent / "state.jsonl", [])
-    code, text = run_cli(R, ["verify", "--file", str(path), "--head-sha", SHA,
-                             "--ledger", str(ledger)])
-    problems = []
-    if code != 0:
-        problems.append(f"verify exited {code}, so it never reached the detail line: {text.strip()!r}")
-    detail = [line for line in text.splitlines() if "report-verdict=" in line]
-    if len(detail) != 1:
-        problems.append(f"expected exactly one detail line, got {len(detail)}: {text.strip()!r}")
+    reports = {
+        # THE DEFECT'S OWN REPRODUCTION, both halves. One reviewer wrote a single remark that happens to
+        # contain the separator; the other wrote two remarks. `parse_report` tells them apart; before this
+        # rendering, `verify` printed the same bytes for both.
+        "one-record": "Body.\nRESIDUAL-RISK: first — hard; RESIDUAL-RISK: second — harder\n"
+                      "VERDICT: SATISFIED\n",
+        "two-records": "Body.\nRESIDUAL-RISK: first — hard\nRESIDUAL-RISK: second — harder\n"
+                       "VERDICT: SATISFIED\n",
+        "punctuated": 'Body.\nRESIDUAL-RISK: parser["x"] — holds ], a quote, a \\ and a ; too\n'
+                      "VERDICT: SATISFIED\n",
+        # The field is printed even when the reviewer wrote nothing, so a reader never has to tell "no
+        # records" apart from "the field is somewhere else".
+        "none-written": "Body.\nVERDICT: SATISFIED\n",
+    }
+    problems: "list[str]" = []
+    printed: "dict[str, str]" = {}
+    for name, text in reports.items():
+        path = build(tmp, f"residual-render-{name}", T.PLAN, T.WORKED, report=text)
+        ledger = _write_ledger(path.parent / "state.jsonl", [])
+        code, out = run_cli(R, ["verify", "--file", str(path), "--head-sha", SHA,
+                                "--ledger", str(ledger)])
+        if code != 0:
+            problems.append(f"{name}: verify exited {code}, so it never reached the detail line: "
+                            f"{out.strip()!r}")
+            continue
+        lines = out.splitlines()
+        if len(lines) != 1:
+            problems.append(f"{name}: verify printed {len(lines)} lines, not one: {out!r}")
+            continue
+        printed[name] = lines[0]
+        want = R.parse_report(path)["residual_risk"]
+        try:
+            got = recover_residual(R, lines[0])
+        except (ValueError, json.JSONDecodeError) as exc:
+            problems.append(f"{name}: the printed field does not decode ({exc}): {lines[0]!r}")
+            continue
+        if got != want:
+            problems.append(f"{name}: the line decodes to {got!r}, but the pass recorded {want!r}: "
+                            f"{lines[0]!r}")
+        elif " | " in out:
+            problems.append(f"{name}: the output splices a delimiter no reviewer wrote: {lines[0]!r}")
+        else:
+            print(f"ok       [residual] {'rendered ' + name:36} -> {lines[0].strip()!r}")
+    if printed.get("one-record") is not None and printed["one-record"] == printed.get("two-records"):
+        problems.append("one record and two records print the SAME line, so the boundary between the "
+                        f"reviewer's remarks cannot be recovered: {printed['one-record']!r}")
+    elif "one-record" in printed and "two-records" in printed:
+        print(f"ok       [residual] {'one record != two records':36} -> the detail lines differ")
+    # THE FIELD NAME IS ONE FACT IN TWO PLACES — the tool that prints it and the reference that tells a
+    # driver to look for it — so the link is made MECHANICAL rather than left to a sweep. Rename
+    # `RESIDUAL_RISK_FIELD` without touching that reference and a driver hunts a field that is no longer
+    # printed; nothing above this line would notice, because every case here asks the tool what it calls
+    # the field.
+    doc = OWNER.parent.parent / "references" / "bailout-and-final-report.md"
+    if f"{R.RESIDUAL_RISK_FIELD}=" in doc.read_text(encoding="utf-8"):
+        print(f"ok       [residual] {'final report names the field':36} -> {doc.name}")
     else:
-        line = detail[0]
-        for record in (first, second):
-            if record not in line:
-                problems.append(f"the detail line dropped {record!r}: {line!r}")
-        if " | " in text:
-            problems.append(f"the output splices a delimiter no reviewer wrote: {line!r}")
+        problems.append(f"{doc.name} no longer names the `{R.RESIDUAL_RISK_FIELD}=` field `verify` "
+                        f"prints, so its recovery procedure points at nothing")
     for problem in problems:
-        print(f"FAIL     [residual] two-records-rendered: {problem}")
-    if not problems:
-        print(f"ok       [residual] {'two-records-rendered':36} -> {detail[0].strip()!r}")
+        print(f"FAIL     [residual] {problem}")
     return len(problems)
 
 
