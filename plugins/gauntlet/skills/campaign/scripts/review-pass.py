@@ -1536,6 +1536,15 @@ def parse_report(progress: Path) -> ReportResult:
     # records the least-certain area of each ACCEPTING pass, `bailout-and-final-report.md`). On any other
     # result the line is dropped rather than refused: dropping metadata nobody consumes costs nothing,
     # while refusing costs the whole review.
+    #
+    # **The `[]` on a blocking verdict is a SCOPE, not a loss, and both halves of that are checkable here.**
+    # Nothing consumes such a record: `residual_risk` is read at exactly one site in this tree — the
+    # `verify` detail line below — and the one document that carries records onward takes them from a
+    # merged PR's ACCEPTING passes (`bailout-and-final-report.md`), so a record from a NOT SATISFIED or
+    # DEFERRED pass has no reader to lose it. And nothing regressed: on the base this same input raised a
+    # SATISFIED-only `Defect` and destroyed the whole pass, so dropping the line keeps strictly more of the
+    # reviewer's work, not less. To falsify either half, name a second reader of `residual_risk`, or show
+    # the base preserving that record.
     residual = salvage_residual(lines) if verdict == SATISFIED else []
 
     return {
