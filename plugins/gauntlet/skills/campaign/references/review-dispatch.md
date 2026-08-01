@@ -51,10 +51,13 @@ Inputs have these owners:
 - `intent_file` is the absolute derived `<rundir>/intent-<pr>.md` path. The command refuses another path.
 
 The command validates the existing per-pass plan and per-PR intent through `review-pass.py`, derives the
-prompt/progress/findings/report paths from one attempt identity, resolves all three emitters from its
-installed script directory, writes the exact bound prompt, and writes the validated `pass_identity` as
-the progress file's first line. Every transport text value must encode as UTF-8; a path containing other
-filesystem bytes is a controlled refusal before either launch artifact exists.
+prompt/progress/findings/report paths from one attempt identity, resolves every bundled emitter the
+transport names from its installed script directory, writes the exact bound prompt, and writes the
+validated `pass_identity` as the progress file's first line. The emitter set is the code's, not this
+document's: `review-dispatch.py` owns which `emit_*_path` fields the transport carries, and it refuses to
+prepare an attempt when any one of them is missing on disk.
+Every transport text value must encode as UTF-8; a path containing other filesystem bytes is a
+controlled refusal before either launch artifact exists.
 
 **Recover any inert residue of a preparation that never launched a reviewer.** A reviewer starts only
 after `prepare` returns, so until then no findings or report exist and the progress file holds at most this

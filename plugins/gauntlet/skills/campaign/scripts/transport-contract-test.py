@@ -1219,8 +1219,92 @@ def run_isolation_transition_fixtures() -> None:
             "native route without a fresh conversation was launched instead of parked")
 
 
+# The emitter set belongs to `review-dispatch.py`, which is why no document may keep its own COUNT of it.
+# HISTORICAL, and live nowhere in this tree: `review-dispatch.md` used to say `prepare` resolved "all
+# three emitters" while the transport already carried four, so an agent reading the doc concluded one of
+# its own doors was not resolved for it. A count in prose goes stale the next time a door is added and
+# nothing downstream notices; naming the owned set cannot. The two stale spellings appear below ONLY as
+# fixture inputs, which is where a defect illustration has to be able to fail. This pins the class, not
+# that one sentence: any live campaign doc that counts emitters fails here.
+EMITTER_COUNT_IN_PROSE = re.compile(
+    r"\b(?:all\s+)?(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+"
+    r"(?:\w+\s+){0,2}emitters\b",
+    re.IGNORECASE,
+)
+
+
+def emitter_fields_the_code_owns() -> tuple[str, ...]:
+    """The transport's emitter fields, read off the materializer that builds them."""
+    record = DISPATCH.build_transport(
+        rundir=Path("/nonexistent-review-root"),
+        worktree=Path("/nonexistent-worktree"),
+        base="main",
+        pr="1",
+        review_pass="1",
+        launch_attempt="1",
+        prompt_profile="standard",
+        producer="reviewer-tool-write",
+        paths=DISPATCH.attempt_paths(Path("/nonexistent-review-root"), "1", "1", "1"),
+    )
+    return tuple(sorted(key for key in record if key.startswith("emit_") and key.endswith("_path")))
+
+
+def check_emitter_set_is_never_recounted(documents: Mapping[str, str]) -> None:
+    """No live document restates the size of the code-owned emitter set."""
+    owned = emitter_fields_the_code_owns()
+    require(len(owned) > 1, f"the transport lost its emitter fields: {owned}")
+
+    # Line wrapping is not part of the claim, so every match runs over whitespace-normalized text: a
+    # count split across a line break ("all three\nemitters") is the same stale sentence.
+    for name, body in sorted(documents.items()):
+        hit = EMITTER_COUNT_IN_PROSE.search(normalized(body))
+        counted = hit.group(0) if hit is not None else ""
+        require(hit is None,
+                f"{name} states an emitter COUNT ({counted!r}) instead of naming the set "
+                f"`review-dispatch.py` owns ({', '.join(owned)})")
+
+    dispatch = normalized(documents.get("review-dispatch.md", ""))
+    require("resolves every bundled emitter the transport names from its installed script directory"
+            in dispatch,
+            "review-dispatch.md no longer names the code-owned emitter set in the `prepare` summary")
+    require("`review-dispatch.py` owns which `emit_*_path` fields the transport carries" in dispatch,
+            "review-dispatch.md no longer points at the owner of the emitter set")
+
+
+def run_emitter_set_fixtures() -> None:
+    live = {path.name: path.read_text(encoding="utf-8") for path in sorted(REFS.glob("*.md"))}
+    live["SKILL.md"] = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+    live["review-prompt.txt"] = (ROOT / "scripts" / "review-prompt.txt").read_text(encoding="utf-8")
+    check_emitter_set_is_never_recounted(live)
+
+    # The check has to be able to FAIL, and for the exact sentence that was wrong. These two strings are
+    # the historical defect and its "fixed the instance, kept the trap" twin; neither is live in the tree.
+    for stale in ("resolves all three emitters from its", "resolves all four emitters from its"):
+        drifted = dict(live)
+        drifted["review-dispatch.md"] = insert_after_once(
+            live["review-dispatch.md"],
+            "The command validates the existing per-pass plan",
+            f" ({stale})",
+        )
+        require_rejected(
+            lambda body=drifted: check_emitter_set_is_never_recounted(body),
+            "states an emitter COUNT",
+            f"a document counting emitters was accepted: {stale!r}",
+        )
+
+    stripped = dict(live)
+    stripped["review-dispatch.md"] = live["review-dispatch.md"].replace(
+        "resolves every bundled emitter the", "resolves the emitters, the", 1)
+    require_rejected(
+        lambda: check_emitter_set_is_never_recounted(stripped),
+        "no longer names the code-owned emitter set",
+        "review-dispatch.md was accepted without naming the code-owned emitter set",
+    )
+
+
 def main() -> int:
     check_document_contract()
+    run_emitter_set_fixtures()
     run_triage_contract_fixtures()
     run_hostile_fixtures()
     run_repository_context_fixtures()
