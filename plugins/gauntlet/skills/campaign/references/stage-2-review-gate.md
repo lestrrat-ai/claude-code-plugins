@@ -797,16 +797,27 @@ still runs PRE-DISPATCH, refusing a launch against an already-stale intent; it d
 
 **`verify` derives the active attempt's report path from the progress artifact and parses the result.**
 It requires exactly one terminal result on the last nonblank line: `VERDICT: SATISFIED`, `VERDICT: NOT
-SATISFIED`, or `VERDICT: DEFERRED — <one-line reason>`. Missing, empty, truncated, duplicate,
-nonterminal, malformed, and wrong-attempt reports are `unusable`. The parsed binary result is checked by
+SATISFIED`, or `VERDICT: DEFERRED — <one-line reason>`. A report whose VERDICT is missing, empty,
+truncated, duplicate, nonterminal or malformed — and one from the wrong attempt — is `unusable`. The parsed binary result is checked by
 the existing if-and-only-if rule: **`not-satisfied` exactly when at least one GATING finding stands.** A
 verdict that blocks a PR must name what blocks it, and a finding that blocks a PR cannot be waved through.
 
-**A SATISFIED report MAY carry a `RESIDUAL-RISK:` line, and its absence NEVER blocks the verdict.** The
-line is calibration metadata, never a gate input, so a SATISFIED report without one counts exactly as a
-SATISFIED report with one. When it IS present the prompt still owns its exact form, there is at most one
-of it, and it is the last nonblank line before the verdict — blank lines between the two are tolerated,
-any other line is not. The line is forbidden on NOT SATISFIED and DEFERRED results.
+**NOTHING ABOUT A `RESIDUAL-RISK:` LINE CAN MAKE A PASS `unusable` — not its absence, not its shape, not
+its count, not where it sits.** The line is calibration metadata for the final report and never a gate
+input, so `verify` READS it and does not judge it: it is carried as the reviewer wrote it, minus only an
+invisible prefix and trailing whitespace, and two of them are carried as two remarks. `review-prompt.txt`
+still ASKS for `RESIDUAL-RISK: <area> — <why>` standing last before the verdict, and that request is what
+keeps the line readable — it is a request, not a gate, and a reviewer who misses it has not spoiled its
+pass. On a NOT SATISFIED or DEFERRED result the line is DROPPED, not refused: the final report records
+the least-certain area of each ACCEPTING pass, so on any other result there is nothing to carry.
+
+**The reason that is a rule and not laxity:** a formatting check on this line can only ever lose
+evidence. It answers no question the gate asks, so refusing over it spends a whole review — a complete
+`SATISFIED` with no gating defect — to enforce punctuation. Requiring the line at all discarded four
+substantive passes across two engines; requiring its exact inner form then discarded a sixth-round
+`SATISFIED` over a hyphen where an em dash was asked for. Every rule that DOES gate — one terminal
+result, on the last nonblank line, in exactly one of the three spellings above — stays exact, because
+the verdict is the input the gate reads.
 
 **A parsed DEFERRED result routes through progress state without becoming a judgment.** An unruled
 `plan_amendment_request` returns `amended`; an unfinished pass returns `incomplete`; a complete pass with
@@ -830,7 +841,7 @@ pass is a trapdoor, not a disclosure:
 | `ok` | 0 | the artifacts are sound: one strict result from the active attempt's report; a `pass_identity` naming **this** PR, **this** pass, **this** launch attempt, **the live head SHA**, and a bound **`default_non_goals` still equal to the run's live defaults**; a **usable intent block** for this PR; every planned unit `done` **once**, with concrete evidence, after a `started` for it; every `done` for a unit that is **actually in the plan**; no unruled amendment; and the parsed result **coheres** with the findings | tally the parsed binary result through `ledger.py verdict` |
 | `incomplete` | 1 | sound, but a planned unit has no `done` — the pass has not covered its plan | it is still working (or it stopped early — the meaningful-progress rule decides which). **Never tally a verdict from it** |
 | `amended` | 1 | sound, but the reviewer raised a `plan_amendment_request` nobody has ruled on | fold it into the plan and restart the pass, or ignore it with a note — then re-run with `--amendments-ruled N` |
-| `unusable` | 1 | the artifacts are **defective** — the active report is missing, empty, truncated, duplicate, nonterminal, malformed, or carries a misplaced or malformed residual-risk line (its ABSENCE is fine); a short SHA or other malformed identifier; invalid progress/identity/findings; **no usable intent block**; a bound `default_non_goals` that no longer matches the run's live defaults (scope drift); a parsed result that does not cohere with findings; or a spurious DEFERRED result | the pass **CANNOT count**. Fix skipped adoption inputs when named; otherwise retry — the same pass, next launch attempt (`runtime-adapter.md`, "Review preparation mapping") — or take the fresh-worker fallback |
+| `unusable` | 1 | the artifacts are **defective** — the active report is missing, empty, truncated, duplicate, nonterminal, or malformed **in its VERDICT** (its `RESIDUAL-RISK:` line never makes a report defective, however it is written); a short SHA or other malformed identifier; invalid progress/identity/findings; **no usable intent block**; a bound `default_non_goals` that no longer matches the run's live defaults (scope drift); a parsed result that does not cohere with findings; or a spurious DEFERRED result | the pass **CANNOT count**. Fix skipped adoption inputs when named; otherwise retry — the same pass, next launch attempt (`runtime-adapter.md`, "Review preparation mapping") — or take the fresh-worker fallback |
 
 **`ok` is not SATISFIED.** The tool parses the reviewer's exact terminal result but does not judge the
 report's prose, raise `reviews_ok`, or merge. `ledger.py verdict` remains the only tally writer.
@@ -960,12 +971,13 @@ structurally; the sweep finds a defect now, regardless of the plan.)
 certainty, relative to the rest. It is calibration metadata, never a finding and never a verdict
 input: a SATISFIED with a residual-risk line is a **full** SATISFIED, and the line NEVER withholds the
 gate, NEVER enters the fix loop, and is NEVER fed into the corroborating review (which stays
-context-isolated). Because it is not a gate input, **a SATISFIED report that omits it is accepted
-unchanged** — the pass counts, and nothing about the gate moves. It reflects the gauntlet's purpose —
+context-isolated). Because it is not a gate input, **no way of writing it — including not writing it —
+can cost the pass its verdict**; "Does this pass COUNT?" above owns that rule and what `verify` records
+instead. It reflects the gauntlet's purpose —
 lower the odds a defect survives stochastic variation, not claim certainty — by making residual
 uncertainty explicit instead of hidden behind a binary verdict. Record it with the verdict and carry
-**each accepting pass's** line into the final report, grouped by PR (at most one line per accepting
-pass, and a pass that wrote none contributes none). Its only aggregate use (when a PR has ≥2 accepting
+**each accepting pass's** record into the final report, grouped by PR (one record per accepting pass,
+and a pass that wrote none contributes none). Its only aggregate use (when a PR has ≥2 accepting
 passes that each named an area):
 when **both** accepting passes on the same content name the same area, note that convergence in the
 report, and the orchestrator MAY add a plan unit covering it the next time the PR content changes and a

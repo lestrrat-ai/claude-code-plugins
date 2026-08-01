@@ -288,9 +288,9 @@
   all the same (Stage 2a owns that rule). **A verdict from a pass that does not verify `ok` is NEVER tallied**, and there are
   **five** kinds of defect that make a pass `unusable` (Stage 2a, "Does this pass
   COUNT?", owns the enumeration):
-  - **the active REPORT result is unusable** — missing, empty, truncated, duplicate, nonterminal,
-    malformed, from the wrong launch attempt, or carrying a misplaced/malformed `RESIDUAL-RISK:` line —
-    OMITTING that line never makes a SATISFIED report unusable;
+  - **the active REPORT result is unusable** — the `VERDICT:` line missing, empty, truncated, duplicate,
+    nonterminal, malformed, or from the wrong launch attempt. **The `RESIDUAL-RISK:` line is NOT part of
+    this**: omitted, misspelled, doubled, or misplaced, it never makes a report unusable (Stage 2a);
   - **the ARTIFACTS are malformed** — a short SHA or any other malformed identifier, a `done` for a unit
     that was never planned, an evidence-free `done`, a `done` that no `started` precedes, a SECOND `done`
     for one unit, a hand-written line of the wrong shape, an identity naming another commit or attempt;
@@ -350,9 +350,10 @@
   BOUNDED by the threat model, not narrowed, and its findings anchor like any other), and treats "nothing
   found" as a fine result; no speculative "might be fragile" notes (Stage 2a).
 - A SATISFIED verdict SHOULD carry one `RESIDUAL-RISK: <area> — <why>` line (the least-certain part of
-  the diff), and is accepted without one. It is calibration metadata, never a finding: it never withholds
-  the gate, never enters the fix loop, and is never fed into the corroborating review. Its absence never
-  makes the pass unusable. Do not manufacture a concern to fill it; a real
+  the diff). It is calibration metadata, never a finding: it never withholds the gate, never enters the
+  fix loop, and is never fed into the corroborating review. **NOTHING about how it is written — including
+  not writing it — can make the pass unusable**; `verify` records what the reviewer wrote and judges only
+  the verdict (Stage 2a). Do not manufacture a concern to fill it; a real
   **GATING** defect found while identifying it is a normal finding → NOT SATISFIED (Stage 2a).
 - One decision at N sites is the most common root cause. Trigger the §2a-deep root-cause pass on the
   **first** "missing/wrong at site X" finding (its shape, not a round count), map the whole space with

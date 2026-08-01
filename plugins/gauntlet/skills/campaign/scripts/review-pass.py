@@ -552,19 +552,25 @@ PLAN_NAME_RE = re.compile(rf"^review-{COUNT}-{COUNT}\.plan\.jsonl\Z")
 PROGRESS_SUFFIX, FINDINGS_SUFFIX, REPORT_SUFFIX = ".progress.jsonl", ".findings.jsonl", ".txt"
 FINDINGS_NAME_RE = re.compile(rf"^review-(?P<pr>{COUNT})-{COUNT}(?:\.a{ATTEMPT})?\.findings\.jsonl\Z")
 
-# The strict terminal report contract. The prompt owns these exact lines; `parse_report` is their executable
-# reader. A deferred result includes a reason because it is a request the orchestrator must route. A
-# SATISFIED result MAY carry a residual-risk line, which is carried into the campaign's final report. That
-# line is calibration metadata, never a gate input, so its ABSENCE has never made a verdict less usable —
-# yet requiring it discarded four complete, substantive review passes across two engines. It is optional
-# now; when present it must still be well-formed and stand last before the verdict, and it stays forbidden
-# on every non-SATISFIED result.
+# The strict terminal report contract — and what it is strict about is THE VERDICT. The prompt owns these
+# exact lines; `parse_report` is their executable reader. A deferred result includes a reason because it is
+# a request the orchestrator must route.
+#
+# **THE RESIDUAL-RISK LINE IS NOT PART OF THAT CONTRACT: NOTHING ABOUT IT CAN MAKE A PASS UNUSABLE.** It is
+# calibration metadata carried into the campaign's final report — never a gate input — so its inner shape,
+# its count, and its placement decide no question this tool answers, and `parse_report` SALVAGES whatever
+# the reviewer wrote (`salvage_residual`) instead of judging it. The rule reached that form the expensive
+# way, twice: REQUIRING the line discarded four complete, substantive review passes across two engines, and
+# requiring its exact inner form then discarded a sixth-round SATISFIED whose only defect was a hyphen
+# where an em dash was asked for. A formatting rule that decides nothing but can void a substantive review
+# only ever destroys evidence, and the evidence it destroys is the whole point of running the review.
+# `review-prompt.txt` still ASKS for the exact form — that request is what keeps the line readable, and it
+# is not a gate. Every rule that DOES gate — one terminal result, on the last nonblank line, in exactly one
+# of three spellings — is unchanged and stays exact: the verdict is the input the gate reads.
 REPORT_SATISFIED = "VERDICT: SATISFIED"
 REPORT_NOT_SATISFIED = "VERDICT: NOT SATISFIED"
 REPORT_DEFERRED_RE = re.compile(r"^VERDICT: DEFERRED — (?P<reason>\S(?:.*\S)?)\Z")
-RESIDUAL_RISK_RE = re.compile(
-    r"^RESIDUAL-RISK: (?P<area>\S(?:.*\S)?) — (?P<why>\S(?:.*\S)?)\Z"
-)
+RESIDUAL_RISK_TOKEN = "RESIDUAL-RISK:"
 
 # The INTENT — what this PR is FOR. One per PR, written at adoption (`pr-adoption.md`), re-read every heartbeat
 # and never re-derived: a heartbeat is a fresh agent instance, and an intent held only in context is one that
@@ -1387,6 +1393,12 @@ def _default_ignorable(ch: str) -> bool:
 def visible_start(line: str) -> int:
     """Index of the first character of `line` a READER CAN SEE — where a token may legitimately begin.
 
+    It serves ONE caller: finding the reviewer's `RESIDUAL-RISK:` line so `salvage_residual` can carry it
+    into the final report. Nothing it finds can refuse a pass, so the cost of the two ways it can be wrong
+    is no longer symmetric. Missing a line costs a calibration record. Finding one that is not there
+    puts SOMEBODY ELSE'S text into this pass's record, which is a false report — that is the harm the
+    boundary below is drawn against.
+
     Two KINDS of test, and together they are COMPLETE for that meaning. The CATEGORY tests carry the
     open-ended part, so a character nobody has thought of yet is not a new hole: `str.isspace()` covers
     Zs/Zl/Zp and the ASCII whitespace controls, and `not str.isprintable()` covers the rest of Cc plus all
@@ -1402,16 +1414,16 @@ def visible_start(line: str) -> int:
 
     THE BOUNDARY IS "INVISIBLE", AND IT MUST NOT MOVE OUTWARD — a claim about this code, checkable here.
     A VISIBLE prefix (a markdown bullet or quote marker, bold markers, a spacing combining mark such as
-    U+0301, a lowercase spelling) is read as ABSENT on purpose: such a line does not present as the exact
-    token, and the exact form is `RESIDUAL_RISK_RE`'s to own. The wider rule that would close that whole
-    prefix class — skip every leading non-alphanumeric — was trialled, and it REFUSES VALID REPORTS. A
-    reviewer's SATISFIED report that quotes the intent bullet forbidding a residual-risk line on a
-    NOT SATISFIED or DEFERRED result (a bullet handed verbatim to every reviewer in the review prompt, so
-    quoting it is ordinary) is refused EVEN WHEN that report also carries a well-formed residual-risk line
-    of its own: the wider rule skips the quoted bullet's leading punctuation, counts the quotation as a
-    second occurrence, and the at-most-one check in `parse_report` fires. To falsify this, swap the loop
-    condition below for `not line[i].isalnum()` and count the detections in such a report — two, not one.
-    Destroying complete passes is the exact harm this parser exists to prevent.
+    U+0301) is read as ABSENT on purpose: a line a reader sees as quoted or bulleted is a line the
+    reviewer is TALKING ABOUT, not the line it is WRITING. The wider rule that would close that whole
+    prefix class — skip every leading non-alphanumeric — was trialled, and it reads a reviewer's PROSE as
+    its calibration record. A SATISFIED report that quotes the intent bullet forbidding a residual-risk
+    line on a NOT SATISFIED or DEFERRED result (a bullet handed verbatim to every reviewer in the review
+    prompt, so quoting it is ordinary) has that quotation counted as an occurrence EVEN WHEN the report
+    also carries a residual-risk line of its own: the wider rule skips the quoted bullet's leading
+    punctuation, and the prompt's own instruction ends up filed as what this pass found hardest to verify.
+    To falsify this, swap the loop condition below for `not line[i].isalnum()` and count the detections in
+    such a report — two, not one.
     """
     i = 0
     while i < len(line) and (
@@ -1421,13 +1433,35 @@ def visible_start(line: str) -> int:
     return i
 
 
+def salvage_residual(lines: "list[str]") -> "str | None":
+    """The reviewer's calibration text, TAKEN AS WRITTEN — or `None` when it wrote none.
+
+    **This function cannot fail, and that is its entire job.** It reads a line no gate question depends
+    on, so there is no defect for it to report: a line whose fields the prompt's form would reject still
+    says, in the reviewer's own words, which part of the diff it was least sure about, and a human reading
+    the final report gets that whether or not the separator was the one asked for. Refusing it instead
+    threw away the SIXTH pass of a review — a complete SATISFIED with no gating defects — over a hyphen.
+
+    So it neither refuses nor repairs. It strips the invisible prefix (`visible_start`) and trailing
+    whitespace, and otherwise records the line VERBATIM: rewriting a separator, splitting the text into
+    the fields the prompt asks for, or picking one of several lines as the "real" one would each be this
+    tool inventing a reviewer's words. Several lines are joined, in the order written, so nothing the
+    reviewer wrote is dropped and nothing it did not write is added. The result is one line, because that
+    is what the caller prints.
+    """
+    found = [line[visible_start(line):].rstrip() for line in lines
+             if line.startswith(RESIDUAL_RISK_TOKEN, visible_start(line))]
+    return " | ".join(found) if found else None
+
+
 def parse_report(progress: Path) -> "dict[str, str | None]":
     """Read one exact terminal result from the active attempt's report.
 
     Report prose remains the reviewer's judgment. This parser owns only the framing that makes that
-    judgment usable: one terminal result on the last nonblank line, a reason for DEFERRED, and — for
-    SATISFIED only, and only when the reviewer wrote one — the optional residual-risk line that stands
-    last before the verdict, blank lines between the two tolerated.
+    judgment usable, and that framing is the VERDICT: one terminal result, on the last nonblank line, in
+    exactly one of three spellings, with a reason for DEFERRED. Nothing else in the file can refuse the
+    pass — the residual-risk line is read (`salvage_residual`) and never judged, because no answer this
+    function gives depends on it.
     """
     path = report_path(progress)
     text = read_text(path, "active review report")
@@ -1476,47 +1510,17 @@ def parse_report(progress: Path) -> "dict[str, str | None]":
             "'VERDICT: DEFERRED — <one-line reason>'"
         )
 
-    # DETECT past every INVISIBLE prefix (`visible_start` owns which those are), JUDGE the original.
-    # Detection has to see a line the token does not start at column 0 of — indented, or led by a decoded
-    # byte-order mark or any other character that leaves no mark on screen — because the line is optional
-    # now: a line the detector misses is indistinguishable from one that was never written, so a malformed
-    # `RESIDUAL-RISK:` would be silently read as absent instead of refused. Everything below — the count,
-    # the placement, and `RESIDUAL_RISK_RE` — still reads the ORIGINAL unstripped line, so such a line is
-    # detected and then refused for its shape. This WIDENS refusal; it is not whitespace tolerance.
-    residual_lines = [n for n, line in enumerate(lines)
-                      if line.startswith("RESIDUAL-RISK:", visible_start(line))]
-    residual: "str | None" = None
-    if verdict == SATISFIED:
-        if len(residual_lines) > 1:
-            # MUTATE:report-residual-count:pass
-            raise Defect(
-                f"{path.name}: SATISFIED carries at most one `RESIDUAL-RISK:` line; found "
-                f"{len(residual_lines)}"
-            )
-        if residual_lines:
-            # ATTACHED, not adjacent. When the line IS there it must belong to THIS verdict — nothing of
-            # substance may stand between them. A blank line does not defeat that, and insisting on
-            # adjacency discarded four complete, substantive review passes across two engines.
-            # `nonblank[-2]` is always in range here: the residual line is nonblank and is not the verdict.
-            if residual_lines[0] != nonblank[-2]:
-                # MUTATE:report-residual-position:pass
-                raise Defect(
-                    f"{path.name}: a SATISFIED report's `RESIDUAL-RISK:` line must be the last nonblank "
-                    f"line before the verdict; only blank lines may separate the two"
-                )
-            residual = lines[residual_lines[0]]
-            if RESIDUAL_RISK_RE.match(residual) is None:
-                # MUTATE:report-residual-shape:pass
-                raise Defect(
-                    f"{path.name}: residual risk must be exactly "
-                    "'RESIDUAL-RISK: <area or file> — <why this was hardest to verify fully>'"
-                )
-    elif residual_lines:
-        # MUTATE:report-residual-binary-only:pass
-        raise Defect(
-            f"{path.name}: `RESIDUAL-RISK:` is SATISFIED-only and must not accompany "
-            f"{result_line!r}"
-        )
+    # The verdict is settled ABOVE, from the terminal line alone. What follows cannot reach it: this is a
+    # READ of the calibration line, and there is deliberately no branch here that raises. A pass whose
+    # reviewer wrote the line crookedly, wrote it twice, wrote it in the middle of its prose, or wrote it
+    # under a blocking verdict is a pass that answered the gate's question — the answer is on the verdict
+    # line, and the gate reads nothing else from this file.
+    #
+    # It is still SATISFIED-only, because that is the only result the line is carried for (the final report
+    # records the least-certain area of each ACCEPTING pass, `bailout-and-final-report.md`). On any other
+    # result the line is dropped rather than refused: dropping metadata nobody consumes costs nothing,
+    # while refusing costs the whole review.
+    residual = salvage_residual(lines) if verdict == SATISFIED else None
 
     return {
         "verdict": verdict,
