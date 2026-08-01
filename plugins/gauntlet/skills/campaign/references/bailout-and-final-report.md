@@ -156,13 +156,17 @@ When the loop exits, summarize:
   `Run-end snapshot only. Defaults may have changed mid-run. This is not per-PR or per-pass history.`
 - **Merged** — PR number + slug, one-line description, tier, and the **base it merged into** (its
   `effective_base`), so a mixed-base run shows which release line each PR shipped to.
-- **Residual risk** — for each merged PR, each accepting SATISFIED pass's `RESIDUAL-RISK` record (the
-  least-certain area it named), and a flag when two accepting passes name the same area. The line is
-  OPTIONAL, so a PR contributes at most `required(tier)` records and may contribute none; report what the
-  passes actually wrote and never invent a line for a pass that omitted one. **Reproduce each record as
+- **Residual risk** — for each merged PR, every `RESIDUAL-RISK` record its accepting SATISFIED passes
+  wrote (the least-certain area each named), and a flag when two accepting passes name the same area. The
+  line is OPTIONAL and a pass that wrote several contributes several, so a PR's record count is bounded by
+  neither `required(tier)` nor anything else, and may be none; report what the passes actually wrote and
+  never invent a line for a pass that omitted one. **Reproduce each record as
   `verify` reports it, including one that does not match the form the prompt asked for** — the parser
-  carries the reviewer's words through unedited (Stage 2a), so tidying one here would be this report
-  rewording a reviewer. This is non-actionable,
+  carries the reviewer's words through unedited and never joins two records into one (Stage 2a), so
+  tidying one here, or running two of them together into a single record, would be this report rewording
+  a reviewer. `verify` prints the records of one pass separated by `; ` on its detail line, each still
+  carrying the `RESIDUAL-RISK:` token the reviewer typed, which is where one record ends and the next
+  begins. This is non-actionable,
   non-gating calibration metadata — a place a human might look, never a reopened finding (Stage 2a).
 - **What each base REQUIRED** — the required-check set, now **per base** (`effective_required_set`;
   `stage-2-ci.md` owns its states), over the bases **this run GATED on and READ** — not every base the

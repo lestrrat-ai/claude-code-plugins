@@ -805,7 +805,11 @@ verdict that blocks a PR must name what blocks it, and a finding that blocks a P
 **NOTHING ABOUT A `RESIDUAL-RISK:` LINE CAN MAKE A PASS `unusable` — not its absence, not its shape, not
 its count, not where it sits.** The line is calibration metadata for the final report and never a gate
 input, so `verify` READS it and does not judge it: it is carried as the reviewer wrote it, minus only an
-invisible prefix and trailing whitespace, and two of them are carried as two remarks. `review-prompt.txt`
+invisible prefix and trailing whitespace, and two of them are carried as TWO SEPARATE RECORDS — never
+merged into one, and never with a separator the tool supplied. `verify` prints each record after its own
+`; ` on the one detail line it already writes, so the records stay distinguishable without any text being
+added inside one. Splicing two remarks into a single record is the same defect as rewriting one of them:
+the final report attributes that record's words to the reviewer. `review-prompt.txt`
 still ASKS for `RESIDUAL-RISK: <area> — <why>` standing last before the verdict, and that request is what
 keeps the line readable — it is a request, not a gate, and a reviewer who misses it has not spoiled its
 pass. On a NOT SATISFIED or DEFERRED result the line is DROPPED, not refused: the final report records
@@ -976,8 +980,9 @@ can cost the pass its verdict**; "Does this pass COUNT?" above owns that rule an
 instead. It reflects the gauntlet's purpose —
 lower the odds a defect survives stochastic variation, not claim certainty — by making residual
 uncertainty explicit instead of hidden behind a binary verdict. Record it with the verdict and carry
-**each accepting pass's** record into the final report, grouped by PR (one record per accepting pass,
-and a pass that wrote none contributes none). Its only aggregate use (when a PR has ≥2 accepting
+**every record each accepting pass wrote** into the final report, grouped by PR (a pass that wrote none
+contributes none, and one that wrote several contributes several — the parser keeps them separate rather
+than merging them, "Does this pass COUNT?" above). Its only aggregate use (when a PR has ≥2 accepting
 passes that each named an area):
 when **both** accepting passes on the same content name the same area, note that convergence in the
 report, and the orchestrator MAY add a plan unit covering it the next time the PR content changes and a

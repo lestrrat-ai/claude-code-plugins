@@ -2227,43 +2227,51 @@ def _write_ledger(path: Path, defaults: "list[str] | str") -> Path:
     return path
 
 
-def check_residual_salvage(R: types.ModuleType, tmp: Path) -> int:
+def check_residual_salvage(R: types.ModuleType, T: Tables, tmp: Path) -> int:
     """What each report CONTRIBUTES to the residual-risk record — the half `REPORT_CASES` cannot see.
 
     Those cases pin that no shape of this line costs a verdict; a verdict is all `evaluate` returns, so
     they cannot say what was KEPT. Salvage that keeps nothing would satisfy every one of them while
     quietly emptying the final report's calibration section, which is the only consumer the line has.
 
-    The rule pinned here is one sentence: the line is carried AS WRITTEN, minus the prefix and trailing
-    whitespace a reader cannot see. Not repaired, not split into fields, not chosen between — every one
-    of those would be this tool putting words in a reviewer's mouth.
+    The rule pinned here is one sentence: every such line is carried AS WRITTEN, as its OWN record, minus
+    the prefix and trailing whitespace a reader cannot see. Not repaired, not split into fields, not
+    chosen between, and not joined to the next one — every one of those would be this tool putting words
+    in a reviewer's mouth, and the join did exactly that with the ` | ` it spliced between two records.
+
+    The last case leaves the fixtures and drives the real `verify` CLI, because the record is only ever
+    consumed through what that command PRINTS: the final report reproduces each record as `verify` reports
+    it, so a list kept faithfully in memory and re-joined on the way to stdout would be the same defect
+    one layer down.
     """
     # U+FEFF, spelled rather than typed: a fixture whose point is an INVISIBLE prefix must not depend on
     # an invisible byte surviving every editor that touches this file.
     bom = chr(0xFEFF)
-    # report text -> the record it must produce (`None` = this report contributes nothing).
-    cases: "dict[str, tuple[str, str | None]]" = {
+    # report text -> the records it must produce (`[]` = this report contributes nothing).
+    cases: "dict[str, tuple[str, list[str]]]" = {
         "canonical": ("Body.\nRESIDUAL-RISK: parser — hard\nVERDICT: SATISFIED\n",
-                      "RESIDUAL-RISK: parser — hard"),
+                      ["RESIDUAL-RISK: parser — hard"]),
         "wrong-separator": ("Body.\nRESIDUAL-RISK: parser contract - hard\nVERDICT: SATISFIED\n",
-                            "RESIDUAL-RISK: parser contract - hard"),
+                            ["RESIDUAL-RISK: parser contract - hard"]),
         "no-separator": ("Body.\nRESIDUAL-RISK: the whole diff read once\nVERDICT: SATISFIED\n",
-                         "RESIDUAL-RISK: the whole diff read once"),
+                         ["RESIDUAL-RISK: the whole diff read once"]),
         "invisible-prefix-and-trailing-space": (
             "Body.\n" + bom + "  RESIDUAL-RISK: parser — hard  \nVERDICT: SATISFIED\n",
-            "RESIDUAL-RISK: parser — hard"),
+            ["RESIDUAL-RISK: parser — hard"]),
         "midstream": ("RESIDUAL-RISK: parser — hard\nand then more prose\nVERDICT: SATISFIED\n",
-                      "RESIDUAL-RISK: parser — hard"),
+                      ["RESIDUAL-RISK: parser — hard"]),
+        # TWO LINES ARE TWO RECORDS. The joined form put a ` | ` the reviewer never typed inside the text
+        # the final report attributes to it; two elements carry both remarks with nothing added between.
         "two-lines": ("RESIDUAL-RISK: first — hard\nRESIDUAL-RISK: second — harder\n"
                       "VERDICT: SATISFIED\n",
-                      "RESIDUAL-RISK: first — hard | RESIDUAL-RISK: second — harder"),
-        "none-written": ("Body.\nVERDICT: SATISFIED\n", None),
+                      ["RESIDUAL-RISK: first — hard", "RESIDUAL-RISK: second — harder"]),
+        "none-written": ("Body.\nVERDICT: SATISFIED\n", []),
         # SATISFIED-only: the final report records the least-certain area of each ACCEPTING pass, so on a
         # blocking result there is no consumer and the line is dropped — dropped, never refused.
-        "not-satisfied": ("RESIDUAL-RISK: parser — hard\nVERDICT: NOT SATISFIED\n", None),
+        "not-satisfied": ("RESIDUAL-RISK: parser — hard\nVERDICT: NOT SATISFIED\n", []),
         # A VISIBLE prefix is the reviewer QUOTING the instruction, not obeying it (`visible_start`).
         "quoted-bullet": ("- RESIDUAL-RISK: <area> — <why> is asked of a SATISFIED report\n"
-                          "VERDICT: SATISFIED\n", None),
+                          "VERDICT: SATISFIED\n", []),
     }
     failures = 0
     for name, (text, want) in cases.items():
@@ -2274,7 +2282,43 @@ def check_residual_salvage(R: types.ModuleType, tmp: Path) -> int:
             failures += 1
         else:
             print(f"ok       [residual] {name:36} -> {got!r}")
+    failures += check_residual_rendering(R, T, tmp)
     return failures
+
+
+def check_residual_rendering(R: types.ModuleType, T: Tables, tmp: Path) -> int:
+    """What `verify` PRINTS for a pass that wrote two residual-risk lines — the human-facing end of the
+    record, and the only form the final report ever copies.
+
+    A complete pass (`T.PLAN` + `T.WORKED`) is required: `verify` prints the detail line only for a report
+    it could parse, so a bare fixture would exercise nothing here. What this pins is that both records
+    reach stdout whole, that the line stays ONE line (the detail is a field of a single printed line), and
+    that no ` | ` — the delimiter the old join spliced in — appears anywhere in the output.
+    """
+    first, second = "RESIDUAL-RISK: first — hard", "RESIDUAL-RISK: second — harder"
+    path = build(tmp, "residual-render", T.PLAN, T.WORKED,
+                 report=f"Body.\n{first}\n{second}\nVERDICT: SATISFIED\n")
+    ledger = _write_ledger(path.parent / "state.jsonl", [])
+    code, text = run_cli(R, ["verify", "--file", str(path), "--head-sha", SHA,
+                             "--ledger", str(ledger)])
+    problems = []
+    if code != 0:
+        problems.append(f"verify exited {code}, so it never reached the detail line: {text.strip()!r}")
+    detail = [line for line in text.splitlines() if "report-verdict=" in line]
+    if len(detail) != 1:
+        problems.append(f"expected exactly one detail line, got {len(detail)}: {text.strip()!r}")
+    else:
+        line = detail[0]
+        for record in (first, second):
+            if record not in line:
+                problems.append(f"the detail line dropped {record!r}: {line!r}")
+        if " | " in text:
+            problems.append(f"the output splices a delimiter no reviewer wrote: {line!r}")
+    for problem in problems:
+        print(f"FAIL     [residual] two-records-rendered: {problem}")
+    if not problems:
+        print(f"ok       [residual] {'two-records-rendered':36} -> {detail[0].strip()!r}")
+    return len(problems)
 
 
 def check_intent_door(R: types.ModuleType, tmp: Path) -> int:
@@ -2675,7 +2719,7 @@ def run(R: types.ModuleType, tmp: Path) -> int:
     print()
     failures += check_docs(R)
     print()
-    failures += check_residual_salvage(R, tmp)
+    failures += check_residual_salvage(R, T, tmp)
     print()
     failures += check_intent_door(R, tmp)
     print()

@@ -117,7 +117,7 @@ from collections import Counter
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import NamedTuple, NoReturn
+from typing import NamedTuple, NoReturn, TypedDict
 
 from _gauntlet.clock import TS_FORMAT
 from _gauntlet.modules import load_module_from_path
@@ -1433,8 +1433,8 @@ def visible_start(line: str) -> int:
     return i
 
 
-def salvage_residual(lines: "list[str]") -> "str | None":
-    """The reviewer's calibration text, TAKEN AS WRITTEN — or `None` when it wrote none.
+def salvage_residual(lines: "list[str]") -> "list[str]":
+    """The reviewer's calibration text, TAKEN AS WRITTEN — one record per line it wrote, empty when none.
 
     **This function cannot fail, and that is its entire job.** It reads a line no gate question depends
     on, so there is no defect for it to report: a line whose fields the prompt's form would reject still
@@ -1445,16 +1445,32 @@ def salvage_residual(lines: "list[str]") -> "str | None":
     So it neither refuses nor repairs. It strips the invisible prefix (`visible_start`) and trailing
     whitespace, and otherwise records the line VERBATIM: rewriting a separator, splitting the text into
     the fields the prompt asks for, or picking one of several lines as the "real" one would each be this
-    tool inventing a reviewer's words. Several lines are joined, in the order written, so nothing the
-    reviewer wrote is dropped and nothing it did not write is added. The result is one line, because that
-    is what the caller prints.
+    tool inventing a reviewer's words.
+
+    **SEVERAL LINES STAY SEVERAL RECORDS, IN THE ORDER WRITTEN — they are never joined into one.** The
+    joined form was the same invention by another route: it returned `first | second` for two lines, and
+    the ` | ` in the middle was text no reviewer typed, carried into the final report attributed to that
+    reviewer. A list has no delimiter to invent, so nothing the reviewer wrote is dropped and nothing it
+    did not write is added. Each record is a single line, because that is what the caller prints them on.
     """
-    found = [line[visible_start(line):].rstrip() for line in lines
-             if line.startswith(RESIDUAL_RISK_TOKEN, visible_start(line))]
-    return " | ".join(found) if found else None
+    return [line[visible_start(line):].rstrip() for line in lines
+            if line.startswith(RESIDUAL_RISK_TOKEN, visible_start(line))]
 
 
-def parse_report(progress: Path) -> "dict[str, str | None]":
+class ReportResult(TypedDict):
+    """What one report YIELDS: the verdict the gate reads, a DEFERRED result's routing reason, and the
+    reviewer's residual-risk records.
+
+    `residual_risk` is a LIST because a report may carry several `RESIDUAL-RISK:` lines and each is its
+    own record (`salvage_residual`) — no element ever holds two of them spliced together. An empty list is
+    the ordinary "wrote none", and it is also what every non-SATISFIED result yields.
+    """
+    verdict: str
+    deferred_reason: "str | None"
+    residual_risk: "list[str]"
+
+
+def parse_report(progress: Path) -> ReportResult:
     """Read one exact terminal result from the active attempt's report.
 
     Report prose remains the reviewer's judgment. This parser owns only the framing that makes that
@@ -1520,7 +1536,7 @@ def parse_report(progress: Path) -> "dict[str, str | None]":
     # records the least-certain area of each ACCEPTING pass, `bailout-and-final-report.md`). On any other
     # result the line is dropped rather than refused: dropping metadata nobody consumes costs nothing,
     # while refusing costs the whole review.
-    residual = salvage_residual(lines) if verdict == SATISFIED else None
+    residual = salvage_residual(lines) if verdict == SATISFIED else []
 
     return {
         "verdict": verdict,
@@ -1995,7 +2011,7 @@ def plan_path(progress: Path) -> Path:
 
 def evaluate_detail(progress: Path, head_sha: str, ruled: int = 0,
                     ledger: "Path | None" = None) -> \
-        "tuple[str, str, dict[str, str | None] | None]":
+        "tuple[str, str, ReportResult | None]":
     """The whole read side. Every exception a rule can raise lands here as a VERDICT — never as a crash.
 
     **THE INTENT IS AN INPUT TO EVERY PASS, AND IT IS LOADED HERE FOR EXACTLY THAT REASON.** A pass is
@@ -2561,8 +2577,14 @@ def cmd_verify(args) -> int:
     detail = ""
     if report is not None:
         detail = f" report-verdict={report['verdict']}"
-        if report["residual_risk"] is not None:
-            detail += f"; {report['residual_risk']}"
+        # EVERY record the reviewer wrote, each after this line's own `; ` — the same separator that
+        # already stands between the verdict field and the first record, and the tool's framing rather
+        # than anything spliced INTO a record. Each record still begins with the `RESIDUAL-RISK:` token
+        # the reviewer typed, so a reader (and the final report, which reproduces each record as this
+        # line reports it) can tell where one ends and the next begins without this tool inventing a
+        # delimiter of its own. The detail stays ONE line: every record is a single rstripped line.
+        for record in report["residual_risk"]:
+            detail += f"; {record}"
     print(f"{verdict}:{detail} {reason}")
     # `ok` is the ONLY exit-0 verdict — and it still is NOT `SATISFIED`.
     return 0 if verdict == OK else 1
