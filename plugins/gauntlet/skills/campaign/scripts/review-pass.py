@@ -2235,6 +2235,17 @@ def write_line(path: Path, before: str, rec: "dict[str, object]",
     That is also what catches the defect neither door's per-record checks can see: a file whose last line
     has NO TRAILING NEWLINE. The append lands ON that line, fusing two events into one — and every
     record-level check passes, because the RECORD was never the problem. Only `before + line` shows it.
+
+    **The read-then-append is NOT atomic, and that is neither introduced here nor reachable — both halves
+    are checkable.** It is not introduced: this function and its callers are unchanged from the base, where
+    the same interleaving lands two rows through `identity`, so nothing about moving the report onto this
+    door created it. It is not reachable: a report path belongs to ONE launch attempt — `review-dispatch.py`
+    gives each attempt its own stem and refuses to prepare over an existing attempt's artifacts — so the
+    campaign never puts two writers on one path, and the only actor who could stage the race is the single
+    committer hand-editing their own git-ignored run directory, which this run's default Non-goals place
+    out of scope. It also fails CLOSED: two rows make the pass `unusable` at `verify`, never countable. To
+    falsify, show a campaign path that allocates two writers to one report path, or a two-row report that
+    verifies `ok`.
     """
     line = json.dumps(rec, separators=(",", ":")) + "\n"
     # MUTATE:write-verifies-result:pass
