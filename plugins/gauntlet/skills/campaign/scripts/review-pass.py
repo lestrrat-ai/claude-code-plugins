@@ -11,7 +11,8 @@ A review pass produces four things, all with an executable owner:
   * `review-<pr>-<n>.progress.jsonl`  what the reviewer did. `review-dispatch.py prepare` writes its
                                       `pass_identity` through this module's schema; progress events enter
                                       through `emit-progress.py`.
-  * `review-<pr>-<n>.txt`             the reviewer's report, and its VERDICT line.
+  * `review-<pr>-<n>.report.jsonl`    the reviewer's report — ONE validated record, written through
+                                      `report-write` (the report stops being free text).
   * the TALLY                         derived through `verify`, never read by eye.
 
 **This is gate machinery**: what these files say decides whether a review pass COUNTS, and therefore
@@ -29,19 +30,20 @@ So this file is the review pass's artifacts, executed:
                                                                    costing an amendment + full re-review)
   identity    low-level `pass_identity` schema/write door         (campaign uses review-dispatch prepare)
   emit        append ONE progress event                           (what `emit-progress.py` calls)
+  report-write write the pass's ONE report record and verdict     (what `emit-report.py` calls — the last
+                                                                   free-text artifact, made a record)
   verify      READ a pass and answer: DOES THIS PASS COUNT?       (the tally stops being by eye)
   self-test   the fixtures, the proof that every rule is pinned by one, every JSON example in the docs fed
               THROUGH the tool (a documented example the tool refuses is a trap, not a typo), and EVERY
               DOOR run in the shape its own `--help` advertises (a command the help promises and the tool
               refuses is the same trap, one layer up — `plan-add` shipped one)
 
-`verify` reads only the report's strict terminal result contract; it never judges the report's prose.
-Its answer covers both the pass's MECHANICS and whether the report supplied exactly one usable result:
+`verify` reads only the report record's validated fields; it never judges the report's prose. Its answer covers both the pass's MECHANICS and whether the report supplied exactly one usable result:
 is there an identity, does it name the commit the pass actually ran on, WAS THERE AN INTENT for this
 reviewer to be measured against, is every `done` for a unit that was really planned, did every `done`
 FOLLOW a `started` for that same unit, does every `done` carry evidence, were amendments raised, and does
 does the parsed report result cohere with the findings the reviewer RECORDED. The verdict remains the
-reviewer's JUDGMENT; this tool validates only its exact terminal framing and coherence.
+reviewer's JUDGMENT; this tool validates only the record it is carried in, and coherence.
 
 That line is what keeps this tool from BECOMING the gate. `verify` can only ever SUBTRACT a pass — refuse
 one that is defective. It can never ADD a SATISFIED verdict, never raise `reviews_ok`, and never merge
@@ -63,8 +65,8 @@ at both. Those are two halves of one discipline, and each half has already faile
   * and a rule enforced at both doors by TWO implementations is a rule waiting to acquire two definitions.
 
 So there are no per-door copies. `check_event`, `check_unit`, `check_waiver`, `check_identity_shape`,
-`check_progress` and `plan_records` ARE the rules; `emit`, `identity`, `plan-add` and `plan-waive` call
-exactly the functions `verify` calls.
+`check_progress`, `check_report` and `plan_records` ARE the rules; `emit`, `identity`, `plan-add`,
+`plan-waive` and `report-write` call exactly the functions `verify` calls.
 
 **AND THE RULES ARE NOT ENOUGH — ANYTHING THIS TOOL CAN WRITE, IT MUST BE ABLE TO READ BACK.** That is a
 property of the doors TOGETHER, and every individual rule can be right at both doors while it fails. It
@@ -92,8 +94,8 @@ THE VERDICTS. Exactly one is printed, and there is no "counts, BUT…":
   unusable    the artifacts are defective — this pass CANNOT count, whatever its report says
 
 The result is derived from the active launch attempt's report path. The compatibility-only `--verdict`
-flag is accepted but ignored; it cannot override, supply, or repair the report's result. A complete pass
-with a missing, malformed, duplicate, nonterminal, or wrong-attempt report is `unusable`. A pass still in
+flag on `verify` is accepted but ignored; it cannot override, supply, or repair the report's result. A
+complete pass with a missing, malformed, duplicate, or wrong-attempt report is `unusable`. A pass still in
 flight is WATCHED through the lenient `status` command, not verified.
 
 `amended` is a VERDICT and not a footnote beside `ok` on purpose. A disclosure printed next to a pass is a
@@ -143,7 +145,7 @@ DONE = "done"
 STATUSES = (STARTED, DONE)
 
 # The REVIEWER'S VERDICT, as this tool reads it from the active attempt's report. The parser does not judge
-# prose; it extracts one exact terminal result so the IF AND ONLY IF can be checked (`decide`): NOT
+# prose; it reads one exact recorded verdict so the IF AND ONLY IF can be checked (`decide`): NOT
 # SATISFIED exactly when at least one
 # GATING finding stands.** Both halves of it refuse a pass and neither can grant one. The spelling is the
 # ledger's (`ledger.py verdict --verdict satisfied|not-satisfied`) so the verifier's output feeds that door
@@ -194,7 +196,8 @@ WAIVER_KEYS = {"type", "dimension", "reason"}
 
 # --- THE FINDING, and the INTENT it must ANCHOR to ------------------------------------------------
 #
-# **A FINDING USED TO BE PROSE.** It was a paragraph in `review-<pr>-<n>.txt`, and nothing could validate
+# **A FINDING USED TO BE PROSE.** It was a paragraph in the report, back when the report was free text,
+# and nothing could validate
 # it, count it, or decline it — so every finding a reviewer reported became a fix, and every fix added
 # code, and the next reviewer hunted the code the last fix added. One PR took 21 review rounds and never
 # converged; a human had to stop it. **Not one of the late findings was WRONG.** They were true, reproduced,
@@ -545,36 +548,51 @@ NAME_RE = re.compile(rf"^review-(?P<pr>{COUNT})-(?P<pass>{COUNT})(?:\.a(?P<attem
 PLAN_NAME = "review-{pr}-{pass}.plan.jsonl"
 PLAN_NAME_RE = re.compile(rf"^review-{COUNT}-{COUNT}\.plan\.jsonl\Z")
 
-# The FINDINGS artifact is PER LAUNCH ATTEMPT, not per pass — it is the reviewer's OUTPUT, like the report
-# (`review-<pr>-<n>.txt`), and a relaunched pass produces its own. So its name is the progress file's name
+# The FINDINGS artifact is PER LAUNCH ATTEMPT, not per pass — it is the reviewer's OUTPUT, like the report,
+# and a relaunched pass produces its own. So its name is the progress file's name
 # with one suffix swapped, and it is DERIVED from it exactly as the plan's is: no door takes a findings
 # path and a progress path that could disagree about which pass they belong to.
-PROGRESS_SUFFIX, FINDINGS_SUFFIX, REPORT_SUFFIX = ".progress.jsonl", ".findings.jsonl", ".txt"
+PROGRESS_SUFFIX, FINDINGS_SUFFIX, REPORT_SUFFIX = ".progress.jsonl", ".findings.jsonl", ".report.jsonl"
 FINDINGS_NAME_RE = re.compile(rf"^review-(?P<pr>{COUNT})-{COUNT}(?:\.a{ATTEMPT})?\.findings\.jsonl\Z")
+REPORT_NAME_RE = re.compile(rf"^review-{COUNT}-{COUNT}(?:\.a{ATTEMPT})?\.report\.jsonl\Z")
 
-# The strict terminal report contract — and what it is strict about is THE VERDICT. The prompt owns these
-# exact lines; `parse_report` is their executable reader. A deferred result includes a reason because it is
-# a request the orchestrator must route.
+
+# --- THE REPORT: the last free-text artifact, and the last one a PARSER had to be lenient about ---
 #
-# **THE RESIDUAL-RISK LINE IS NOT PART OF THAT CONTRACT: NOTHING ABOUT ONE WRITTEN ABOVE THE VERDICT CAN
-# MAKE A PASS UNUSABLE.** It is calibration metadata carried into the campaign's final report — never a
-# gate input — so its inner shape, its count, and where above the verdict it sits decide no question this
-# tool answers, and `parse_report` SALVAGES whatever the reviewer wrote (`salvage_residual`) instead of
-# judging it. The one placement that costs the pass is BELOW the verdict, and the VERDICT contract is what
-# refuses it: such a line is trailing text, so the terminal rule below ("last nonblank line") reports the
-# result as nonterminal exactly as it would for a postscript of prose. No branch here treats this token
-# specially in either direction. The rule reached that form the expensive
-# way, twice: REQUIRING the line discarded four complete, substantive review passes across two engines, and
-# requiring its exact inner form then discarded a sixth-round SATISFIED whose only defect was a hyphen
-# where an em dash was asked for. A formatting rule that decides nothing but can void a substantive review
-# only ever destroys evidence, and the evidence it destroys is the whole point of running the review.
-# `review-prompt.txt` still ASKS for the exact form — that request is what keeps the line readable, and it
-# is not a gate. Every rule that DOES gate — one terminal result, on the last nonblank line, in exactly one
-# of three spellings — is unchanged and stays exact: the verdict is the input the gate reads.
-REPORT_SATISFIED = "VERDICT: SATISFIED"
-REPORT_NOT_SATISFIED = "VERDICT: NOT SATISFIED"
-REPORT_DEFERRED_RE = re.compile(r"^VERDICT: DEFERRED — (?P<reason>\S(?:.*\S)?)\Z")
-RESIDUAL_RISK_TOKEN = "RESIDUAL-RISK:"
+# **IT WAS PROSE WITH A LINE THE GATE HAD TO FIND IN IT.** `review-<pr>-<n>.txt` held the reviewer's
+# narrative, an optional `RESIDUAL-RISK:` line, and a terminal `VERDICT:` line, and a reader had to
+# LOCATE the verdict inside text nobody validated. Everything that went wrong with it went wrong for one
+# reason: **the artifact had no boundaries, so every boundary had to be guessed.**
+#
+#   * `splitlines()` ends a line at U+001C, U+0085, U+2028 and the rest, so a residual-risk record holding
+#     one of those lost its tail — and moving the verdict scan off `splitlines()` was not available either,
+#     because the SAME split decided which line the terminal verdict was.
+#   * the rendered `verify` line ran several records together, and nothing in the rendering said where one
+#     record ended and the next began.
+#   * and the placement rule ("last nonblank line", "nothing between the residual line and the verdict")
+#     became an argument about how leniently to read a formatting request — an argument that twice cost a
+#     complete, substantive review pass, and that no amount of care in the parser could end.
+#
+# **SO THE ARTIFACT IS A RECORD NOW, AND THE PARSER HAS NOTHING LEFT TO TOLERATE.** One JSON object on one
+# line, in the file's ONE line, written through `report-write` (`emit-report.py`) by the same both-doors
+# machinery every other artifact here uses. A verdict is a FIELD, not a line to find; a residual-risk
+# record is an ARRAY ELEMENT, so a control character inside one is escaped by the encoder and cannot split
+# it; and there is no placement to get wrong, because nothing is placed.
+#
+# What is unchanged is every rule that GATES. A missing report is still an unusable attempt. The verdict is
+# still exactly one of three closed values and still cannot be supplied by a caller. `deferred` is still
+# not a verdict but a request carrying its routing reason.
+REVIEW_REPORT = "review_report"
+
+# The EXACT key set, by the same rule every other record here obeys: every key it requires, and NOT ONE
+# more. The disclosed residual `FINDING_KEYS` carries applies here word for word — adding a key refuses
+# every report already on disk, and `repair-pass.py` reads LANDED rounds' reports through this same check.
+REPORT_KEYS = {"type", "verdict", "deferred_reason", "residual_risk", "summary"}
+
+# `deferred_reason`'s value when the reviewer rendered a verdict — the same sentinel discipline `purpose`
+# and `base_repro` use, and for the same reason: "there is no deferral to route" must be a string the
+# reviewer TYPES, never one it reaches by leaving a field empty.
+NO_DEFERRED_REASON = "-"
 
 # The INTENT — what this PR is FOR. One per PR, written at adoption (`pr-adoption.md`), re-read every heartbeat
 # and never re-derived: a heartbeat is a fresh agent instance, and an intent held only in context is one that
@@ -1363,119 +1381,142 @@ def report_path(progress: Path) -> Path:
     return progress.parent / (progress.name[: -len(PROGRESS_SUFFIX)] + REPORT_SUFFIX)
 
 
-# The Default_Ignorable_Code_Point members that are BOTH printable and non-space — the part of "renders as
-# nothing" that `str.isspace()` and `not str.isprintable()` cannot reach (267 code points as of Unicode
-# 15.0, the version this was transcribed against; the ranges are the fact, the count is illustration).
-# Python classes them Mn or Lo: a Hangul filler is a LETTER and a variation selector is a MARK, and both
-# print as nothing. Every other member of the property (U+00AD, U+061C, U+200B–U+200F, U+202A–U+202E,
-# U+2060–U+206F, U+FEFF, U+FFF0–U+FFF8, U+1BCA0–U+1BCA3, U+1D173–U+1D17A, and the Cf and unassigned parts
-# of U+E0000–U+E0FFF) is already Cf or Cn, so the category tests below already catch it.
-#
-# UNICODE OWNS THIS LIST; this file only transcribes it. It is a NAMED property with fixed membership, not
-# a catalogue of characters somebody happened to run into, which is why enumerating code points here does
-# not reopen the hole the category tests avoid. Regenerate it from `DerivedCoreProperties.txt` for the
-# running Python's Unicode version — `unicodedata.unidata_version` — if that version ever adds a member;
-# never extend it by hand with a character that merely looks suspicious.
-#
-#   U+034F         combining grapheme joiner          U+3164          Hangul filler
-#   U+115F–U+1160  Hangul choseong/jungseong fillers  U+FE00–U+FE0F   variation selectors 1–16
-#   U+17B4–U+17B5  Khmer inherent vowels AQ/AA        U+FFA0          halfwidth Hangul filler
-#   U+180B–U+180D, U+180F  Mongolian free variation selectors 1–4
-#   U+E0100–U+E01EF        variation selectors supplement 17–256
-_DEFAULT_IGNORABLE = (
-    (0x034F, 0x034F), (0x115F, 0x1160), (0x17B4, 0x17B5), (0x180B, 0x180D), (0x180F, 0x180F),
-    (0x3164, 0x3164), (0xFE00, 0xFE0F), (0xFFA0, 0xFFA0), (0xE0100, 0xE01EF),
-)
+def report_name(path: Path) -> None:
+    """Refuse a path that is not a launch attempt's REPORT artifact — the same rule `findings_name` is.
 
-
-def _default_ignorable(ch: str) -> bool:
-    """Is `ch` a Default_Ignorable code point the category tests in `visible_start` do not already reach?"""
-    point = ord(ch)
-    return any(low <= point <= high for low, high in _DEFAULT_IGNORABLE)
-
-
-def visible_start(line: str) -> int:
-    """Index of the first character of `line` a READER CAN SEE — where a token may legitimately begin.
-
-    It serves ONE caller: finding the reviewer's `RESIDUAL-RISK:` line so `salvage_residual` can carry it
-    into the final report. Nothing it finds can refuse a pass, so the cost of the two ways it can be wrong
-    is no longer symmetric. Missing a line costs a calibration record. Finding one that is not there
-    puts SOMEBODY ELSE'S text into this pass's record, which is a false report — that is the harm the
-    boundary below is drawn against.
-
-    Two KINDS of test, and together they are COMPLETE for that meaning. The CATEGORY tests carry the
-    open-ended part, so a character nobody has thought of yet is not a new hole: `str.isspace()` covers
-    Zs/Zl/Zp and the ASCII whitespace controls, and `not str.isprintable()` covers the rest of Cc plus all
-    of Cf (U+FEFF, U+200B–U+200F, U+2060, U+00AD, U+061C, U+180E), Cs, Co, Cn. `_DEFAULT_IGNORABLE` carries
-    what no category test can: the code points that ARE printable and non-space and still render as
-    nothing. Its listing of code points is not the ad-hoc enumeration the category tests exist to avoid —
-    it transcribes one NAMED CLOSED Unicode property, and that property is what makes this complete: after
-    it there is no further category of invisible character to add.
-
-    `str.lstrip()` alone is not enough: U+FEFF is Cf with `isspace() == False`, so a report whose first
-    line still carries a decoded byte-order mark keeps it attached to the token — and `read_text` decodes
-    as `utf-8`, never `utf-8-sig`, on purpose, so that what the tool reads is what the file says.
-
-    THE BOUNDARY IS "INVISIBLE", AND IT MUST NOT MOVE OUTWARD — a claim about this code, checkable here.
-    A VISIBLE prefix (a markdown bullet or quote marker, bold markers, a spacing combining mark such as
-    U+0301) is read as ABSENT on purpose: a line a reader sees as quoted or bulleted is a line the
-    reviewer is TALKING ABOUT, not the line it is WRITING. The wider rule that would close that whole
-    prefix class — skip every leading non-alphanumeric — was trialled, and it reads a reviewer's PROSE as
-    its calibration record. A SATISFIED report that quotes the intent bullet forbidding a residual-risk
-    line on a NOT SATISFIED or DEFERRED result (a bullet handed verbatim to every reviewer in the review
-    prompt, so quoting it is ordinary) has that quotation counted as an occurrence EVEN WHEN the report
-    also carries a residual-risk line of its own: the wider rule skips the quoted bullet's leading
-    punctuation, and the prompt's own instruction ends up filed as what this pass found hardest to verify.
-    To falsify this, swap the loop condition below for `not line[i].isalnum()` and count the detections in
-    such a report — two, not one.
+    Every door that touches the report runs it: `report_path` DERIVES the name from the progress artifact
+    (so the read side can only ever open the right one), and `report-write` is handed a `--file` the caller
+    typed. A report written under a name `verify` will never derive is a report nothing reads — and the pass
+    is then refused for having none while its verdict sits on disk one filename away.
     """
-    i = 0
-    while i < len(line) and (
-        line[i].isspace() or not line[i].isprintable() or _default_ignorable(line[i])
-    ):
-        i += 1
-    return i
+    if not REPORT_NAME_RE.match(path.name):
+        # MUTATE:report-name-shape:pass
+        raise Defect(
+            f"{path.name} is not a launch attempt's report artifact — the name is "
+            f"`review-<pr>-<n>.report.jsonl`, or `review-<pr>-<n>.a<k>.report.jsonl` for a relaunch, and "
+            f"`verify` DERIVES it from the pass's progress file. A report under any other name is one "
+            f"nothing will ever read, and the pass is refused for having none"
+        )
 
 
-def salvage_residual(lines: "list[str]") -> "list[str]":
-    """The reviewer's calibration text, TAKEN AS WRITTEN — one record per line it wrote, empty when none.
+def check_report(rec: dict, where: str) -> None:
+    """ONE review report record, checked to the EXACT shape. Run at BOTH doors, so there is one definition.
 
-    **This function cannot fail, and that is its entire job.** It reads a line no gate question depends
-    on, so there is no defect for it to report: a line whose fields the prompt's form would reject still
-    says, in the reviewer's own words, which part of the diff it was least sure about, and a human reading
-    the final report gets that whether or not the separator was the one asked for. Refusing it instead
-    threw away the SIXTH pass of a review — a complete SATISFIED with no gating defects — over a hyphen.
-
-    So it neither refuses nor repairs. It strips the invisible prefix (`visible_start`) and trailing
-    whitespace, and otherwise records the line VERBATIM: rewriting a separator, splitting the text into
-    the fields the prompt asks for, or picking one of several lines as the "real" one would each be this
-    tool inventing a reviewer's words.
-
-    **SEVERAL LINES STAY SEVERAL RECORDS, IN THE ORDER WRITTEN — they are never joined into one.** The
-    joined form was the same invention by another route: it returned `first | second` for two lines, and
-    the ` | ` in the middle was text no reviewer typed, carried into the final report attributed to that
-    reviewer. A list has no delimiter to invent, so nothing the reviewer wrote is dropped and nothing it
-    did not write is added. Keeping that property through PRINTING is a separate job, and
-    `render_residual` owns it: a boundary this function preserves and the printer then loses is a boundary
-    the final report never had.
+    Order matters here exactly as it does in `check_event`: the KEYS decide which fields exist, and only
+    then may a field's VALUE be read. Reading a value before its shape is known is how a tool crashes
+    instead of returning a verdict — and a crash is not a verdict.
     """
-    return [line[visible_start(line):].rstrip() for line in lines
-            if line.startswith(RESIDUAL_RISK_TOKEN, visible_start(line))]
+    if set(rec) != REPORT_KEYS:
+        missing = sorted(REPORT_KEYS - set(rec))
+        extra = sorted(set(rec) - REPORT_KEYS)
+        # MUTATE:report-keys:pass
+        raise Defect(
+            f"{where}: a review report carries EXACTLY {sorted(REPORT_KEYS)}"
+            + (f"; missing {missing}" if missing else "")
+            + (f"; unexpected key(s) {extra} — nothing reads them, so whatever they assert is neither "
+               f"verified nor refuted" if extra else "")
+        )
+    if rec["type"] != REVIEW_REPORT:
+        # MUTATE:report-row-type:pass
+        raise Defect(f"{where}: type is {rec['type']!r}, not {REVIEW_REPORT!r} — a report artifact holds "
+                     f"exactly one {REVIEW_REPORT!r} record and nothing else")
+    verdict = rec["verdict"]
+    if verdict not in VERDICT_CHOICES:
+        # MUTATE:report-verdict-enum:pass
+        raise Defect(
+            f"{where}: `verdict` is {verdict!r} — a report yields exactly one of {list(VERDICT_CHOICES)}. "
+            f"{SATISFIED!r} and {NOT_SATISFIED!r} are the two the gate tallies; {DEFERRED!r} is the "
+            f"reviewer saying it rendered NO verdict and raised a request the orchestrator must route first"
+        )
+    summary = rec["summary"]
+    if not isinstance(summary, str) or not summary.strip():
+        # MUTATE:report-summary:pass
+        raise Defect(
+            f"{where}: `summary` is {summary!r} — the report IS the reviewer's account of what it did, and "
+            f"an empty one is a verdict with nothing behind it. It is what a human reads and what "
+            f"`repair-pass.py bundle` hands the reassessment worker"
+        )
+    reason = rec["deferred_reason"]
+    if not isinstance(reason, str) or not reason.strip():
+        # MUTATE:report-reason-blank:pass
+        raise Defect(
+            f"{where}: `deferred_reason` is {reason!r} — it is {NO_DEFERRED_REASON!r} when a verdict was "
+            f"rendered and the routing reason when one was not. Absent is not a value it may take"
+        )
+    if verdict == DEFERRED and reason == NO_DEFERRED_REASON:
+        # MUTATE:report-reason-required:pass
+        raise Defect(
+            f"{where}: a {DEFERRED!r} result carries the ONE-LINE REASON the orchestrator routes on, and "
+            f"this one carries the {NO_DEFERRED_REASON!r} that means there is none. A deferral nobody can "
+            f"route is a pass that stopped for a reason only the reviewer knows"
+        )
+    if verdict != DEFERRED and reason != NO_DEFERRED_REASON:
+        # MUTATE:report-reason-absent:pass
+        raise Defect(
+            f"{where}: `verdict` is {verdict!r} but `deferred_reason` is {reason!r} — a rendered verdict "
+            f"defers nothing, so the reason is exactly {NO_DEFERRED_REASON!r}. A routing reason beside a "
+            f"real verdict is a request nobody will act on"
+        )
+    residual = rec["residual_risk"]
+    if (not isinstance(residual, list)
+            or not all(isinstance(r, str) and r.strip() for r in residual)):
+        # MUTATE:report-residual-shape:pass
+        raise Defect(
+            f"{where}: `residual_risk` is {residual!r} — it is a LIST of the reviewer's calibration "
+            f"records, each a non-blank string, and `[]` when it wrote none. A LIST is what makes each "
+            f"record recoverable: one holding a control character is escaped by the encoder, never split"
+        )
+    if residual and verdict != SATISFIED:
+        # MUTATE:report-residual-scope:pass
+        raise Defect(
+            f"{where}: a {verdict!r} result carries {len(residual)} residual-risk record(s) — the signal "
+            f"names the least-certain part of an ACCEPTING pass, and the one document that carries it "
+            f"onward reads only accepting passes (`bailout-and-final-report.md`). Drop the records, or say "
+            f"{SATISFIED!r} and mean it"
+        )
+
+
+def check_report_file(text: str, path: Path) -> dict:
+    """The report artifact's WHOLE BYTES, and the one record they must be. The read side's own function.
+
+    `report-write` hands it the bytes it is ABOUT to produce and refuses to write unless this accepts them,
+    exactly as `emit` does with `check_progress_file` — so the tool cannot write a report it would refuse
+    to read, and the artifact's one-record rule is enforced by the same statement at both doors.
+    """
+    report_name(path)
+    records = parse_lines(text, path.name)
+    if len(records) != 1:
+        # MUTATE:report-record-count:records = records[:1] or [{}]
+        raise Defect(
+            f"{path.name} holds {len(records)} record(s) — a review pass yields EXACTLY ONE report. None "
+            f"is a pass that produced no result; two is a choice among results, which is not a result. "
+            f"This is also what refuses a SECOND `report-write`: if what you concluded changed, the PASS "
+            f"re-runs and its relaunch gets its own `review-<pr>-<n>.a<k>.report.jsonl` — the record does not"
+        )
+    check_report(records[0], f"{path.name} line 1")
+    return records[0]
 
 
 # The field name the `verify` detail line prints the records under. Named once, beside the encoder that
 # owns the format, because a reader is told to FIND this field before it decodes anything.
 RESIDUAL_RISK_FIELD = "residual-risk"
 
+# The characters `str.splitlines()` ENDS A LINE AT that a JSON encoder does NOT escape for us. Every other
+# one it recognises — LF, CR, U+000B, U+000C, U+001C, U+001D, U+001E — is a C0 control, and `json.dumps`
+# escapes those whatever `ensure_ascii` says; these three are not controls, so `ensure_ascii=False` prints
+# them as themselves. `render_residual` escapes exactly this set and owns the reasons. The set is DERIVED
+# rather than trusted by `review-pass-test.py`, which walks every code point and reconciles the two.
+UNESCAPED_LINE_BREAKS = ("\u0085", "\u2028", "\u2029")
+
 
 def render_residual(records: "list[str]") -> str:
-    """`salvage_residual`'s list as ONE printable field — JSON, so the LIST survives being printed.
+    """The record's `residual_risk` list as ONE printable field — JSON, so the LIST survives being printed.
 
     **The record boundary has to be recoverable from the printed line ALONE**, because the printed line is
     the only form anything downstream ever sees: the final report reproduces each record as `verify`
     reports it (`bailout-and-final-report.md`), and no consumer re-reads the report file. So a rendering
     that cannot be decoded back to the list this function was handed is a rendering that invents or
-    destroys a reviewer's records one layer below `salvage_residual`, which exists to do neither.
+    destroys a reviewer's records one layer below the artifact, which keeps them apart by construction.
 
     **JOINING THE RECORDS WITH A SEPARATOR CANNOT DO THAT, AND NO CHOICE OF SEPARATOR CAN.** Whatever
     string stands between two records is a string a reviewer may also have typed INSIDE one, and then the
@@ -1487,127 +1528,68 @@ def render_residual(records: "list[str]") -> str:
     **JSON answers all three requirements at once.** It is LOSSLESS — `json.loads` of this field is `==`
     the list handed in. It is SELF-DELIMITING — the array ends at its own `]`, so the human-readable
     reason printed after it can never be read as part of a record, and a record containing `; `, `]`, or a
-    quote needs no cooperation from the reader. And it stays ONE LINE: `parse_report` splits the report
-    with `str.splitlines()`, which ends a line at EVERY character that could begin a new one (LF, CR,
-    U+001C–U+001E, U+0085, U+2028, U+2029 among them), so no record can contain one; `json.dumps` escapes
-    the C0 controls, `"` and `\\` that remain.
+    quote needs no cooperation from the reader. And it stays ONE LINE — **but only because this function
+    escapes the line terminators the ENCODER does not.** `json.dumps` escapes every C0 control, `"` and
+    `\\`, which covers LF, CR, U+000B, U+000C and U+001C–U+001E. It does NOT cover U+0085, U+2028 and
+    U+2029, which are not controls and which `str.splitlines()` ends a line at exactly the same
+    (`UNESCAPED_LINE_BREAKS`, the set this function escapes by hand after encoding). The ARTIFACT is safe
+    from them because its own write encodes with the default `ensure_ascii=True`; this field is not, and
+    a record holding one of the three used to print as TWO lines — so the pinned recovery, which reads the
+    field out of the FIRST line, hit an unterminated string and could not decode the reviewer's records at
+    all.
 
-    `ensure_ascii=False` is deliberate: this field is printed for a human as well as decoded by a driver,
-    and the records are the reviewer's own words. Escaping every em dash and every non-Latin character
-    would be equally lossless and unreadable. Nothing it leaves unescaped can end the line or the array,
-    per the paragraph above.
+    Escaping them costs a decoder nothing: `\\u0085` reads back as U+0085, so `json.loads` of this field
+    is still `==` the list handed in, and the LOSSLESSNESS above is unchanged.
+
+    `ensure_ascii=False` is deliberate, and it is why the escape is NARROW rather than the whole encoding:
+    this field is printed for a human as well as decoded by a driver, and the records are the reviewer's
+    own words. `ensure_ascii=True` would also end the split — it escapes those three among everything else
+    — but it spends every em dash and every non-Latin character to do it, which is equally lossless and
+    unreadable. Escaping the three characters that can actually END THE LINE buys the same guarantee and
+    keeps the words. Nothing left unescaped can end the line or the array.
 
     An empty list renders `[]` rather than vanishing, so the field is present on EVERY parsed report and a
     reader never has to tell "this pass wrote no records" apart from "the field is somewhere else".
     """
-    return json.dumps(records, ensure_ascii=False)
+    rendered = json.dumps(records, ensure_ascii=False)
+    # Only the string CONTENTS can hold one of these: every structural character JSON writes is ASCII, so
+    # replacing them cannot touch the array's own syntax, and each escape decodes back to the character
+    # it replaced.
+    for char in UNESCAPED_LINE_BREAKS:
+        rendered = rendered.replace(char, f"\\u{ord(char):04x}")
+    return rendered
 
 
 class ReportResult(TypedDict):
-    """What one report YIELDS: the verdict the gate reads, a DEFERRED result's routing reason, and the
-    reviewer's residual-risk records.
+    """What one report YIELDS: the verdict the gate reads, a DEFERRED result's routing reason, the
+    reviewer's residual-risk records, and its prose account.
 
-    `residual_risk` is a LIST because a report may carry several `RESIDUAL-RISK:` lines and each is its
-    own record (`salvage_residual`) — no element ever holds two of them spliced together. An empty list is
-    the ordinary "wrote none", and it is also what every non-SATISFIED result yields.
+    `residual_risk` is a LIST because a report may carry several records and each is its own value — no
+    element ever holds two of them spliced together, and no control character inside one can split it. An
+    empty list is the ordinary "wrote none", and it is the only value a non-SATISFIED result may take.
     """
     verdict: str
     deferred_reason: "str | None"
     residual_risk: "list[str]"
+    summary: str
 
 
 def parse_report(progress: Path) -> ReportResult:
-    """Read one exact terminal result from the active attempt's report.
+    """Read the active attempt's report — the ONE sanctioned reader, and now a decode rather than a scan.
 
-    Report prose remains the reviewer's judgment. This parser owns only the framing that makes that
-    judgment usable, and that framing is the VERDICT: one terminal result, on the last nonblank line, in
-    exactly one of three spellings, with a reason for DEFERRED. No CONTENT above that result can refuse
-    the pass — a residual-risk line there is read (`salvage_residual`) and never judged, because no answer
-    this function gives depends on it. Content BELOW the result is a different question and the terminal
-    rule already answers it: anything after the verdict, a residual-risk line included, makes the claimed
-    result nonterminal. That is the trailing-text rule, not a rule about this line, and it is why the
-    prompt asks for the line LAST BEFORE the verdict rather than after it.
+    There is nothing here to be lenient about and nothing to salvage. The verdict is a FIELD of a validated
+    record, so it is not looked for; the residual-risk records are ARRAY ELEMENTS, so their boundaries are
+    the encoder's rather than a line reader's. Report prose remains the reviewer's judgment and this
+    function still never reads it — `summary` is carried, not judged.
     """
     path = report_path(progress)
-    text = read_text(path, "active review report")
-    # `splitlines()` — the SAME line reader every other artifact in this file uses, and deliberately so.
-    # It ends a line at more than LF (U+001C, U+0085, U+2028 and the rest), so a record holding one of
-    # those loses its tail. That is NOT a residual-risk rule and NOT this change's to alter: the SAME
-    # split decides which line the terminal `VERDICT:` is, so a scan that ended lines only at LF would
-    # splice the verdict into a preceding record — a report reading `RESIDUAL-RISK: x<U+001C>VERDICT:
-    # SATISFIED` would file the gate's own answer as calibration text. The base voids the entire pass on
-    # those same bytes, so nothing here lost a record the base kept. To falsify: show a line reader this
-    # file uses that splits differently, or a base run preserving that tail.
-    lines = text.splitlines()
-    nonblank = [n for n, line in enumerate(lines) if line.strip()]
-    if not nonblank:
-        # MUTATE:report-empty:pass
-        raise Defect(
-            f"{path.name} is empty — a review report must end with exactly one terminal result"
-        )
-
-    last = nonblank[-1]
-    terminal = [n for n, line in enumerate(lines) if line.startswith("VERDICT:")]
-    if not terminal:
-        # MUTATE:report-result-missing:terminal = [last]
-        raise Defect(
-            f"{path.name} has no exact `VERDICT:` terminal result — truncated or prose-only output is not "
-            f"a review result"
-        )
-    if len(terminal) != 1:
-        # MUTATE:report-result-duplicate:terminal = terminal[-1:]
-        raise Defect(
-            f"{path.name} has {len(terminal)} `VERDICT:` result lines — a report yields exactly one result, "
-            f"not a choice among several"
-        )
-    if terminal[0] != last:
-        # MUTATE:report-result-not-terminal:pass
-        raise Defect(
-            f"{path.name}: the `VERDICT:` result is not the last nonblank line — trailing text makes the "
-            f"claimed terminal result nonterminal"
-        )
-
-    result_line = lines[last]
-    deferred = REPORT_DEFERRED_RE.match(result_line)
-    if result_line == REPORT_SATISFIED:
-        verdict = SATISFIED
-    elif result_line == REPORT_NOT_SATISFIED:
-        verdict = NOT_SATISFIED
-    elif deferred is not None:
-        verdict = DEFERRED
-    else:
-        # MUTATE:report-result-shape:verdict = SATISFIED
-        raise Defect(
-            f"{path.name}: terminal result {result_line!r} is malformed — use exactly "
-            f"{REPORT_SATISFIED!r}, {REPORT_NOT_SATISFIED!r}, or "
-            "'VERDICT: DEFERRED — <one-line reason>'"
-        )
-
-    # The verdict is settled ABOVE, from the terminal line alone. What follows cannot reach it: this is a
-    # READ of the calibration line, and there is deliberately no branch here that raises. A pass whose
-    # reviewer wrote the line crookedly, wrote it twice, wrote it in the middle of its prose, or wrote it
-    # under a blocking verdict is a pass that answered the gate's question — the answer is on the verdict
-    # line, and the gate reads nothing else from this file.
-    #
-    # It is still SATISFIED-only, because that is the only result the line is carried for (the final report
-    # records the least-certain area of each ACCEPTING pass, `bailout-and-final-report.md`). On any other
-    # result the line is dropped rather than refused: dropping metadata nobody consumes costs nothing,
-    # while refusing costs the whole review.
-    #
-    # **The `[]` on a blocking verdict is a SCOPE, not a loss, and both halves of that are checkable here.**
-    # Nothing consumes such a record: `residual_risk` is read at exactly one site in this tree — the
-    # `verify` detail line below — and the one document that carries records onward takes them from a
-    # merged PR's ACCEPTING passes (`bailout-and-final-report.md`), so a record from a NOT SATISFIED or
-    # DEFERRED pass has no reader to lose it. And nothing regressed: on the base this same input raised a
-    # SATISFIED-only `Defect` and destroyed the whole pass, so dropping the line keeps strictly more of the
-    # reviewer's work, not less. To falsify either half, name a second reader of `residual_risk`, or show
-    # the base preserving that record.
-    residual = salvage_residual(lines) if verdict == SATISFIED else []
-
+    rec = check_report_file(read_text(path, "active review report"), path)
+    reason = rec["deferred_reason"]
     return {
-        "verdict": verdict,
-        "deferred_reason": deferred.group("reason") if deferred is not None else None,
-        "residual_risk": residual,
+        "verdict": rec["verdict"],
+        "deferred_reason": None if reason == NO_DEFERRED_REASON else reason,
+        "residual_risk": list(rec["residual_risk"]),
+        "summary": rec["summary"],
     }
 
 
@@ -2253,6 +2235,17 @@ def write_line(path: Path, before: str, rec: "dict[str, object]",
     That is also what catches the defect neither door's per-record checks can see: a file whose last line
     has NO TRAILING NEWLINE. The append lands ON that line, fusing two events into one — and every
     record-level check passes, because the RECORD was never the problem. Only `before + line` shows it.
+
+    **The read-then-append is NOT atomic, and that is neither introduced here nor reachable — both halves
+    are checkable.** It is not introduced: this function and its callers are unchanged from the base, where
+    the same interleaving lands two rows through `identity`, so nothing about moving the report onto this
+    door created it. It is not reachable: a report path belongs to ONE launch attempt — `review-dispatch.py`
+    gives each attempt its own stem and refuses to prepare over an existing attempt's artifacts — so the
+    campaign never puts two writers on one path, and the only actor who could stage the race is the single
+    committer hand-editing their own git-ignored run directory, which this run's default Non-goals place
+    out of scope. It also fails CLOSED: two rows make the pass `unusable` at `verify`, never countable. To
+    falsify, show a campaign path that allocates two writers to one report path, or a two-row report that
+    verifies `ok`.
     """
     line = json.dumps(rec, separators=(",", ":")) + "\n"
     # MUTATE:write-verifies-result:pass
@@ -2287,11 +2280,12 @@ def _append_line(path: Path, line: str) -> None:
                 f"every artifact a reviewer writes (progress, findings, amendments, report) lives under the "
                 f"run-artifact root, so `-C` MUST be that root — `cross-agent-reviewers.md` (\"Claude Code "
                 f"orchestrator -> Codex reviewer\") owns the exact argv, and a `-C` pointed at the candidate "
-                f"worktree makes the run directory read-only and every emit fail like this. This is a "
+                f"worktree makes the run directory read-only and every write fail like this. This is a "
                 f"DISPATCH fault, not a reviewer fault, and retrying into the SAME sandbox fails "
-                f"identically. Do NOT create the file yourself and do NOT retry: make the report's terminal "
-                f"line `VERDICT: DEFERRED — {path.name} is on a read-only/unwritable filesystem (check the "
-                f"launch's -C target)` and stop"
+                f"identically. Do NOT create the file yourself and do NOT retry. **Your REPORT lands under "
+                f"that same root, so it cannot land either** — say so in your final message and stop. The "
+                f"orchestrator sees an attempt that produced no report, which is unusable, and relaunches "
+                f"or parks the PR; your message is the only place the `-C` target gets named"
             ) from exc
         raise
 
@@ -2393,11 +2387,11 @@ def cmd_amend(args) -> int:
     sys.stdout.write(write_line(path, text, rec, lambda after: check_progress_file(after, path, lambda: units)))
     # A short confirmation, naming the proposed unit — the mirror of `finding-add`'s note. The pass now
     # verifies `amended` until the orchestrator folds the unit into the plan and restarts the pass (or
-    # records why not); the reviewer ends its report `VERDICT: DEFERRED`.
+    # records why not); the reviewer writes its report with `--verdict deferred`.
     sys.stdout.write(
         f"# amendment raised: the plan is missing {args.id!r} ({args.kind} / {args.target}). This pass now "
         f"verifies `amended` until the orchestrator rules on it — folds the unit into the plan and restarts "
-        f"the pass, or records why not. End the report `VERDICT: DEFERRED`.\n"
+        f"the pass, or records why not. Write your report with `--verdict deferred`.\n"
     )
     return 0
 
@@ -2588,6 +2582,43 @@ def cmd_finding_add(args) -> int:
     return 0
 
 
+def cmd_report_write(args) -> int:
+    """Write the pass's ONE report record — the ONLY sanctioned way a reviewer delivers a verdict.
+
+    **THIS DOOR IS THE SWAP, NOT AN ADDITION.** The report used to have a route-dependent producer: a
+    native worker wrote the file itself, and an external process's final output channel was captured at the
+    report path by the orchestrator (`codex -o`, a `stdout_file`) with the reviewer FORBIDDEN to write it.
+    Both are gone. Every route now delivers through this door, so the artifact's shape is decided where it
+    is WRITTEN and there is nothing downstream to be lenient about. Keeping either capture alongside this
+    would put two writers on one artifact — and the codex capture writes AFTER the run, so it would not
+    merely race the record, it would replace it.
+
+    **A SECOND CALL IS REFUSED BY THE ONE-RECORD RULE, NOT BY A GUARD OF ITS OWN — deliberately.** The
+    obvious spelling is `identity`'s: refuse a file that holds bytes. But `check_report_file` ALREADY says
+    a report artifact is exactly one record, and `write_line` hands it `before + line` — so the second
+    write is refused by the same statement the read door refuses two records with, and there is no
+    write-shaped copy of the rule to drift. `identity` needs its own guard because a progress file
+    legitimately GROWS after the identity; a report never does.
+    """
+    path = Path(args.file)
+    # The NAME first, and by the SAME statement the read door runs: a path that is not a report artifact's
+    # name is not a file this tool reads at all, so `before_text` is not asked about it.
+    report_name(path)
+    text = before_text(path)
+    # The RECORD IS THE FLAGS — VERBATIM. Each `--residual-risk` becomes one element in the order written,
+    # unedited: no separator is invented between two of them and nothing is stripped inside one, because
+    # either would be this tool putting words in a reviewer's record.
+    rec: "dict[str, object]" = {
+        "type": REVIEW_REPORT, "verdict": args.verdict, "deferred_reason": args.deferred_reason,
+        "residual_risk": list(args.residual_risk), "summary": args.summary,
+    }
+    # The SAME function the read side runs — so a record this door writes is one `verify` can never call
+    # malformed, and the verdict/reason/residual rules exist in exactly one place.
+    check_report(rec, "the report you asked to write (--verdict/--deferred-reason/--residual-risk/--summary)")
+    sys.stdout.write(write_line(path, text, rec, lambda after: check_report_file(after, path)))
+    return 0
+
+
 def cmd_verify(args) -> int:
     path = Path(args.file)
     # The CALLER's sha, against the SAME pattern the artifact's own `head_sha` is held to (`ID_FORMATS`) —
@@ -2714,7 +2745,7 @@ PROGRESS_DEADLINE_S = 15 * 60   # meaningful progress (a planned-unit done / acc
 #
 # TWO of them are TERMINAL — the reviewer does not exist anymore — and the mtime-based liveness states
 # (`launching`/`working`/`STALLED`/`NO-LAUNCH!`) apply to NEITHER: only a genuinely-CURRENT pass can be
-# live. `done` is a finished pass (its report carries a `VERDICT:` line). `gone` is a pass whose reviewer
+# live. `done` is a finished pass (its report record carries a binary verdict). `gone` is a pass whose reviewer
 # left with NO verdict — it was SUPERSEDED (a later pass number exists for its PR) or RELAUNCHED (a later
 # launch attempt exists). Without this split a completed or abandoned pass from hours ago rendered as
 # `STALLED`/`AMEND(n)`, so the table listed "reviewers" that were long gone (`health_of`).
@@ -2810,29 +2841,21 @@ def latest_pass_per_pr(rundir: Path) -> "dict[str, int]":
 
 
 def scrape_verdict(progress: Path) -> str:
-    """The report's last `VERDICT:` line, mapped to SAT / NOT-SAT / - . Advisory only. A `VERDICT: DEFERRED`
-    line reads as "no binary verdict" (V_NONE): the reviewer raised a separate request instead of ruling."""
+    """The report record's `verdict`, mapped to SAT / NOT-SAT / - . Advisory only, and it never raises.
+
+    `status` renders a pass that may still be in flight, so this must answer for a report that is absent,
+    half-written or malformed — and answer `V_NONE` rather than a verdict it had to guess at. It is the
+    LENIENT partner of `parse_report`, exactly as `read_lenient` is of `read_lines`, and the leniency is
+    now the only thing separating them: the strict reader validates the whole record, this one takes the
+    `verdict` field if the bytes yield one. A `deferred` result reads as "no binary verdict" (`V_NONE`):
+    the reviewer raised a separate request instead of ruling.
+    """
     path = report_path(progress)
-    if not path.exists():
-        return V_NONE
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+        rec = check_report_file(read_text(path, "active review report"), path)
+    except Defect:
         return V_NONE
-    verdict = V_NONE
-    for line in text.splitlines():
-        if "VERDICT:" in line.upper():
-            rest = line.upper().split("VERDICT:", 1)[1]
-            # DEFERRED is not a binary verdict — test it FIRST, before the SATISF spelling tests. Its reason
-            # text (`DEFERRED — <reason>`) can itself contain "satisf…", which would otherwise mis-scrape as
-            # SATISFIED; and NOT SATISFIED contains SATISFIED, so the negative spelling comes before SATISF.
-            if "DEFER" in rest:
-                verdict = V_NONE
-            elif "NOT" in rest and "SATISF" in rest:
-                verdict = V_NOT_SAT
-            elif "SATISF" in rest:
-                verdict = V_SAT
-    return verdict
+    return {SATISFIED: V_SAT, NOT_SATISFIED: V_NOT_SAT}.get(rec["verdict"], V_NONE)
 
 
 def plan_total(progress: Path) -> str:
@@ -3276,6 +3299,37 @@ def add_amendment_args(p: argparse.ArgumentParser) -> None:
                    help="a concrete check; REQUIRED, and repeatable — a unit with no checks is not a unit")
 
 
+def add_report_args(p: argparse.ArgumentParser) -> None:
+    """The report door's flags — defined in exactly ONE place, exactly as `add_emit_args` is.
+
+    `emit-report.py` (the reviewer's door) and `review-pass.py report-write` (the owner's) both call this,
+    so the two cannot come to accept — or ADVERTISE — different flags.
+
+    `--residual-risk` is the one OPTIONAL flag, and its optionality is the contract: a SATISFIED pass that
+    cannot honestly name a least-certain area writes none, and that is the correct output rather than a
+    deficient one. It repeats because a reviewer may name several, and each stays its own record.
+    """
+    p.add_argument("--file", required=True, help="the launch attempt's report.jsonl — it must not exist yet")
+    p.add_argument("--verdict", required=True, choices=VERDICT_CHOICES,
+                   help=f"{SATISFIED} or {NOT_SATISFIED} — the rule is an IF AND ONLY IF: "
+                        f"{NOT_SATISFIED} exactly when at least one GATING finding stands. "
+                        f"{DEFERRED} is NOT a verdict: it says you rendered none because you raised a "
+                        f"request the orchestrator must handle first (a plan amendment, or a broken "
+                        f"dispatch you are stopping on)")
+    p.add_argument("--deferred-reason", required=True,
+                   help=f"the ONE-LINE reason the orchestrator routes a {DEFERRED} result on. The literal "
+                        f"{NO_DEFERRED_REASON!r} when you rendered a verdict, because then there is nothing "
+                        f"to route")
+    p.add_argument("--residual-risk", action="append", default=[],
+                   help="OPTIONAL, and repeatable: the part of the diff you verified with the LEAST "
+                        "certainty relative to the rest, and why. Calibration metadata for the campaign's "
+                        "final report — never a finding, and it does not weaken a SATISFIED. Only a "
+                        f"{SATISFIED} report may carry one; write none when you cannot honestly name one")
+    p.add_argument("--summary", required=True,
+                   help="your report: what you reviewed, what you found, and the concrete fix for each "
+                        "finding with its file:line (the findings artifact holds the authoritative record)")
+
+
 def build_parser() -> "tuple[argparse.ArgumentParser, list[str]]":
     """The CLI, and the list of subcommands it actually has — DERIVED from the parser, never typed out.
 
@@ -3335,6 +3389,9 @@ def build_parser() -> "tuple[argparse.ArgumentParser, list[str]]":
     add_finding_args(sub.add_parser(
         "finding-add", help="record ONE finding, anchored to the PR's intent (what emit-finding.py calls)"))
 
+    add_report_args(sub.add_parser(
+        "report-write", help="write the pass's ONE report record and its verdict (what emit-report.py calls)"))
+
     intent = sub.add_parser(
         "intent-check", help="refuse a missing or malformed intent block — or one whose run-default managed "
                              "block is out of sync with the run header — before review dispatch")
@@ -3393,6 +3450,7 @@ def dispatch(args) -> int:
         return {"emit": cmd_emit, "identity": cmd_identity, "plan-add": cmd_plan_add,
                 "plan-waive": cmd_plan_waive, "plan-check": cmd_plan_check,
                 "amend": cmd_amend, "finding-add": cmd_finding_add, "intent-check": cmd_intent_check,
+                "report-write": cmd_report_write,
                 "verify": cmd_verify, "status": cmd_status}[args.cmd](args)
     except Defect as exc:
         fail(str(exc), 1)

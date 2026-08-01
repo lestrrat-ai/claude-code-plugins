@@ -56,7 +56,7 @@ def _fixture(
     review_pass: str = "2",
     launch_attempt: str = "1",
     route: str = "native",
-    producer: str = "native-worker-write",
+    producer: str = "reviewer-tool-write",
     prompt_profile: str = "standard",
     intent: bytes | None = None,
     base: str = "main",
@@ -105,7 +105,8 @@ def t_relaunch_paths_share_one_attempt_identity() -> None:
         check(paths["prompt"].name == f"{expected}.prompt.txt", "prompt lost launch attempt 2")
         check(paths["progress"].name == f"{expected}.progress.jsonl", "progress lost launch attempt 2")
         check(paths["findings"].name == f"{expected}.findings.jsonl", "findings lost launch attempt 2")
-        check(paths["report"].name == f"{expected}.txt", "report lost launch attempt 2")
+        check(paths["report"].name == f"{expected}{D.RP.REPORT_SUFFIX}",
+              "report lost launch attempt 2 or its artifact suffix")
         check(paths["plan"].name == "review-41-2.plan.jsonl", "the per-pass plan gained an attempt suffix")
 
 
@@ -120,8 +121,8 @@ def t_prepare_attempt_one_materializes_one_record() -> None:
               "transport attempt must use JSON PositiveInt values")
         check(transport["prompt_profile"] == "standard",
               "attempt 1 must carry the standard prompt profile")
-        check(transport["report"]["producer"] == "native-worker-write",
-              "native route must carry the native report owner")
+        check(transport["report"]["producer"] == "reviewer-tool-write",
+              "every route must carry the one report producer: the reviewer's own report door")
         check(Path(transport["prompt_path"]) == paths["prompt"], "transport prompt path drifted")
         check(Path(transport["progress_path"]) == paths["progress"], "transport progress path drifted")
         check(Path(transport["findings_path"]) == paths["findings"], "transport findings path drifted")
@@ -134,50 +135,59 @@ def t_prepare_attempt_one_materializes_one_record() -> None:
         ident = D.RP.check_identity(events, "41", "2", "1")
         check(ident["head_sha"] == SHA and ident["dispatched_at"] == STAMP,
               "identity must carry the caller's full SHA and real dispatch clock")
-        for field in ("emit_progress_path", "emit_finding_path", "emit_amendment_path"):
+        for field in ("emit_progress_path", "emit_finding_path", "emit_amendment_path",
+                      "emit_report_path"):
             emitter = Path(transport[field])
             check(emitter.is_absolute() and emitter.is_file(), f"{field} must resolve from the installed script")
 
 
-def t_later_attempt_uses_external_report_owner() -> None:
+def t_later_attempt_keeps_the_reviewer_report_door() -> None:
     for route in ("external-codex", "external-claude"):
         with tempfile.TemporaryDirectory() as raw:
             args = _fixture(
-                Path(raw), launch_attempt="7", route=route, producer="external-process-capture"
+                Path(raw), launch_attempt="7", route=route, producer="reviewer-tool-write"
             )
             transport = D.prepare(args)["transport"]
             check(transport["attempt"]["launch_attempt"] == 7, f"{route} lost attempt 7")
             check(".a7." in transport["prompt_path"] and ".a7." in transport["progress_path"] and
                   ".a7." in transport["findings_path"], f"{route} mixed attempt-scoped artifact names")
-            check(transport["report"]["path"].endswith("review-41-2.a7.txt"),
-                  f"{route} report lost attempt 7")
-            check(transport["report"]["producer"] == "external-process-capture",
-                  f"{route} must leave report writing to process capture")
+            check(transport["report"]["path"].endswith("review-41-2.a7" + D.RP.REPORT_SUFFIX),
+                  f"{route} report lost attempt 7 or its artifact suffix")
+            check(transport["report"]["producer"] == "reviewer-tool-write",
+                  f"{route} must leave the report to the reviewer's report door, not process capture")
 
 
 def t_route_and_report_owner_must_agree() -> None:
-    pairs = (
-        ("native", "external-process-capture", "native-worker-write"),
-        ("external-codex", "native-worker-write", "external-process-capture"),
-        ("external-claude", "native-worker-write", "external-process-capture"),
-    )
-    for route, producer, required in pairs:
-        with tempfile.TemporaryDirectory() as raw:
-            args = _fixture(Path(raw), route=route, producer=producer)
-            _refused(args, f"requires report producer {required!r}")
-            paths = D.attempt_paths(Path(args.run_dir), "41", "2", "1")
-            check(not paths["prompt"].exists() and not paths["progress"].exists(),
-                  "a producer mismatch must create no launch artifacts")
+    """**THE PRODUCER WAS SWAPPED, NOT ADDED — and that is what this pins.**
+
+    It used to assert that each route required its OWN producer: a native worker wrote the file, an
+    external process's final output was captured at the report path, and crossing them was refused. Both
+    captures are gone; the reviewer's report door is the sole producer on every route. So the assertion
+    turns over: NO route may name a capture producer any more, because a capture alongside the door would
+    be a SECOND writer — and the codex capture writes AFTER the run, so it would replace the record rather
+    than race it.
+    """
+    retired = ("native-worker-write", "external-process-capture")
+    for route in D.ROUTE_PRODUCERS:
+        check(D.ROUTE_PRODUCERS[route] == "reviewer-tool-write",
+              f"{route} must map to the one report producer")
+        for producer in retired:
+            with tempfile.TemporaryDirectory() as raw:
+                args = _fixture(Path(raw), route=route, producer=producer)
+                _refused(args, f"unknown report producer {producer!r}")
+                paths = D.attempt_paths(Path(args.run_dir), "41", "2", "1")
+                check(not paths["prompt"].exists() and not paths["progress"].exists(),
+                      "a retired producer must create no launch artifacts")
 
 
 def t_prompt_profiles_are_typed_and_route_scoped() -> None:
     """Only external Codex attempt 2 receives recovery framing; every other route stays standard."""
     recovery = D.CODEX_RECOVERY_PREAMBLE
     allowed = (
-        ("external-codex", "1", "standard", "external-process-capture", False),
-        ("external-codex", "2", "codex-recovery", "external-process-capture", True),
-        ("external-claude", "2", "standard", "external-process-capture", False),
-        ("native", "3", "standard", "native-worker-write", False),
+        ("external-codex", "1", "standard", "reviewer-tool-write", False),
+        ("external-codex", "2", "codex-recovery", "reviewer-tool-write", True),
+        ("external-claude", "2", "standard", "reviewer-tool-write", False),
+        ("native", "3", "standard", "reviewer-tool-write", False),
     )
     for route, launch_attempt, profile, producer, has_recovery in allowed:
         with tempfile.TemporaryDirectory() as raw:
@@ -204,8 +214,9 @@ def t_prompt_profiles_are_typed_and_route_scoped() -> None:
                 b"TRANSPORT.emit_progress_path",
                 b"TRANSPORT.emit_finding_path",
                 b"TRANSPORT.emit_amendment_path",
-                b"VERDICT: SATISFIED",
-                b"VERDICT: NOT SATISFIED",
+                b"TRANSPORT.emit_report_path",
+                b'"--verdict", verdict',
+                b'"--deferred-reason", deferred_reason',
             ):
                 check(needle in prompt, f"{route} attempt {launch_attempt} lost contract needle {needle!r}")
             for needle in (
@@ -226,7 +237,7 @@ def t_prompt_profiles_are_typed_and_route_scoped() -> None:
     )
     for route, launch_attempt, profile, expected in refused:
         with tempfile.TemporaryDirectory() as raw:
-            producer = "native-worker-write" if route == "native" else "external-process-capture"
+            producer = "reviewer-tool-write"
             args = _fixture(
                 Path(raw),
                 launch_attempt=launch_attempt,
@@ -370,7 +381,7 @@ def t_overlapping_run_dir_and_worktree_create_nothing() -> None:
             base="main",
             route="native",
             prompt_profile="standard",
-            report_producer="native-worker-write",
+            report_producer="reviewer-tool-write",
             head_sha=SHA,
             dispatched_at=STAMP,
             intent_file=os.fspath(intent_path),
@@ -662,16 +673,16 @@ def t_external_attempt_two_has_native_attempt_three_recovery() -> None:
     with tempfile.TemporaryDirectory() as raw:
         args = _fixture(
             Path(raw), launch_attempt="2", route="external-codex",
-            producer="external-process-capture", prompt_profile="codex-recovery",
+            producer="reviewer-tool-write", prompt_profile="codex-recovery",
         )
         D.prepare(args)
         args.launch_attempt = "3"
         args.route = "native"
         args.prompt_profile = "standard"
-        args.report_producer = "native-worker-write"
+        args.report_producer = "reviewer-tool-write"
         transport = D.prepare(args)["transport"]
         check(transport["attempt"]["launch_attempt"] == 3 and
-              transport["report"]["path"].endswith("review-41-2.a3.txt"),
+              transport["report"]["path"].endswith("review-41-2.a3" + D.RP.REPORT_SUFFIX),
               "native fallback did not receive fresh attempt-3 artifacts")
 
     refs = OWNER.parent.parent / "references"
@@ -694,12 +705,12 @@ def t_transition_actions_map_directly_to_prepare_inputs() -> None:
     runtime = (OWNER.parent.parent / "references" / "runtime-adapter.md").read_text(encoding="utf-8")
     for row in (
         "| `launch-external` | selected capability's external route | "
-        "`external-process-capture` | `standard` |",
+        "`reviewer-tool-write` | `standard` |",
         "| `retry-external` + `external-codex` | `external-codex` | "
-        "`external-process-capture` | `codex-recovery` |",
+        "`reviewer-tool-write` | `codex-recovery` |",
         "| `retry-external` + `external-claude` | `external-claude` | "
-        "`external-process-capture` | `standard` |",
-        "| `launch-native` / `fallback-native` | `native` | `native-worker-write` | `standard` |",
+        "`reviewer-tool-write` | `standard` |",
+        "| `launch-native` / `fallback-native` | `native` | `reviewer-tool-write` | `standard` |",
         "| `park-machine-blocker` | no preparation | no preparation | no preparation |",
     ):
         check(row in runtime, f"review_transition mapping row is missing: {row}")
@@ -723,7 +734,7 @@ def t_unicode_worktree_delivers_under_ascii_stdout() -> None:
             "prepare", "--run-dir", os.fspath(rundir), "--pr", "41", "--pass", "2",
             "--launch-attempt", "1", "--worktree", os.fspath(worktree), "--base", "main",
             "--route", "native", "--prompt-profile", "standard",
-            "--report-producer", "native-worker-write",
+            "--report-producer", "reviewer-tool-write",
             "--head-sha", SHA, "--dispatched-at", STAMP, "--default-non-goals", "[]",
             "--intent-file", os.fspath(intent_path),
         ]
@@ -745,7 +756,7 @@ def t_unicode_worktree_delivers_under_ascii_stdout() -> None:
 
 def t_cli_emits_only_canonical_host_neutral_json() -> None:
     with tempfile.TemporaryDirectory() as raw:
-        args = _fixture(Path(raw), route="external-codex", producer="external-process-capture")
+        args = _fixture(Path(raw), route="external-codex", producer="reviewer-tool-write")
         argv = [
             "prepare", "--run-dir", args.run_dir, "--pr", args.pr, "--pass", args.review_pass,
             "--launch-attempt", args.launch_attempt, "--worktree", args.worktree, "--base", args.base,
@@ -916,7 +927,7 @@ CASES = [
         t_relaunch_paths_share_one_attempt_identity,
     ),
     ("attempt-one", "prepare materializes one coherent attempt-1 record", t_prepare_attempt_one_materializes_one_record),
-    ("later-external-attempt", "later attempts preserve suffix and external ownership", t_later_attempt_uses_external_report_owner),
+    ("later-external-attempt", "later attempts preserve suffix and the reviewer's report door", t_later_attempt_keeps_the_reviewer_report_door),
     ("producer-pairing", "route and sole report producer must agree", t_route_and_report_owner_must_agree),
     ("prompt-profile", "prompt profiles are typed and scoped to external Codex attempt 2",
      t_prompt_profiles_are_typed_and_route_scoped),

@@ -12,12 +12,12 @@ resume, reuse the existing dir). Per-run dirs are what keep concurrent runs' fil
 | `prs.json` | Batched snapshot of this run's PRs — adoption/discovery + per-heartbeat reconcile input. **`scripts/reconcile.py fetch` is the ONE executable producer**: it owns query argv, schema validation, scope validation, truncation refusal, and atomic promotion. **`scripts/reconcile.py detect` is the ONE consumer**: it emits per-PR reconcile facts. Routing remains skill policy (`loop-control.md`, "Step 1 — reconcile from ground truth") |
 | `lease.json` | This run's active-driver lease — read/written ONLY through `scripts/lease.py` (see "Run lease") |
 | `review-<pr>-<n>.prompt.txt` | The reviewer prompt for pass `n`, launch attempt 1, with the verbatim intent and JSON-encoded typed transport record bound as data. Its prompt profile comes from `runtime-adapter.md`, "Review preparation mapping". `n` is the pass number, spent only by a landed verdict. Written only by `scripts/review-dispatch.py prepare`, then passed through `dispatch_native` or `run_argv` — never embedded in shell source (`review-dispatch.md`) |
-| `review-<pr>-<n>.txt` | The reviewer's PR review output, pass `n` (launch attempt 1), written by the sole producer assigned in `runtime-adapter.md`'s typed review record. `review-pass.py verify` derives this path from the active progress artifact and owns its strict terminal-result parse |
+| `review-<pr>-<n>.report.jsonl` | The REPORT of pass `n` (launch attempt 1) — ONE validated record carrying the verdict, a deferral's routing reason, the reviewer's prose, and its residual-risk records, written **only** through `scripts/emit-report.py` (the sole producer `runtime-adapter.md`'s typed review record assigns on every route). It was free text with a `VERDICT:` line a parser had to LOCATE, which is where a control character could truncate a record and a placement rule could void a substantive pass. `review-pass.py verify` derives this path from the active progress artifact and owns its read. `stage-2-review-gate.md` owns the schema |
 | `review-<pr>-<n>.plan.jsonl` | Orchestrator-authored review work plan for pass `n` (per-pass — a relaunch reuses it): unit and waiver rows, written through `scripts/review-pass.py plan-add` and `plan-waive`, never a heredoc. `stage-2-review-gate.md`, "Review work-plan ledger", owns the plan rules |
 | `review-<pr>-<n>.progress.jsonl` | Reviewer progress events against the plan for pass `n` (launch attempt 1), opened by `review-dispatch.py prepare` with an orchestrator-owned `pass_identity` validated through `review-pass.py`. **Every line is READ and validated through `scripts/review-pass.py`, and every reviewer-written line goes through one of its doors.** Unit-progress events use `emit-progress.py`; a `plan_amendment_request` uses `emit-amendment.py`, which forwards to `review-pass.py amend`. `stage-2-review-gate.md` owns the artifact rule |
 | `review-<pr>-<n>.findings.jsonl` | The FINDINGS of pass `n` (launch attempt 1) — one validated record per finding, written **only** through `scripts/emit-finding.py`. A finding used to be prose in the report, so nothing could check its citation, bound its writer, or ask what it DEFENDED — and therefore nothing could ever **decline** one. Each record ANCHORS to the PR's intent: a `## Purpose` line quoted verbatim, or the actor who can actually write the bad input. `stage-2-review-gate.md` owns the schema and the gating rule |
 | `intent-<pr>.md` | **What this PR is FOR** — a **base** of `## Purpose` / `## Non-goals` / `## Threat model` PLUS the operator's run-default **MANAGED block** inside `## Non-goals` (folded in by `pr-adopt.py intent-sync` from the header `default_non_goals`; `pr-adoption.md` owns its format). The base is written at adoption (`pr-adoption.md`), from the PR body when it carries one and **authored by the driver** from the diff/title/body when it does not; re-read every heartbeat, never re-derived. It is passed to the reviewer **verbatim**, and it is what the **pass** is measured against: `review-pass.py verify` loads it for **every** pass it judges — including one that found nothing — so a PR with no usable block here earns **no verdicts at all** (`stage-2-review-gate.md`, "Does this pass COUNT?"). **LOCAL and git-ignored — campaign NEVER writes it back to the PR** |
-| `review-<pr>-<n>.a<k>.prompt.txt` / `.a<k>.txt` / `.a<k>.progress.jsonl` / `.a<k>.findings.jsonl` | The same four per-attempt artifacts for **launch attempt `k ≥ 2`** — a relaunched pass writes here, never over attempt 1's files, so a killed-but-alive attempt can't corrupt the live one. The prompt profile comes from `runtime-adapter.md`, "Review preparation mapping". `review-pass.py verify` derives `.a<k>.txt` from `.a<k>.progress.jsonl`; only that attempt is read or counted. The plan and intent remain per-pass/per-PR |
+| `review-<pr>-<n>.a<k>.prompt.txt` / `.a<k>.report.jsonl` / `.a<k>.progress.jsonl` / `.a<k>.findings.jsonl` | The same four per-attempt artifacts for **launch attempt `k ≥ 2`** — a relaunched pass writes here, never over attempt 1's files, so a killed-but-alive attempt can't corrupt the live one. The prompt profile comes from `runtime-adapter.md`, "Review preparation mapping". `review-pass.py verify` derives `.a<k>.report.jsonl` from `.a<k>.progress.jsonl`; only that attempt is read or counted. The plan and intent remain per-pass/per-PR |
 | `ci-<pr>-<head_sha>.txt` | Latest **SHA-pinned** CI snapshot for a PR — check runs **AND** commit statuses, written **BY THE HEARTBEAT** running **`scripts/ci-status.py derive`** after the watch completes (**the watch never writes it**), promoted atomically, and **stamped with the `head_sha` it describes** (verify the stamp before parsing). Carries a **`source` completion marker per mandatory source**, so a source that was **never queried** is `unusable`, not a silent green (`ci-derivation-spec.md`). Moved-head trust follows `stage-2-ci.md`, "A MOVED HEAD FAILS CLOSED". Never the watch stream, and never `gh pr checks` — its output carries **no SHA** |
 | `audit-<pr>-<n>.jsonl` | Schema-owned audit of the gating findings from the round pass `n`'s landed verdict produced, and any standoff ruling. Read/written only through `scripts/finding-audit.py`; `finding-audit.md`, **Executable audit artifact**, owns the complete procedure |
 | `repair-<pr>-<k>.prompt.txt` / `.prompt.txt.manifest.json` | Deterministic reassessment prompt and hash manifest written only by `repair-pass.py bundle` (`repair-pass.md`, "Build the complete reassessment bundle"). The manifest is promoted last and is required by `decide`; a prompt without its valid sidecar cannot authorize a decision |
@@ -105,7 +105,7 @@ GitHub via `gh`, plus local worktrees** (`reconcile.py fetch` + per-PR `gh pr vi
 `headRefOid` from `gh` — keyed by PR number — for the live head SHA, a **SHA-pinned** `check-runs` +
 commit-`status` fetch for live CI, and
 the **active launch attempt's** review output parsed by `review-pass.py verify` —
-`review-<pr>-<n>.txt` for attempt 1, `review-<pr>-<n>.a<k>.txt` after a relaunch, counting only the
+`review-<pr>-<n>.report.jsonl` for attempt 1, `review-<pr>-<n>.a<k>.report.jsonl` after a relaunch, counting only the
 attempt named in that pass's `pass_identity`, so a relaunch's verdict is never missed and a dead
 attempt's is never counted). `git rev-parse HEAD` is used
 ONLY to validate/read an existing worktree when one is checked out — never as the primary source of a
@@ -656,16 +656,18 @@ each description of it.
 
 ### Review-pass artifacts — use `scripts/review-pass.py`
 
-The plan, the `pass_identity`, the progress events, **the findings** and the read that decides **whether a
-pass counts** are one artifact set with one schema owner. `scripts/review-pass.py` READS every line of it —
-whatever wrote that line — and WRITES every line the reviewer records; the reviewer's three
-doors, `emit-progress.py` (CLI unchanged), `emit-finding.py`, and `emit-amendment.py`, are doors into the same owner. **Never
+The plan, the `pass_identity`, the progress events, **the findings**, **the report** and the read that
+decides **whether a pass counts** are one artifact set with one schema owner. `scripts/review-pass.py`
+READS every line of it — whatever wrote that line — and WRITES every line the reviewer records; the
+reviewer's four doors, `emit-progress.py` (CLI unchanged), `emit-finding.py`, `emit-amendment.py`, and
+`emit-report.py`, are doors into the same owner. **Never
 hand-parse one of those files, and never hand-write a
 line the tool writes for you** — `review-dispatch.py prepare` writes the validated `pass_identity`; the
 old hand-written identity is how a truncated SHA reached real
 state, and the hand-rolled tally is the same "read it by eye and write down the answer" that produced a
-false `ci = green`. `stage-2-review-gate.md` owns the rules — including the emit-only rule (now with no exempt event: a
-`plan_amendment_request` goes through `emit-amendment.py`), the intent a finding must ANCHOR to, and the gating rule that decides whether a finding
+false `ci = green`. `stage-2-review-gate.md` owns the rules — including the emit-only rule (now with no exempt artifact: a
+`plan_amendment_request` goes through `emit-amendment.py` and the report through `emit-report.py`), the
+intent a finding must ANCHOR to, and the gating rule that decides whether a finding
 may block the PR — the subcommands, and the four verdicts `verify`
 returns; resolve the script at `<skill-dir>/scripts/review-pass.py` and pass that path to subtasks, exactly
 as with `ledger.py` below.

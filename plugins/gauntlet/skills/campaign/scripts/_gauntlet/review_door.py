@@ -18,6 +18,8 @@ class _ReviewPassOwner(Protocol):
 
     def add_amendment_args(self, parser: argparse.ArgumentParser) -> None: ...
 
+    def add_report_args(self, parser: argparse.ArgumentParser) -> None: ...
+
     def dispatch(self, args: argparse.Namespace) -> int: ...
 
 
@@ -73,3 +75,9 @@ def dispatch_amendment_door(script_file: str, description: str | None, argv: lis
     """Run the public amendment wrapper without exposing the owner's ``amend`` command word."""
     return _dispatch(script_file=script_file, description=description, argv=argv,
                      add_args="add_amendment_args", cmd="amend")
+
+
+def dispatch_report_door(script_file: str, description: str | None, argv: list[str] | None) -> int:
+    """Run the public report wrapper without exposing the owner's ``report-write`` command word."""
+    return _dispatch(script_file=script_file, description=description, argv=argv,
+                     add_args="add_report_args", cmd="report-write")

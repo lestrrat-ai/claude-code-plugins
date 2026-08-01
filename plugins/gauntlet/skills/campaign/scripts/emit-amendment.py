@@ -22,7 +22,7 @@ a `ts` you could get wrong; there is no flag for it.
 Raising an amendment is how you challenge the plan — never rewrite it or self-grant a unit; what an
 amendment may raise is owned by `stage-2-review-gate.md`, "Review work-plan ledger". After it lands,
 this pass verifies `amended` until the orchestrator folds the proposed unit into the
-plan and restarts the pass (or records why not), and you end your report `VERDICT: DEFERRED`.
+plan and restarts the pass (or records why not), and you write your report with `--verdict deferred`.
 
 A non-zero exit means the amendment was REJECTED, not that the tool is broken: read the message, fix the
 call, re-run. The flags are `--file --reason --id --kind --target --check`, and they are defined in ONE

@@ -33,10 +33,16 @@ TRANSPORT_SLOT = b"<TRANSPORT-RECORD>"
 INTENT_SLOT = b"<INTENT>"
 SLOT_RE = re.compile(rb"<[A-Z][A-Z0-9-]*>")
 
+# **ONE PRODUCER, EVERY ROUTE — and it is a SWAP, not an addition.** The report used to have a
+# route-dependent owner: a native worker wrote the file itself, and an external process's final output
+# channel was captured at the report path by the orchestrator (`codex -o`, a `stdout_file`) with the
+# reviewer forbidden to write it. Now the reviewer runs `emit-report.py` on every route, and the captured
+# channel is authoritative for nothing. The mapping stays a table because the route is still validated
+# against it — it simply has one value on the right-hand side now, which is the point.
 ROUTE_PRODUCERS = {
-    "native": "native-worker-write",
-    "external-codex": "external-process-capture",
-    "external-claude": "external-process-capture",
+    "native": "reviewer-tool-write",
+    "external-codex": "reviewer-tool-write",
+    "external-claude": "reviewer-tool-write",
 }
 REPORT_PRODUCERS = tuple(sorted(set(ROUTE_PRODUCERS.values())))
 PROMPT_PROFILES = ("standard", "codex-recovery")
@@ -128,7 +134,7 @@ def attempt_paths(rundir: Path, pr: str, review_pass: str, launch_attempt: str) 
         "plan": rundir / f"{pass_stem}.plan.jsonl",
         "progress": rundir / f"{attempt_stem}.progress.jsonl",
         "findings": rundir / f"{attempt_stem}.findings.jsonl",
-        "report": rundir / f"{attempt_stem}.txt",
+        "report": rundir / f"{attempt_stem}{RP.REPORT_SUFFIX}",
         "intent": rundir / f"intent-{pr}.md",
     }
 
@@ -179,6 +185,7 @@ def build_transport(
         "emit_progress_path": os.fspath((_HERE / "emit-progress.py").resolve()),
         "emit_finding_path": os.fspath((_HERE / "emit-finding.py").resolve()),
         "emit_amendment_path": os.fspath((_HERE / "emit-amendment.py").resolve()),
+        "emit_report_path": os.fspath((_HERE / "emit-report.py").resolve()),
         "report": {"producer": producer, "path": os.fspath(paths["report"])},
     }
 
@@ -503,7 +510,7 @@ def prepare(args) -> dict:
         producer=args.report_producer,
         paths=paths,
     )
-    for field in ("emit_progress_path", "emit_finding_path", "emit_amendment_path"):
+    for field in ("emit_progress_path", "emit_finding_path", "emit_amendment_path", "emit_report_path"):
         emitter = Path(transport[field])
         if not emitter.is_file():
             refuse(f"bundled emitter for {field} is missing at {emitter}")

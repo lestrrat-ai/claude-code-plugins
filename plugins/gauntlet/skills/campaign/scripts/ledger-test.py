@@ -2071,7 +2071,8 @@ def t_pr_origin_defaults_to_external(L: ModuleType, tmp: Path) -> None:
 # --- the acceptance test: REPLAY THE REAL RECORD -------------------------------
 
 # The verdict sequences PR #42 and PR #43 actually produced, in order, on the night of 2026-07-14 (run
-# g260714-0746-bc5e8e20), read off each pass's `VERDICT:` line. The passes that landed NO verdict (#42 r4,
+# g260714-0746-bc5e8e20), read off each pass's verdict as that run's free-text reports then spelled it.
+# The passes that landed NO verdict (#42 r4,
 # r7; #43 r5, r16) are absent — a pass that lands no verdict is not a round. `S`/`N` = SATISFIED / NOT.
 #
 # `protect_through` and `preempts` are the two halves of the thresholds' DEFENCE, and they pull in OPPOSITE

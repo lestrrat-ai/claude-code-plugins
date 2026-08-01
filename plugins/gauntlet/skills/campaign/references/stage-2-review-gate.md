@@ -214,10 +214,10 @@ or park conditions here.
 **A REVIEW PASS'S ARTIFACTS HAVE A TOOL — `scripts/review-pass.py`. NEVER hand-parse one, and never
 hand-write a line the tool writes.** The plan, the `pass_identity`, every unit-progress event, and the read
 that decides whether a pass COUNTS all go through it — and so does every line it does NOT write: `verify`
-re-derives its rules from the bytes, whatever produced them. Every reviewer-written event now reaches
-the file through a door — unit progress through `emit-progress.py`, findings through `emit-finding.py`,
-and a `plan_amendment_request` through `emit-amendment.py`; `pass_identity` is the orchestrator's line,
-and the emit-only rule below governs the whole set.
+re-derives its rules from the bytes, whatever produced them. Every reviewer-written artifact now reaches
+disk through a door — unit progress through `emit-progress.py`, findings through `emit-finding.py`,
+a `plan_amendment_request` through `emit-amendment.py`, and the REPORT through `emit-report.py`;
+`pass_identity` is the orchestrator's line, and the emit-only rule below governs the whole set.
 It is the schema owner for the review-pass artifact set exactly as
 `ledger.py` is for `state.jsonl`, and it enforces every **artifact-shape** rule below at **both doors** —
 where the commands enter *and* where the data enters, because a rule enforced only on write is not
@@ -243,6 +243,12 @@ enforced: the progress file is a plaintext file in a directory the reviewer can 
 ["python3", review_pass_script, "finding-add", "--file", findings_file,
  "--path", path, "--line", line, "--writer", writer, "--purpose", purpose,
  "--base", base, "--base-repro", base_repro, "--repro", repro, "--fix", fix]
+["python3", review_pass_script, "report-write", "--file", report_file,
+ "--verdict", verdict, "--deferred-reason", deferred_reason, "--summary", summary,
+ "--residual-risk", record, ...]
+    # write the pass's ONE report record (what emit-report.py calls). `--residual-risk` repeats and is
+    # OPTIONAL, and only a `satisfied` verdict may carry one; `--deferred-reason` is `-` unless the
+    # verdict is `deferred`. It is the sole report producer on every route (runtime-adapter.md)
 ["python3", review_pass_script, "intent-check", "--file", intent_file, "--ledger", ledger_file]
     # the PRE-DISPATCH scope door ONLY: refuse a missing/malformed intent block, or one whose run-default
     # managed block has drifted from the ledger header default_non_goals, before a reviewer is launched.
@@ -494,8 +500,8 @@ makes that impossible:
 
 | Launch attempt | Prompt file | Progress file | Findings file | Output (verdict) file |
 |---|---|---|---|---|
-| `1` | `review-<pr>-<n>.prompt.txt` | `review-<pr>-<n>.progress.jsonl` | `review-<pr>-<n>.findings.jsonl` | `review-<pr>-<n>.txt` |
-| `k ≥ 2` | `review-<pr>-<n>.a<k>.prompt.txt` | `review-<pr>-<n>.a<k>.progress.jsonl` | `review-<pr>-<n>.a<k>.findings.jsonl` | `review-<pr>-<n>.a<k>.txt` |
+| `1` | `review-<pr>-<n>.prompt.txt` | `review-<pr>-<n>.progress.jsonl` | `review-<pr>-<n>.findings.jsonl` | `review-<pr>-<n>.report.jsonl` |
+| `k ≥ 2` | `review-<pr>-<n>.a<k>.prompt.txt` | `review-<pr>-<n>.a<k>.progress.jsonl` | `review-<pr>-<n>.a<k>.findings.jsonl` | `review-<pr>-<n>.a<k>.report.jsonl` |
 
 **All four are per-attempt, and the findings file is not an afterthought in that list:** `verify`
 DERIVES it from the progress file's own name, so a reviewer told to write findings anywhere else writes
@@ -553,8 +559,9 @@ rule is sized for a reviewer working slowly, not one that never woke up. Gate ev
 - Before re-dispatching, **re-check the command** for the known launch faults — most of all the quoted
   prompt-file stdin redirect on every external reviewer (`review-dispatch.md`), and the external reviewer's
   `-C` target, which must be the run-artifact root (a `-C` off that root makes the run directory read-only
-  under `workspace-write`, so every emit fails and the reviewer defers). A relaunch of the same hanging
-  command hangs identically.
+  under `workspace-write`, so every emit fails, the report cannot land either, and the reviewer stops with
+  the write door's diagnostic as its final output — an attempt with no report, which is `unusable`). A
+  relaunch of the same hanging command hangs identically.
 - **A failed launch is a dispatch fault, not a review outcome.** It yields no verdict — it never
   counts SATISFIED or NOT SATISFIED, never touches `reviews_ok`, and never escalates the tier. It is
   also **not** a PR-task attempt: do **NOT** bump the ledger's `attempts` for it. That column drives
@@ -662,7 +669,7 @@ measured against **nothing at all**.
 
 ### Findings are RECORDS, not prose — `emit-finding.py` is the ONLY way to report one
 
-A finding used to be a paragraph in `review-<pr>-<n>.txt` — nothing could validate its citation, bound
+A finding used to be a paragraph in the report, back when the report was free text — nothing could validate its citation, bound
 its writer, or ask what it defended, so **nothing could ever decline one**: the driver's only options
 were *fix it* or *silently ignore it*, and it fixed, twenty-seven times in one run.
 
@@ -719,9 +726,9 @@ PR's, unless running the base proves the base does the very same thing. `pre-exi
 run the reviewer performed, and a finding that defends a stated Purpose line gates whatever the base does.
 
 `review-pass.py verify` **exits non-zero** on any defect in the pass's artifacts — a missing intent block,
-a malformed or incomplete active-attempt report, a terminal result that does not cohere with the findings
+a malformed or incomplete active-attempt report, a verdict that does not cohere with the findings
 (in either direction), a spurious `DEFERRED`, or a malformed finding record — the `unusable` row of the
-verify table below enumerates them in full. It reads the terminal result from that report; the driver does
+verify table below enumerates them in full. It reads the verdict from that report's record; the driver does
 not retell it. The verifier still **cannot raise `reviews_ok`** or judge whether the review prose is sound
 — it validates and prints one pass result for the separate tally step.
 
@@ -795,44 +802,48 @@ voids the pass, which is safe — the just-voided completed pass already covered
 re-review scope, so the re-review is a subset (redundant but safe). (`intent-check`'s intent-vs-header scope test
 still runs PRE-DISPATCH, refusing a launch against an already-stale intent; it does not gate the tally.)
 
-**`verify` derives the active attempt's report path from the progress artifact and parses the result.**
-It requires exactly one terminal result on the last nonblank line: `VERDICT: SATISFIED`, `VERDICT: NOT
-SATISFIED`, or `VERDICT: DEFERRED — <one-line reason>`. A report whose VERDICT is missing, empty,
-truncated, duplicate, nonterminal or malformed — and one from the wrong attempt — is `unusable`. The parsed binary result is checked by
+**`verify` derives the active attempt's report path from the progress artifact and reads its record.**
+The report is `review-<pr>-<n>.report.jsonl` — ONE `review_report` record, written through
+`emit-report.py`, carrying `verdict` (`satisfied`, `not-satisfied` or `deferred`), `deferred_reason` (the
+one-line routing reason, or the literal `-`), `residual_risk` (a list, `[]` when the reviewer wrote none),
+and `summary` (its prose). A report artifact that is missing, empty, holds anything other than that one
+record, is malformed in it, or belongs to the wrong attempt is `unusable`. The binary result is checked by
 the existing if-and-only-if rule: **`not-satisfied` exactly when at least one GATING finding stands.** A
 verdict that blocks a PR must name what blocks it, and a finding that blocks a PR cannot be waved through.
 
-**NOTHING ABOUT A `RESIDUAL-RISK:` LINE STANDING BEFORE THE VERDICT CAN MAKE A PASS `unusable` — not its
-absence, not its shape, not its count, not where above the verdict it sits.** The line is calibration
-metadata for the final report and never a gate
-input, so `verify` READS it and does not judge it: it is carried as the reviewer wrote it, minus only an
-invisible prefix and trailing whitespace, and two of them are carried as TWO SEPARATE RECORDS — never
-merged into one, and never with a separator the tool supplied. `verify` prints that list as a JSON array
-in a named field of the one detail line it already writes, so the boundary between two records survives
-printing and a reader recovers exactly the records the parser kept — `bailout-and-final-report.md` owns
-that field's name and the recovery. Any join would lose the boundary, whatever the separator: a reviewer
-may write one remark containing the same characters, and then one record and two print
-identically. Splicing two remarks into a single record is the same defect as rewriting one of them:
-the final report attributes that record's words to the reviewer. `review-prompt.txt`
-still ASKS for `RESIDUAL-RISK: <area> — <why>` standing last before the verdict, and that request is what
-keeps the line readable — it is a request, not a gate, and a reviewer who misses it has not spoiled its
-pass. On a NOT SATISFIED or DEFERRED result the line is DROPPED, not refused: the final report records
-the least-certain area of each ACCEPTING pass, so on any other result there is nothing to carry.
+**THE REPORT WAS THE LAST FREE-TEXT ARTIFACT, AND MAKING IT A RECORD IS WHAT RETIRED A WHOLE CLASS OF
+DEFECT.** Progress, findings and amendments already entered through validating tools; the report was prose
+with a `VERDICT:` line a parser had to LOCATE inside it. Everything that went wrong with it went wrong for
+one reason — an artifact with no boundaries makes every boundary a guess: a line reader that ends a line at
+U+001C truncated a residual-risk remark and could not be changed, because the same split decided which line
+the verdict was; several remarks ran together in the rendered output with nothing to say where one ended;
+and "last nonblank line, nothing between the remark and the verdict" became a standing argument about how
+leniently a formatting request should be read — an argument that twice cost a complete, substantive pass. A
+verdict is a FIELD now, a remark is an ARRAY ELEMENT, and there is no placement to get wrong.
 
-**The one exception is a line written AFTER the terminal verdict, and it is the VERDICT rule refusing it,
-not this one.** A `RESIDUAL-RISK:` line below the `VERDICT:` line is trailing text like any other, so the
-unchanged terminal rule — one result, on the **last nonblank line** — refuses that report as nonterminal
-and the pass is `unusable`. Nothing is special-cased for this line there, in either direction: it buys no
-exemption from the verdict rule, and it triggers no refusal a postscript of ordinary prose would not.
-Above the verdict, the paragraph above holds without qualification.
+**WRITING NO RESIDUAL-RISK RECORD CANNOT MAKE A PASS `unusable`, AND NEITHER CAN WRITING SEVERAL.** They
+are calibration metadata for the final report and never a gate input, so `verify` READS them and does not
+judge them: each is carried exactly as the reviewer passed it, as its OWN element — never merged into one,
+and never with a separator the tool supplied. Splicing two remarks into a single record is the same defect
+as rewriting one of them: the final report attributes that record's words to the reviewer. `verify` renders
+them as the JSON array they are in the artifact, on the one detail line it already writes, so a reader
+recovers exactly the reviewer's values by DECODING rather than by re-splitting text — which is what the old
+rendering asked, and could not deliver once a record held the separator.
 
-**The reason that is a rule and not laxity:** a formatting check on this line can only ever lose
+`--residual-risk` is optional and accepted only on a `satisfied` verdict. Passing none is the correct
+output when the reviewer cannot honestly name a least-certain area, not a deficient one. On a blocking or
+deferred result the flag is REFUSED at the door rather than silently dropped — the reviewer fixes the call
+and re-runs, and no pass is spent: the final report records the least-certain area of each ACCEPTING pass,
+so on any other result there is nothing to carry.
+
+**The reason that is a rule and not laxity:** a formatting check on this record can only ever lose
 evidence. It answers no question the gate asks, so refusing over it spends a whole review — a complete
-`SATISFIED` with no gating defect — to enforce punctuation. Requiring the line at all discarded four
+`SATISFIED` with no gating defect — to enforce punctuation. Requiring the remark at all discarded four
 substantive passes across two engines; requiring its exact inner form then discarded a sixth-round
-`SATISFIED` over a hyphen where an em dash was asked for. Every rule that DOES gate — one terminal
-result, on the last nonblank line, in exactly one of the three spellings above — stays exact, because
-the verdict is the input the gate reads.
+`SATISFIED` over a hyphen where an em dash was asked for. **That whole class is now unreachable rather than
+forgiven:** the remark is a value the reviewer passes, so there is no inner form to be wrong about and
+nothing left for the read side to be lenient about. Every rule that DOES gate — one record, one
+`verdict` from the closed set above — stays exact, because the verdict is the input the gate reads.
 
 **A parsed DEFERRED result routes through progress state without becoming a judgment.** An unruled
 `plan_amendment_request` returns `amended`; an unfinished pass returns `incomplete`; a complete pass with
@@ -840,10 +851,14 @@ nothing outstanding returns `unusable` because the deferral points at nothing. N
 a NEW pass: a deferral spends no pass number, so any relaunch keeps the same pass and takes its next
 launch attempt (`runtime-adapter.md`, "Review preparation mapping").
 
-**A deferral whose reason names an UNWRITABLE progress/findings file is a DISPATCH fault, not a pass to
-route** — before any relaunch, re-check the launch argv against the canonical spelling
-(`cross-agent-reviewers.md`), above all the `-C` target, which must be the run-artifact root. Relaunching
-the same command makes the same run directory read-only and fails identically.
+**AN UNWRITABLE RUN DIRECTORY PRODUCES NO REPORT AT ALL, SO THERE IS NO DEFERRAL TO ROUTE.** The report is
+written through a door under the SAME root every other artifact is, so a reviewer whose emits fail cannot
+deliver one — and a deferral IS a report. What the reviewer can still do is report the write door's
+diagnostic as its FINAL OUTPUT and stop, which is where the `-C` target gets named; the attempt is
+`unusable` for having no report, and its final message is the only place the cause appears. That is a
+DISPATCH fault, not a pass to route: before any relaunch, correct the launch argv against the canonical
+spelling (`cross-agent-reviewers.md`), above all the `-C` target, which must be the run-artifact root.
+Relaunching the same command makes the same run directory read-only and fails identically.
 
 **A pass still in flight is watched with `review-pass.py status`, not verified.** `status` stays lenient
 for torn output; `verify` is strict because only its `ok` result can reach the ledger.
@@ -856,9 +871,9 @@ pass is a trapdoor, not a disclosure:
 | `ok` | 0 | the artifacts are sound: one strict result from the active attempt's report; a `pass_identity` naming **this** PR, **this** pass, **this** launch attempt, **the live head SHA**, and a bound **`default_non_goals` still equal to the run's live defaults**; a **usable intent block** for this PR; every planned unit `done` **once**, with concrete evidence, after a `started` for it; every `done` for a unit that is **actually in the plan**; no unruled amendment; and the parsed result **coheres** with the findings | tally the parsed binary result through `ledger.py verdict` |
 | `incomplete` | 1 | sound, but a planned unit has no `done` — the pass has not covered its plan | it is still working (or it stopped early — the meaningful-progress rule decides which). **Never tally a verdict from it** |
 | `amended` | 1 | sound, but the reviewer raised a `plan_amendment_request` nobody has ruled on | fold it into the plan and restart the pass, or ignore it with a note — then re-run with `--amendments-ruled N` |
-| `unusable` | 1 | the artifacts are **defective** — the active report is missing, empty, truncated, duplicate, nonterminal, or malformed **in its VERDICT** (a `RESIDUAL-RISK:` line standing BEFORE the verdict never makes a report defective, however it is written; one written AFTER it is trailing text and lands in `nonterminal` above); a short SHA or other malformed identifier; invalid progress/identity/findings; **no usable intent block**; a bound `default_non_goals` that no longer matches the run's live defaults (scope drift); a parsed result that does not cohere with findings; or a spurious DEFERRED result | the pass **CANNOT count**. Fix skipped adoption inputs when named; otherwise retry — the same pass, next launch attempt (`runtime-adapter.md`, "Review preparation mapping") — or take the fresh-worker fallback |
+| `unusable` | 1 | the artifacts are **defective** — the active report is missing, empty, not exactly ONE `review_report` record, or malformed in that record (writing no residual-risk record never makes a report defective, and neither does writing several); a short SHA or other malformed identifier; invalid progress/identity/findings; **no usable intent block**; a bound `default_non_goals` that no longer matches the run's live defaults (scope drift); a parsed result that does not cohere with findings; or a spurious DEFERRED result | the pass **CANNOT count**. Fix skipped adoption inputs when named; otherwise retry — the same pass, next launch attempt (`runtime-adapter.md`, "Review preparation mapping") — or take the fresh-worker fallback |
 
-**`ok` is not SATISFIED.** The tool parses the reviewer's exact terminal result but does not judge the
+**`ok` is not SATISFIED.** The tool reads the reviewer's recorded verdict but does not judge the
 report's prose, raise `reviews_ok`, or merge. `ledger.py verdict` remains the only tally writer.
 
 **The report itself is driver-internal** (`loop-control.md`, "Driver-internal outputs").
@@ -981,15 +996,13 @@ found" is the expected, honest common outcome, and speculative "might be fragile
 and do not block SATISFIED. (This is distinct from a `plan_amendment_request`, which fixes the plan
 structurally; the sweep finds a defect now, regardless of the plan.)
 
-**Residual-risk signal (SATISFIED only, and OPTIONAL).** The prompt asks a SATISFIED verdict for one
-`RESIDUAL-RISK: <area> — <why>` line naming the part of the diff the pass verified with the least
-certainty, relative to the rest. It is calibration metadata, never a finding and never a verdict
-input: a SATISFIED with a residual-risk line is a **full** SATISFIED, and the line NEVER withholds the
-gate, NEVER enters the fix loop, and is NEVER fed into the corroborating review (which stays
-context-isolated). Because it is not a gate input, **no way of writing it ABOVE the verdict — including
-not writing it — can cost the pass its verdict**; written BELOW the verdict it is trailing text and the
-unchanged terminal-verdict rule refuses the report as nonterminal. "Does this pass COUNT?" above owns
-that rule, that one exception, and what `verify` records instead. It reflects the gauntlet's purpose —
+**Residual-risk signal (SATISFIED only, and OPTIONAL).** The prompt asks a SATISFIED verdict for a
+`--residual-risk` record naming the part of the diff the pass verified with the least certainty, relative
+to the rest. It is calibration metadata, never a finding and never a verdict input: a SATISFIED carrying
+one is a **full** SATISFIED, and it NEVER withholds the gate, NEVER enters the fix loop, and is NEVER fed
+into the corroborating review (which stays context-isolated). Because it is not a gate input, **writing
+none cannot cost the pass its verdict**. "Does this pass COUNT?" above owns that rule and what `verify`
+records instead. It reflects the gauntlet's purpose —
 lower the odds a defect survives stochastic variation, not claim certainty — by making residual
 uncertainty explicit instead of hidden behind a binary verdict. Record it with the verdict and carry
 **every record each accepting pass wrote** into the final report, grouped by PR (a pass that wrote none

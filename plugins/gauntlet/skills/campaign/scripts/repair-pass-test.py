@@ -451,6 +451,14 @@ def init_repo(parent: Path, name: str = "worktree") -> "tuple[Path, str]":
     return repo, _GIT.head(repo)
 
 
+def review_report(verdict: str, *, reason: str = "-", summary: str = "round report",
+                  residual: "list[str] | None" = None) -> str:
+    """ONE review report artifact's bytes. The report is a validated RECORD now, not free text, so a
+    fixture that wants a particular verdict states it as a FIELD rather than as a line to be found."""
+    return json.dumps({"type": "review_report", "verdict": verdict, "deferred_reason": reason,
+                       "residual_risk": residual or [], "summary": summary}) + "\n"
+
+
 def write_review_attempt(rundir: Path, round_no: int, attempt: int, head_sha: str,
                          report: str) -> Path:
     RP = R.RP
@@ -473,7 +481,7 @@ def write_review_attempt(rundir: Path, round_no: int, attempt: int, head_sha: st
          "evidence": "feature.txt:1-2 reviewed against the purpose"},
     ]
     progress.write_text("".join(json.dumps(record) + "\n" for record in records))
-    (rundir / f"{stem}.txt").write_text(report)
+    (rundir / f"{stem}{RP.REPORT_SUFFIX}").write_text(report)
     return progress
 
 
@@ -533,7 +541,7 @@ def bundle_setup(tmp: Path, *, rounds: int = 1, relaunch_round: "int | None" = N
     for round_no in range(1, rounds + 1):
         is_cap = round_no == rounds
         active_attempt = 2 if relaunch_round == round_no else 1
-        report = f"round {round_no}\n\nVERDICT: NOT SATISFIED\n"
+        report = review_report("not-satisfied", summary=f"round {round_no}")
         # Every round here returns NOT SATISFIED, and #126's `parse_report` verdict now coheres with the
         # findings per round (review-pass.py's IF AND ONLY IF). So each round carries a gating finding, and
         # every NON-cap round also records its finding audit — a cap round legitimately skips its audit (the
@@ -543,7 +551,7 @@ def bundle_setup(tmp: Path, *, rounds: int = 1, relaunch_round: "int | None" = N
             write_review_attempt(rundir, round_no, 1, head_sha,
                                  "DEAD ATTEMPT 1 MUST NOT ENTER THE BUNDLE\n")
             write_review_attempt(rundir, round_no, 2, head_sha,
-                                 "ACTIVE ATTEMPT 2\n\nVERDICT: NOT SATISFIED\n")
+                                 review_report("not-satisfied", summary="ACTIVE ATTEMPT 2"))
         if not is_cap:
             # The non-cap round's gating finding, then its REAL `.jsonl` audit produced through
             # finding-audit.py against the active attempt — the artifact the bundle now reads.
@@ -603,14 +611,15 @@ def t_bundle_orders_rounds_and_selects_active_attempt(tmp: Path) -> None:
 def t_bundle_skips_an_explicitly_deferred_pass(tmp: Path) -> None:
     """A drifted history — a new pass opened after a DEFERRED instead of a relaunch — still bundles.
 
-    A pass that lands no verdict is not a round: pass 2's active attempt ends in an explicit
-    `VERDICT: DEFERRED — …`, so with the ledger counting 3 landed rounds across artifact passes 1..4 the
+    A pass that lands no verdict is not a round: pass 2's active attempt records `verdict: deferred`,
+    so with the ledger counting 3 landed rounds across artifact passes 1..4 the
     bundle excludes pass 2 from the round mapping, lists it under `verdictless_rounds` for the worker,
     and treats the highest LANDED pass as the cap round.
     """
     case = bundle_setup(tmp, rounds=4)
-    (case["rundir"] / "review-1-2.txt").write_text(
-        "pass 2 parked itself\n\nVERDICT: DEFERRED — parked a plan question for the driver\n")
+    (case["rundir"] / "review-1-2.report.jsonl").write_text(
+        review_report("deferred", reason="parked a plan question for the driver",
+                      summary="pass 2 parked itself"))
     case["ledger"].write_text(
         json.dumps({"type": "header", **L.HEADER_DEFAULTS, "base_branch": "main"}) + "\n"
         + json.dumps({"type": "row", **case["row"], "review_rounds": "3"}) + "\n")
@@ -708,7 +717,8 @@ def t_bundle_refuses_unreconcilable_pass_histories(tmp: Path) -> None:
 
     # A verdictless LATEST pass cannot be the cap round: the cap trips only on a landed NOT SATISFIED.
     last = bundle_setup(tmp / "last", rounds=4)
-    (last["rundir"] / "review-1-4.txt").write_text("parked\n\nVERDICT: DEFERRED — parked at the cap\n")
+    (last["rundir"] / "review-1-4.report.jsonl").write_text(
+        review_report("deferred", reason="parked at the cap", summary="parked"))
     reledger(last, "3")
     code, _, err = run_bundle(last, last["rundir"] / "bundle.txt")
     check(code == 1 and "latest artifact pass" in err,
@@ -726,7 +736,8 @@ def t_bundle_refuses_unreconcilable_pass_histories(tmp: Path) -> None:
     write_review_attempt(spent["rundir"], 4, 2, spent["head_sha"],
                          "SUPERSEDED ATTEMPT 2 MUST NOT BE READ\n")
     write_review_attempt(spent["rundir"], 4, 3, spent["head_sha"],
-                         "parked\n\nVERDICT: DEFERRED — parked after the final launch attempt\n")
+                         review_report("deferred", reason="parked after the final launch attempt",
+                                       summary="parked"))
     reledger(spent, "3")
     code, _, err = run_bundle(spent, spent["rundir"] / "bundle.txt")
     check(code == 1 and "latest artifact pass" in err,
@@ -739,8 +750,9 @@ def t_bundle_refuses_unreconcilable_pass_histories(tmp: Path) -> None:
     # The ledger and the artifacts disagree about history — the refusal must name the park recovery.
     # First with the DEFERRED report in a MIDDLE pass...
     eqmid = bundle_setup(tmp / "eqmid", rounds=4)
-    (eqmid["rundir"] / "review-1-2.txt").write_text(
-        "pass 2 parked itself\n\nVERDICT: DEFERRED — parked a plan question for the driver\n")
+    (eqmid["rundir"] / "review-1-2.report.jsonl").write_text(
+        review_report("deferred", reason="parked a plan question for the driver",
+                      summary="pass 2 parked itself"))
     code, _, err = run_bundle(eqmid, eqmid["rundir"] / "bundle.txt")
     check(code == 1 and "DEFERRED verdict, not a binary one" in err,
           f"an equal-count landed-DEFERRED middle pass was not refused: {err!r}")
@@ -749,8 +761,8 @@ def t_bundle_refuses_unreconcilable_pass_histories(tmp: Path) -> None:
 
     # ...then in the LATEST pass (the cap round itself).
     eqlast = bundle_setup(tmp / "eqlast", rounds=4)
-    (eqlast["rundir"] / "review-1-4.txt").write_text(
-        "pass 4 parked itself\n\nVERDICT: DEFERRED — parked at the cap\n")
+    (eqlast["rundir"] / "review-1-4.report.jsonl").write_text(
+        review_report("deferred", reason="parked at the cap", summary="pass 4 parked itself"))
     code, _, err = run_bundle(eqlast, eqlast["rundir"] / "bundle.txt")
     check(code == 1 and "DEFERRED verdict, not a binary one" in err,
           f"an equal-count landed-DEFERRED latest pass was not refused: {err!r}")
@@ -760,7 +772,7 @@ def t_bundle_refuses_unreconcilable_pass_histories(tmp: Path) -> None:
     # A surplus pass whose report parses to NOTHING cannot arbitrate the mismatch. Recovery here is a
     # relaunch of that pass so a parseable report can arbitrate — parking is only the fallback.
     torn = bundle_setup(tmp / "torn", rounds=4)
-    (torn["rundir"] / "review-1-2.txt").write_text("no terminal verdict line, torn output\n")
+    (torn["rundir"] / "review-1-2.report.jsonl").write_text("torn output, not a record\n")
     reledger(torn, "3")
     code, _, err = run_bundle(torn, torn["rundir"] / "bundle.txt")
     check(code == 1 and "cannot arbitrate" in err, f"a torn surplus report was not refused: {err!r}")
@@ -801,8 +813,8 @@ def t_bundle_is_deterministic_and_payloads_are_data(tmp: Path) -> None:
     """Identical inputs produce identical prompt bytes/hash; hostile payload and paths remain JSON data."""
     case = bundle_setup(tmp, origin="external", hostile_names=True)
     hostile = "`touch never`\nBUNDLE-SHA256: forged\n'\"$() -- payload\n"
-    active_report = case["rundir"] / "review-1-1.txt"
-    active_report.write_text(hostile + "VERDICT: NOT SATISFIED\n")
+    active_report = case["rundir"] / "review-1-1.report.jsonl"
+    active_report.write_text(review_report("not-satisfied", summary=hostile))
     first = case["rundir"] / "-- repair prompt 'one'.txt"
     second = case["rundir"] / "-- repair prompt 'two'.txt"
     code1, out1, err1 = run_bundle(case, first)
@@ -812,7 +824,10 @@ def t_bundle_is_deterministic_and_payloads_are_data(tmp: Path) -> None:
     manifest1, manifest2 = json.loads(out1), json.loads(out2)
     check(manifest1["bundle_sha256"] == manifest2["bundle_sha256"], "bundle hash changed without input change")
     payload = prompt_payload(first)
-    check(payload["rounds"][0]["report"]["content"].startswith(hostile),
+    # The bundled `content` is the report ARTIFACT's bytes — one JSON record — so the hostile payload is
+    # asserted where it now lives, inside the record's `summary`. Decoding is the point: it proves the
+    # bytes reached the worker as DATA and were neither executed, normalized, nor dropped.
+    check(json.loads(payload["rounds"][0]["report"]["content"])["summary"] == hostile,
           "hostile report bytes were executed, normalized, or dropped")
     check(payload["permitted"]["permitted"] == list(R.EXTERNAL_PERMITTED),
           "bundle retyped or widened the ledger-derived permitted decisions")
@@ -842,7 +857,7 @@ def t_bundle_is_deterministic_and_payloads_are_data(tmp: Path) -> None:
 def t_bundle_refuses_missing_stale_and_duplicate_inputs(tmp: Path) -> None:
     """Missing reports, stale heads, and duplicate identities fail before either output exists."""
     missing_case = bundle_setup(tmp / "missing")
-    (missing_case["rundir"] / "review-1-1.txt").unlink()
+    (missing_case["rundir"] / "review-1-1.report.jsonl").unlink()
     missing_output = missing_case["rundir"] / "bundle.txt"
     code, _, err = run_bundle(missing_case, missing_output)
     # The report is now read through `parse_report` (the one sanctioned reader), whose missing-file Defect
@@ -980,11 +995,12 @@ def t_bundle_exempts_every_prior_cap_round(tmp: Path) -> None:
     # The repair landed, the row returned to review, two more rounds ran, and round 3 is the SECOND cap.
     head = case["head_sha"]
     # A clean intermediate round: SATISFIED coheres with 0 gating findings, and `parse_report` carries the
-    # optional RESIDUAL-RISK line without judging it. No audit is owed (0 gating).
+    # optional residual-risk record without judging it. No audit is owed (0 gating).
     write_review_attempt(case["rundir"], 2, 1, head,
-                         "round 2\n\nRESIDUAL-RISK: feature.txt — the clean re-review after the repair "
-                         "landed\nVERDICT: SATISFIED\n")
-    write_review_attempt(case["rundir"], 3, 1, head, "round 3\n\nVERDICT: NOT SATISFIED\n")
+                         review_report("satisfied", summary="round 2",
+                                       residual=["feature.txt — the clean re-review after the repair "
+                                                 "landed"]))
+    write_review_attempt(case["rundir"], 3, 1, head, review_report("not-satisfied", summary="round 3"))
     write_cap_finding(case["rundir"], 3)  # the second cap round carries its gating finding, no audit
     # `review_rounds`/`repair_count` have no CLI door, so place the second-cap state directly.
     row = {**case["row"], "review_rounds": "3", "repair_count": "1"}
@@ -1123,21 +1139,22 @@ def t_bundle_refuses_a_cap_round_with_no_gating_finding(tmp: Path) -> None:
 
 
 def t_bundle_refuses_a_report_with_no_verdict(tmp: Path) -> None:
-    """A truncated / prose-only active report with no terminal `VERDICT:` line is refused (F1).
+    """A truncated active report that is not the pass's one record is refused (F1).
 
     Every sibling active artifact — progress, identity, findings — is re-validated through the sanctioned
     `review-pass.py` readers and fails CLOSED on malformed input. The report was the one exception: read with
     a bare exists+nonempty check, a killed-worker report (the file's own founding scenario) bundled at exit 0
-    while `review-pass.py`'s own reader rejects it. Routing it through #126's `parse_report` — the ONE
-    sanctioned report reader — closes that fail-open gap without a second parser.
+    while `review-pass.py`'s own reader rejects it. Routing it through `parse_report` — the ONE sanctioned
+    report reader — closes that fail-open gap without a second parser, and it stays closed now that the
+    report is a record: half a record is not JSON, so a killed writer produces bytes this refuses.
     """
     case = bundle_setup(tmp, rounds=1, origin="external")  # cap_finding=True: the gating finding is present
-    report = case["rundir"] / "review-1-1.txt"
-    report.write_text("The reviewer began analyzing feature.txt and then the process was killed mid-sentence\n")
+    report = case["rundir"] / "review-1-1.report.jsonl"
+    report.write_text(review_report("not-satisfied", summary="killed mid-sentence")[:40])
     output = case["rundir"] / "bundle.txt"
     code, _, err = run_bundle(case, output)
-    check(code == 1 and "VERDICT:" in err,
-          f"a report with no terminal VERDICT line was bundled instead of refused: {err!r}")
+    check(code == 1 and "is not JSON" in err,
+          f"a truncated report record was bundled instead of refused: {err!r}")
     check(not output.exists() and not R.bundle_manifest_path(output).exists(),
           "the refused unparseable report left bundle output")
 
@@ -1707,7 +1724,7 @@ CASES = [
     ("bundle-audit-header-only", "a header-only (incomplete) audit is refused, not embedded as present", t_bundle_refuses_a_header_only_audit),
     ("bundle-audit-complete-header-internal", "the completeness check is header-internal, never re-anchoring", t_bundle_audit_completeness_is_header_internal),
     ("bundle-cap-needs-finding", "a cap round with no gating finding is unusable history and refused", t_bundle_refuses_a_cap_round_with_no_gating_finding),
-    ("bundle-report-needs-verdict", "a report with no terminal VERDICT line fails closed through parse_report", t_bundle_refuses_a_report_with_no_verdict),
+    ("bundle-report-needs-verdict", "a report that is not one valid record fails closed through parse_report", t_bundle_refuses_a_report_with_no_verdict),
     ("bundle-base-sha-pinned", "the base is pinned to one SHA before any read; a racing fetch cannot mix bases", t_bundle_pins_base_sha_against_a_racing_fetch),
     ("bundle-row-effective-base", "the bundle binds the row's effective base, not the one header base", t_bundle_uses_row_effective_base_over_header),
     ("decide-row-effective-base", "decide re-derives the row's effective base; a header-base manifest is stale", t_decide_uses_row_effective_base_over_header),

@@ -284,15 +284,14 @@
   `pass_identity` written by `review-dispatch.py prepare`, and owns the read that answers **does this pass
   COUNT?** — `verify`, which validates
   EVERY line of those files whatever produced it — every reviewer event now goes through a door
-  (`emit-progress.py`, `emit-finding.py`, `emit-amendment.py`), and a hand-written line is caught on read
+  (`emit-progress.py`, `emit-finding.py`, `emit-amendment.py`, `emit-report.py`), and a hand-written line is caught on read
   all the same (Stage 2a owns that rule). **A verdict from a pass that does not verify `ok` is NEVER tallied**, and there are
   **five** kinds of defect that make a pass `unusable` (Stage 2a, "Does this pass
   COUNT?", owns the enumeration):
-  - **the active REPORT result is unusable** — the `VERDICT:` line missing, empty, truncated, duplicate,
-    nonterminal, malformed, or from the wrong launch attempt. **A `RESIDUAL-RISK:` line standing BEFORE
-    the verdict is NOT part of this**: omitted, misspelled, doubled, or anywhere above the verdict, it
-    never makes a report unusable. One written AFTER the verdict is trailing text, so the `VERDICT:` rule
-    above — not any rule about this line — refuses that report as nonterminal (Stage 2a);
+  - **the active REPORT result is unusable** — the report artifact missing, empty, holding anything other
+    than its ONE `review_report` record, malformed in that record, or from the wrong launch attempt. **The
+    residual-risk records are NOT part of this**: writing none is the ordinary case, and several are
+    several records (Stage 2a);
   - **the ARTIFACTS are malformed** — a short SHA or any other malformed identifier, a `done` for a unit
     that was never planned, an evidence-free `done`, a `done` that no `started` precedes, a SECOND `done`
     for one unit, a hand-written line of the wrong shape, an identity naming another commit or attempt;
@@ -320,7 +319,7 @@
   **anything the tool writes it can
   read back**: a write is refused unless the file it would produce verifies, so the tool can never accept
   your work and then tell you the work does not count (it did — see Stage 2a). `ok` is **not** `SATISFIED`:
-  the tool parses the terminal result but never judges the report's prose or writes the tally.
+  the tool reads the report record's verdict but never judges the report's prose or writes the tally.
 - Before each review, write an orchestrator-owned `review-<pr>-<n>.plan.jsonl` (per-pass — a relaunch
   reuses it; written through the tool above, never a heredoc), and it must pass
   `review-pass.py plan-check --file <plan> --tier <tier>` before dispatch — a refusal blocks the launch
@@ -351,13 +350,12 @@
   `file:line` defects at the normal finding bar (a real **GATING** one → NOT SATISFIED; the sweep is
   BOUNDED by the threat model, not narrowed, and its findings anchor like any other), and treats "nothing
   found" as a fine result; no speculative "might be fragile" notes (Stage 2a).
-- A SATISFIED verdict SHOULD carry one `RESIDUAL-RISK: <area> — <why>` line (the least-certain part of
-  the diff). It is calibration metadata, never a finding: it never withholds the gate, never enters the
-  fix loop, and is never fed into the corroborating review. **NOTHING about how it is written ABOVE the
-  verdict — including not writing it — can make the pass unusable**; `verify` records what the reviewer
-  wrote and judges only the verdict. Below the verdict it is trailing text, and the terminal-verdict rule
-  refuses the report as nonterminal — write it above the verdict, as the prompt asks (Stage 2a). Do not manufacture a concern to fill it; a real
-  **GATING** defect found while identifying it is a normal finding → NOT SATISFIED (Stage 2a).
+- A SATISFIED verdict SHOULD carry a `--residual-risk` record naming the least-certain part of the diff.
+  It is calibration metadata, never a finding: it never withholds the gate, never enters the fix loop, and
+  is never fed into the corroborating review. **Writing none cannot make the pass unusable** — the flag is
+  optional and `verify` records what the reviewer wrote, judging only the verdict (Stage 2a). Do not
+  manufacture a concern to fill it; a real **GATING** defect found while identifying it is a normal
+  finding → NOT SATISFIED (Stage 2a).
 - One decision at N sites is the most common root cause. Trigger the §2a-deep root-cause pass on the
   **first** "missing/wrong at site X" finding (its shape, not a round count), map the whole space with
   a dedicated **read-only mapper** subagent — never one that also fixes, which under-maps toward what
