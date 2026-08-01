@@ -300,8 +300,13 @@ def git_text(worktree: Path, *argv: str) -> str:
 
 
 def attempt_report_path(progress: Path) -> Path:
-    """Derive the per-attempt report by replacing only the progress suffix."""
-    return progress.parent / (progress.name[: -len(RP.PROGRESS_SUFFIX)] + ".txt")
+    """Derive the per-attempt report by replacing only the progress suffix.
+
+    Both suffixes come from the artifact owner, never spelled out here: the report's name changed once
+    already (it was `.txt` while the report was free text), and a second spelling of it in this file would
+    have gone on deriving a path nothing writes.
+    """
+    return progress.parent / (progress.name[: -len(RP.PROGRESS_SUFFIX)] + RP.REPORT_SUFFIX)
 
 
 def load_historical_findings(progress: Path) -> list[dict]:
@@ -334,7 +339,7 @@ def select_active_rounds(rundir: Path, pr: str,
     attempt, so an undrifted history has artifact passes exactly `1..review_rounds` and the fast path below
     returns them unread. A history that instead opened a NEW pass after a deferral holds more artifact
     passes than landed rounds. That drift is tolerated in exactly one shape — every surplus pass's active
-    attempt ends in an explicit `VERDICT: DEFERRED — …` — because such a pass landed no verdict and is
+    attempt's report records `verdict: deferred` — because such a pass landed no verdict and is
     therefore not a round (the ledger's own model). Everything else — a hole in the numbering, more landed
     verdicts than the ledger counted, fewer artifact passes than landed rounds, a verdictless LATEST pass —
     stays a refusal that names the mismatch and the recovery.
@@ -498,11 +503,11 @@ def collect_rounds(rundir: Path, pr: str, expected_rounds: int) -> "tuple[list[d
 
         audit_file = rundir / f"audit-{pr}-{round_no}.jsonl"
         gating_findings = sum(1 for finding in findings if RP.gating(finding))
-        # F1 — every landed round's report now carries a terminal `VERDICT:` line, and #126's
-        # `RP.parse_report` (the ONE sanctioned report reader, already called by `review-pass.py
-        # evaluate_detail`) is what validates that framing. Routing each active report through it above makes
-        # a truncated or prose-only report with no `VERDICT:` line fail CLOSED here — as every sibling
-        # artifact already does — rather than bundling its bytes at exit 0. With the parsed verdict in hand,
+        # F1 — every landed round's report is one validated record, and `RP.parse_report` (the ONE
+        # sanctioned report reader, already called by `review-pass.py evaluate_detail`) is what validates
+        # it. Routing each active report through it above makes a report this repo's own doors would refuse
+        # fail CLOSED here — as every sibling artifact already does — rather than bundling its bytes at exit
+        # 0. With the parsed verdict in hand,
         # re-check the same coherence review-pass.py enforced when the round landed, so no round reaches the
         # reassessment worker dressed as sound evidence review-pass.py itself would reject:
         #   * DEFERRED is not a verdict; a landed, complete round owes a binary one.

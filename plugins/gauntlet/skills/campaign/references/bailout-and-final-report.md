@@ -156,20 +156,21 @@ When the loop exits, summarize:
   `Run-end snapshot only. Defaults may have changed mid-run. This is not per-PR or per-pass history.`
 - **Merged** — PR number + slug, one-line description, tier, and the **base it merged into** (its
   `effective_base`), so a mixed-base run shows which release line each PR shipped to.
-- **Residual risk** — for each merged PR, every `RESIDUAL-RISK` record its accepting SATISFIED passes
+- **Residual risk** — for each merged PR, every residual-risk record its accepting SATISFIED passes
   wrote (the least-certain area each named), and a flag when two accepting passes name the same area. The
-  line is OPTIONAL and a pass that wrote several contributes several, so a PR's record count is bounded by
+  record is OPTIONAL and a pass that wrote several contributes several, so a PR's record count is bounded by
   neither `required(tier)` nor anything else, and may be none; report what the passes actually wrote and
-  never invent a line for a pass that omitted one. **Reproduce each record as
-  `verify` reports it, including one that does not match the form the prompt asked for** — the parser
+  never invent a record for a pass that omitted one. **Reproduce each record as
+  `verify` reports it, including one that does not match the form the prompt asked for** — the door
   carries the reviewer's words through unedited and never joins two records into one (Stage 2a), so
   tidying one here, or running two of them together into a single record, would be this report rewording
   a reviewer. **How to READ the records off `verify`:** its detail line carries a `residual-risk=` field
   holding a JSON array of that pass's records, always present and `[]` when the pass wrote none. Decode
   that array and take one record per element — never split a record on its inner punctuation, and never
-  run two elements together. The array is where the record boundary lives, and it is the ONLY place it
-  survives: a reviewer may write a single remark containing anything the eye reads as a separator, so any
-  boundary you infer from the record text is a boundary you invented. The array ends at its own `]`, and
+  run two elements together. The array is where the record boundary lives in the RENDERED line, exactly as
+  the report artifact's own `residual_risk` array is where it lives on disk: a reviewer may write a single
+  remark containing anything the eye reads as a separator, so any boundary you infer from the record text
+  is a boundary you invented. The array ends at its own `]`, and
   the human-readable reason follows it on the same line. This is non-actionable,
   non-gating calibration metadata — a place a human might look, never a reopened finding (Stage 2a).
 - **What each base REQUIRED** — the required-check set, now **per base** (`effective_required_set`;

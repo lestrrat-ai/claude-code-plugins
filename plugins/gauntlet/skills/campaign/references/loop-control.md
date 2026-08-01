@@ -280,7 +280,7 @@ rules keep their own wording; these are illustrations of them, not a second copy
    never decided from the watch's exit code (Stage 2b, "WHO DOES WHAT" and "VERIFY THE STAMP BEFORE
    PARSING"); review →
    the active launch attempt's output file, with its progress file as liveness evidence — attempt 1
-   uses `.prompt.txt` and writes `review-<pr>-<n>.txt` / `.progress.jsonl` / `.findings.jsonl`; a
+   uses `.prompt.txt` and writes `review-<pr>-<n>.report.jsonl` / `.progress.jsonl` / `.findings.jsonl`; a
    relaunch uses and writes `review-<pr>-<n>.a<k>.*`, and
    only the attempt named in the current `pass_identity` is read or counted (Stage 2a). **Before a
    review verdict is counted, the pass's artifacts must verify** — run `scripts/review-pass.py verify

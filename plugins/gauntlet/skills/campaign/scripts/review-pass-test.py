@@ -74,13 +74,16 @@ OWNER = HERE / "review-pass.py"
 WRAPPER = HERE / "emit-progress.py"
 FINDING_WRAPPER = HERE / "emit-finding.py"
 AMENDMENT_WRAPPER = HERE / "emit-amendment.py"
+REPORT_WRAPPER = HERE / "emit-report.py"
 WRAPPER_DOOR = "emit-progress.py"
 FINDING_WRAPPER_DOOR = "emit-finding.py"
 AMENDMENT_WRAPPER_DOOR = "emit-amendment.py"
+REPORT_WRAPPER_DOOR = "emit-report.py"
 WRAPPER_OWNER_COMMANDS = {
     WRAPPER_DOOR: "emit",
     FINDING_WRAPPER_DOOR: "finding-add",
     AMENDMENT_WRAPPER_DOOR: "amend",
+    REPORT_WRAPPER_DOOR: "report-write",
 }
 
 # The `self-test` door is a door like any other, and EXECUTING it is what the door check does to every door
@@ -96,10 +99,15 @@ TS = "2026-07-06T00:00:00Z"
 PROGRESS_FILE = "review-41-1.progress.jsonl"
 PLAN_FILE = "review-41-1.plan.jsonl"
 FINDINGS_FILE = "review-41-1.findings.jsonl"
+REPORT_FILE = "review-41-1.report.jsonl"
 INTENT_FILE = "intent-41.md"
-SAT_REPORT = "Report body.\nRESIDUAL-RISK: parser contract — exact framing is hardest to verify\nVERDICT: SATISFIED\n"
-NOT_SAT_REPORT = "Report body.\nVERDICT: NOT SATISFIED\n"
-DEFERRED_REPORT = "Report body.\nVERDICT: DEFERRED — fixture request must be handled first\n"
+
+# The four artifact suffixes, spelled ONCE here and RECONCILED against the owner's own constants in
+# `run()`. The report's suffix has already changed once — it was `.txt` while the report was free text —
+# and a second, unreconciled spelling of it in this file would go on building fixtures at a path the tool
+# no longer writes, which is a suite that passes about the wrong file.
+PROGRESS_SUFFIX, FINDINGS_SUFFIX, REPORT_SUFFIX = ".progress.jsonl", ".findings.jsonl", ".report.jsonl"
+
 
 # --- THE INTENT the fixtures are measured against -------------------------------------------------
 #
@@ -156,6 +164,30 @@ Value = object
 def _rec(fields: "dict[str, Value]", over: "dict[str, Value]") -> str:
     rec = {**fields, **over}
     return json.dumps({k: v for k, v in rec.items() if v is not DROP})
+
+
+RESIDUAL_ONE = "parser contract — exact framing is hardest to verify"
+
+
+def report_line(verdict: Value = "satisfied", *, reason: Value = "-",
+                residual: "Sequence[str] | None" = None,
+                summary: Value = "Report body.", **over: Value) -> str:
+    """ONE report artifact's bytes: the single validated record, as a fixture writes it RAW.
+
+    The record's field values are typed `Value` for the reason every other builder here is: half these
+    fixtures write what the schema FORBIDS — a `residual_risk` that is a string, a `verdict` outside the
+    enum, a key that is not there at all — and the READ side must catch each without being told how the
+    bytes got there.
+    """
+    rec: "dict[str, Value]" = {"type": "review_report", "verdict": verdict,
+                               "deferred_reason": reason,
+                               "residual_risk": list(residual or []), "summary": summary}
+    return _rec(rec, over) + "\n"
+
+
+SAT_REPORT = report_line("satisfied", residual=[RESIDUAL_ONE])
+NOT_SAT_REPORT = report_line("not-satisfied")
+DEFERRED_REPORT = report_line("deferred", reason="fixture request must be handled first")
 
 
 class Tables:
@@ -520,14 +552,14 @@ class Tables:
             # --- `deferred` is NOT a verdict: it routes to the progress-file state --------------------
             #
             # A reviewer that raised a separate request the orchestrator must handle first — a
-            # `plan_amendment_request`, or a broken-dispatch stop — ends its report with `VERDICT: DEFERRED`
-            # and the parser derives DEFERRED. That result NEVER reaches the coherence rule;
+            # `plan_amendment_request`, or a broken-dispatch stop — records `verdict: deferred`.
+            # That result NEVER reaches the coherence rule;
             # the progress file is authoritative, and `decide` answers amended / incomplete / unusable.
             "deferred-with-amendment": (
                 PLAN, [ident(), started("u01"), done("u01"), amendment(), started("u02"), done("u02")],
                 [], INTENT, DEF, AMENDED, "not yet ruled on",
-                "**THE CASE THE MARKER EXISTS FOR.** The reviewer raised a `plan_amendment_request` and ended "
-                "`VERDICT: DEFERRED` instead of ruling. `deferred` is not weighed against anything — the "
+                "**THE CASE THE MARKER EXISTS FOR.** The reviewer raised a `plan_amendment_request` and "
+                "recorded `deferred` instead of ruling. `deferred` is not weighed against anything — the "
                 "unruled amendment is found FIRST and returns `amended`, exactly as it would with no verdict "
                 "at all. The orchestrator folds the amendment and re-runs the pass"),
             "deferred-nothing-outstanding": (
@@ -719,11 +751,19 @@ class Tables:
                 "JSONL has no blank lines — here as anywhere else"),
         }
 
-        # --- the active report's strict terminal result ------------------------------------------
+        # --- the active report: ONE validated record ---------------------------------------------
+        #
+        # The report used to be free text with a `VERDICT:` line the parser had to LOCATE, and most of the
+        # cases here used to be about that search: a truncated report, two verdict lines, a postscript that
+        # made the result nonterminal, a residual-risk remark that had to be found among prose and lost its
+        # tail to a control character. **None of those inputs can be built any more** — a JSON record has
+        # no "last nonblank line" to be wrong about and no line boundary to be split at — so the cases
+        # below pin what replaced them: the record's exact key set, its closed verdict enum, its
+        # sentinel-or-reason rule, and the LIST that makes each residual record its own value.
         self.REPORT_CASES: "dict[str, dict]" = {
             "valid-satisfied": {
                 "report": SAT_REPORT, "want": OK, "needle": "report verdict satisfied",
-                "why": "the parser derives SATISFIED and carries the line the reviewer wrote with it",
+                "why": "the record yields SATISFIED and carries the records the reviewer wrote with it",
             },
             "valid-not-satisfied": {
                 "report": NOT_SAT_REPORT, "findings": [finding()], "want": OK,
@@ -749,131 +789,110 @@ class Tables:
                 "why": "a caller-retold verdict cannot stand in for an absent report",
             },
             "empty": {
-                "report": "", "want": UNUSABLE, "needle": "is empty",
-                "why": "an empty capture contains no review result",
+                "report": "", "want": UNUSABLE, "needle": "holds 0 record(s)",
+                "why": "an empty artifact contains no review result",
             },
-            "truncated": {
-                "report": "Report body only.\n", "want": UNUSABLE, "needle": "no exact `VERDICT:`",
-                "why": "a truncated report cannot count",
+            "two-records": {
+                "report": NOT_SAT_REPORT + SAT_REPORT, "want": UNUSABLE,
+                "needle": "holds 2 record(s)",
+                "why": "two results leave no single review judgment — and this is what refuses a second "
+                       "`report-write` too",
             },
-            "duplicate-results": {
-                "report": "VERDICT: NOT SATISFIED\n" + SAT_REPORT, "want": UNUSABLE,
-                "needle": "2 `VERDICT:` result lines",
-                "why": "two results leave no single review judgment",
+            "not-json": {
+                "report": "Report body only.\n", "want": UNUSABLE, "needle": "is not JSON",
+                "why": "prose where a record belongs is a producer we cannot trust, not text to search",
             },
-            "trailing-text": {
-                "report": SAT_REPORT + "postscript\n", "want": UNUSABLE,
-                "needle": "not the last nonblank line",
-                "why": "a result followed by prose is not terminal",
+            "wrong-record-type": {
+                "report": report_line("satisfied", type="progress"), "want": UNUSABLE,
+                "needle": "not 'review_report'",
+                "why": "a report artifact holds exactly one review_report record and nothing else",
+            },
+            "missing-key": {
+                "report": report_line("satisfied", summary=DROP), "want": UNUSABLE,
+                "needle": "carries EXACTLY",
+                "why": "an absent required field is refused, never defaulted",
+            },
+            "extra-key": {
+                "report": report_line("satisfied", note="carried but unread"), "want": UNUSABLE,
+                "needle": "unexpected key(s)",
+                "why": "a key nothing reads asserts something neither verified nor refuted",
+            },
+            "verdict-outside-enum": {
+                "report": report_line("SATISFIED"), "want": UNUSABLE, "needle": "`verdict` is 'SATISFIED'",
+                "why": "the verdict enum is closed and its spelling is the ledger's, not a variant",
+            },
+            "blank-summary": {
+                "report": report_line("satisfied", summary="   "), "want": UNUSABLE,
+                "needle": "`summary` is",
+                "why": "a verdict with no account behind it is one nobody can read or reassess",
+            },
+            "deferred-without-reason": {
+                "report": report_line("deferred"), "want": UNUSABLE,
+                "needle": "carries the ONE-LINE REASON",
+                "why": "a request without a reason cannot be routed",
+            },
+            "deferred-blank-reason": {
+                "report": report_line("deferred", reason="  "), "want": UNUSABLE,
+                "needle": "`deferred_reason` is",
+                "why": "blank is not the sentinel and not a reason — absence must be TYPED",
+            },
+            "verdict-with-deferred-reason": {
+                "report": report_line("satisfied", reason="but also here is a request"),
+                "want": UNUSABLE, "needle": "defers nothing",
+                "why": "a routing reason beside a rendered verdict is a request nobody will act on",
+            },
+            # THE CALIBRATION RECORD IS METADATA, AND THE ARTIFACT IS WHAT NOW MAKES THAT SAFE. It used to
+            # be a line hunted inside prose, where every way of writing it raised the question of how
+            # leniently to read it — a question that twice cost a complete, substantive review pass. There
+            # is nothing left to write crookedly: the reviewer passes each remark as one value and the
+            # encoder owns the boundaries. What the records CONTRIBUTE is `check_residual_records`'s to
+            # pin; these pin only the shape rules.
+            "satisfied-without-residual-risk": {
+                "report": report_line("satisfied"), "want": OK, "needle": "report verdict satisfied",
+                "why": "writing no calibration record is the correct output, not a deficient one",
+            },
+            "several-residual-records": {
+                "report": report_line("satisfied", residual=["first — hard", "second — harder"]),
+                "want": OK, "needle": "report verdict satisfied",
+                "why": "two remarks are two records, not two verdicts to choose between",
+            },
+            # THE CONTROL CHARACTER THAT USED TO TRUNCATE THE RECORD. As a line in free text, everything
+            # from U+001C onward was a separate line to the reader that found the remark — and the same
+            # split decided which line the verdict was, so it could not be fixed there. As an ARRAY
+            # ELEMENT the encoder escapes it, and the record arrives whole.
+            "residual-record-with-control-character": {
+                "report": report_line("satisfied", residual=["parser\u001ccontract — hard"]),
+                "want": OK, "needle": "report verdict satisfied",
+                "why": "a control character inside a record is escaped by the encoder, never a boundary",
+            },
+            "residual-not-a-list": {
+                "report": report_line("satisfied", residual_risk="parser — hard"), "want": UNUSABLE,
+                "needle": "`residual_risk` is",
+                "why": "a bare string is one record spelled as text, and the LIST is what keeps boundaries",
+            },
+            "residual-on-not-satisfied": {
+                "report": report_line("not-satisfied", residual=["parser — hard"]),
+                "findings": [finding()], "want": UNUSABLE, "needle": "residual-risk record(s)",
+                "why": "the signal names the least-certain area of an ACCEPTING pass, and only accepting "
+                       "passes are read for it",
             },
             "wrong-attempt-only": {
                 "progress_name": "review-41-1.a2.progress.jsonl",
                 "progress": [ident(launch_attempt="2")], "report": None,
-                "extra_reports": {"review-41-1.txt": SAT_REPORT},
-                "want": UNUSABLE, "needle": "review-41-1.a2.txt",
+                "extra_reports": {REPORT_FILE: SAT_REPORT},
+                "want": UNUSABLE, "needle": "review-41-1.a2.report.jsonl",
                 "why": "attempt 1 cannot supply attempt 2's result",
             },
             "active-attempt-wins": {
                 "progress_name": "review-41-1.a2.progress.jsonl",
                 "progress": [ident(launch_attempt="2"), started("u01"), done("u01"),
                              started("u02"), done("u02", evidence="stage-2:161")],
-                "report": SAT_REPORT, "extra_reports": {"review-41-1.txt": NOT_SAT_REPORT},
+                "report": SAT_REPORT, "extra_reports": {REPORT_FILE: NOT_SAT_REPORT},
                 "want": OK, "needle": "report verdict satisfied",
                 "why": "the active attempt's result wins while the dead attempt stays inert",
             },
-            # THE CALIBRATION LINE DECIDES NOTHING, SO NOTHING ABOUT ONE WRITTEN ABOVE THE VERDICT CAN
-            # COST A PASS. The `OK` cases below are ONE claim in many shapes: the line absent, misspelled,
-            # invisibly prefixed, anywhere above the verdict, doubled, or written under a blocking verdict
-            # — and the pass counts every time, because the gate reads the VERDICT line and this one is
-            # metadata for the final report.
-            # Requiring the line at all discarded four complete review passes across two engines;
-            # requiring its exact inner form then discarded a SIXTH-round SATISFIED that had found no
-            # gating defect. `residual-after-verdict` is the BOUNDARY of that claim and the reason it is
-            # stated as "above the verdict": below it, the line is trailing text and the untouched
-            # terminal-verdict rule refuses the report, exactly as `trailing-text` above shows it doing
-            # for ordinary prose. What each of these reports CONTRIBUTES to the record is
-            # `check_residual_salvage`'s to pin; these pin only what each one costs the verdict.
-            "satisfied-without-residual-risk": {
-                "report": "Report body.\nVERDICT: SATISFIED\n", "want": OK,
-                "needle": "report verdict satisfied",
-                "why": "a missing calibration line does not block a SATISFIED verdict",
-            },
-            "malformed-residual-risk": {
-                "report": "RESIDUAL-RISK: parser contract - wrong separator\nVERDICT: SATISFIED\n",
-                "want": OK, "needle": "report verdict satisfied",
-                "why": "a separator the prompt did not ask for does not unmake a complete review",
-            },
-            # `visible_start` in review-pass.py owns which prefixes count as invisible; these three sample
-            # one prefix per branch of its rule: whitespace a reader sees as blank space (`isspace`), a
-            # format character that renders nothing (`not isprintable`), and a Default_Ignorable code
-            # point that is printable and non-space, which only the named Unicode property reaches. What
-            # they pin is the DETECTOR, whose job is to CARRY such a line into the record rather than lose
-            # it. A VISIBLE prefix (`- `, `> `, a spacing combining mark) stays outside that set: a line a
-            # reader sees as quoted or bulleted is one the reviewer is talking ABOUT, not writing.
-            "indented-residual-risk": {
-                "report": "Report body.\n  RESIDUAL-RISK: parser — hard\nVERDICT: SATISFIED\n",
-                "want": OK, "needle": "report verdict satisfied",
-                "why": "an indented line is the reviewer's line, indented",
-            },
-            # U+FEFF is Cf, so `str.lstrip()` never removes it. Placed MID-FILE deliberately: reading the
-            # report as `utf-8-sig` would not reach this line, so the case pins the DETECTOR, not a
-            # decoding choice — `read_text` stays `utf-8` so the tool reads what the file says.
-            "bom-prefixed-residual-risk": {
-                "report": "Report body.\n\ufeffRESIDUAL-RISK: parser contract - wrong separator\n"
-                          "VERDICT: SATISFIED\n",
-                "want": OK, "needle": "report verdict satisfied",
-                "why": "an invisible prefix is invisible to the reader and must not hide the line",
-            },
-            # U+034F COMBINING GRAPHEME JOINER is Mn, so it is BOTH printable and non-space: neither
-            # `isspace()` nor `not isprintable()` reaches it, only Default_Ignorable_Code_Point does. Its
-            # category is not the discriminator — U+0301 is Mn too and renders a visible acute.
-            "default-ignorable-prefixed-residual-risk": {
-                "report": "Report body.\n\u034fRESIDUAL-RISK: parser contract - wrong separator\n"
-                          "VERDICT: SATISFIED\n",
-                "want": OK, "needle": "report verdict satisfied",
-                "why": "a code point that renders as nothing is a prefix the reader cannot see",
-            },
-            "misplaced-residual-risk": {
-                "report": "RESIDUAL-RISK: parser — hard\nand then more prose\nVERDICT: SATISFIED\n",
-                "want": OK, "needle": "report verdict satisfied",
-                "why": "where above the verdict the reviewer put the line is not a question the gate asks",
-            },
-            # THE BOUNDARY of the claim its neighbours make, and the reason that claim says ABOVE the
-            # verdict. Nothing here is a rule about this line: the report is refused because SOMETHING
-            # follows the verdict, and `trailing-text` above pins the same refusal for ordinary prose. The
-            # two cases must keep agreeing — if this one ever returns OK while `trailing-text` does not,
-            # the token has been special-cased into an exemption from the terminal rule.
-            "residual-after-verdict": {
-                "report": "Report body.\nVERDICT: SATISFIED\nRESIDUAL-RISK: parser — hard\n",
-                "want": UNUSABLE, "needle": "not the last nonblank line",
-                "why": "a calibration line below the verdict is trailing text, so the terminal result is "
-                       "nonterminal",
-            },
-            # Real reviewers on two engines separated the two with a blank line.
-            "blank-line-above-verdict-residual-risk": {
-                "report": "Report body.\nRESIDUAL-RISK: parser — hard\n\nVERDICT: SATISFIED\n",
-                "want": OK, "needle": "report verdict satisfied",
-                "why": "blank lines between the residual risk and the verdict change nothing",
-            },
-            "duplicate-residual-risk": {
-                "report": "RESIDUAL-RISK: first — hard\nRESIDUAL-RISK: second — hard\n"
-                          "VERDICT: SATISFIED\n",
-                "want": OK, "needle": "report verdict satisfied",
-                "why": "two calibration lines are two remarks, not two verdicts to choose between",
-            },
-            "residual-on-not-satisfied": {
-                "report": "RESIDUAL-RISK: parser — hard\nVERDICT: NOT SATISFIED\n",
-                "findings": [finding()], "want": OK, "needle": "report verdict not-satisfied",
-                "why": "a blocking verdict stands on its gating finding; the stray line is dropped, "
-                       "not fatal",
-            },
-            "deferred-without-reason": {
-                "report": "VERDICT: DEFERRED\n", "want": UNUSABLE,
-                "needle": "terminal result 'VERDICT: DEFERRED' is malformed",
-                "why": "a request without a reason cannot be routed",
-            },
             "hostile-bytes": {
-                "report": b"body \xff\nVERDICT: NOT SATISFIED\n", "want": UNUSABLE,
+                "report": b"\xff\n", "want": UNUSABLE,
                 "needle": "cannot be read as UTF-8",
                 "why": "undecodable report bytes are refused rather than rewritten",
             },
@@ -1037,6 +1056,41 @@ class Tables:
                    "--purpose", PURPOSE_GREEN, "--repro", "a paginated reply with no `statuses` member",
                    "--fix", "refuse a missing row array",
                    "--base", R.INTRODUCED, "--base-repro", R.NO_BASE_REPRO]
+        # --- the REPORT write door ---------------------------------------------------------------
+        #
+        # `(filename, seed, argv, exit, needle, why)`. `seed` is what the target already holds, so the
+        # SECOND-report case can be stated as the state it meets rather than as two calls.
+        REPORT_OK = ["--verdict", R.SATISFIED, "--deferred-reason", R.NO_DEFERRED_REASON,
+                     "--summary", "Report body."]
+        self.REPORT_CLI_CASES = [
+            (REPORT_FILE, None, REPORT_OK, 0, '"verdict":"satisfied"',
+             "the call every reviewer prompt makes, on the file the orchestrator derived for it"),
+            (REPORT_FILE, None, [*REPORT_OK[:4], "--summary", "Report body.",
+                                 "--residual-risk", RESIDUAL_ONE],
+             0, '"residual_risk":["' + RESIDUAL_ONE[:12],
+             "…and the same call carrying one calibration record, which is OPTIONAL and does not weaken it"),
+            # **THE NAME.** A report written where `verify` will never DERIVE it is a report nothing reads,
+            # and the pass is then refused for having none while its verdict sits on disk one filename
+            # away. `.txt` is the name the report wore while it was free text, so it is exactly the wrong
+            # name a caller is most likely to type.
+            ("review-41-1.txt", None, REPORT_OK, 1, "not a launch attempt's report artifact",
+             "the report's OLD free-text name is not a variant of its artifact name; it is not one"),
+            (REPORT_FILE, SAT_REPORT, REPORT_OK, 1, "holds 2 record(s)",
+             "**A SECOND REPORT IS NOT AN APPEND.** A pass yields ONE result, so the door refuses rather "
+             "than recording a choice among two — and it is refused by the read side's own one-record "
+             "rule, through the readback, not by a write-shaped copy of it"),
+            (REPORT_FILE, None, ["--verdict", R.DEFERRED, "--deferred-reason", R.NO_DEFERRED_REASON,
+                                 "--summary", "Report body."],
+             1, "carries the ONE-LINE REASON",
+             "a deferral is a REQUEST, and one the orchestrator cannot route is a pass that stopped for a "
+             "reason only the reviewer knows"),
+            (REPORT_FILE, None, ["--verdict", R.NOT_SATISFIED, "--deferred-reason", R.NO_DEFERRED_REASON,
+                                 "--summary", "Report body.", "--residual-risk", RESIDUAL_ONE],
+             1, "residual-risk record(s)",
+             "the calibration signal names the least-certain area of an ACCEPTING pass, and the one "
+             "document that carries it onward reads only accepting passes"),
+        ]
+
         self.FINDING_CLI_CASES = [
             (FINDINGS_FILE, FIND_OK, 0, '"writer":"network"',
              "the call the reviewer prompt makes — a finding that DEFENDS a stated purpose and names a real actor"),
@@ -1116,6 +1170,10 @@ class Tables:
             "no-trailing-newline": ident().encode(),
             "plan-no-trailing-newline": unit("u01").encode(),
             "findings-no-trailing-newline": R43_11.encode(),
+            # A report artifact that ALREADY holds its one record — the state a second `report-write`
+            # meets. Nothing special-cases it: `check_report_file` sees two records in `before + line`
+            # and the write is refused by the same statement the read door refuses two with.
+            "reported": SAT_REPORT.encode(),
             "corrupt": b"not json at all\n",
             "not-utf8": b"\xff\n",
         }
@@ -1128,6 +1186,8 @@ class Tables:
             "amend": (PROGRESS_FILE, ["--reason", "harness gap", "--id", "u09", "--kind", "file",
                                       "--target", "x.py", "--check", "a"]),
             "finding-add": (FINDINGS_FILE, FIND_OK),
+            "report-write": (REPORT_FILE, ["--verdict", R.SATISFIED, "--deferred-reason",
+                                           R.NO_DEFERRED_REASON, "--summary", "Report body."]),
         }
         # `status` writes NOTHING — it is an ADVISORY read-only view — so the round trip does not drive it
         # (there is no produced artifact to read back), and it is declared read-only here so the
@@ -1147,6 +1207,8 @@ class Tables:
             AMENDMENT_WRAPPER_DOOR: (PROGRESS_FILE, DISPATCHED),  # …and the same door, through its wrapper
             "finding-add": (FINDINGS_FILE, None),       # …and the first finding in a findings file that does not
             FINDING_WRAPPER_DOOR: (FINDINGS_FILE, None),  # the reviewer's OTHER door, through its wrapper
+            "report-write": (REPORT_FILE, None),        # the ONE report lands in a file that does not exist
+            REPORT_WRAPPER_DOOR: (REPORT_FILE, None),   # …and the same door, through the wrapper it runs
             "intent-check": (INTENT_FILE, INTENT.splitlines()),
             # a COMPLETE, sound pass; seed_door adds its active SATISFIED report
             "verify": (PROGRESS_FILE, WORKED),
@@ -1166,6 +1228,8 @@ class Tables:
             "--path": ["scripts/ci-status.py"], "--line": ["769"], "--writer": ["network"],
             "--purpose": [PURPOSE_GREEN], "--repro": ["a reply with no rows"], "--fix": ["refuse it"],
             "--base": [R.INTRODUCED], "--base-repro": [R.NO_BASE_REPRO],
+            "--deferred-reason": [R.NO_DEFERRED_REASON], "--summary": ["Report body."],
+            "--residual-risk": [RESIDUAL_ONE],
             # status's view flags. `--run .` drives the minimal invocation the door check executes; the
             # OPTIONAL flags are never in a minimal call, so their values are only here to satisfy the
             # "every advertised flag has a supplied value" reconciliation. `--verify`/`--history` are
@@ -1324,13 +1388,12 @@ class Tables:
             },
             "done-verdict": {
                 "files": {PROGRESS_FILE: self.WORKED, PLAN_FILE: self.PLAN,
-                          "review-41-1.txt": "Report body.\nVERDICT: NOT SATISFIED\n"},
+                          REPORT_FILE: NOT_SAT_REPORT},
                 "now": "2026-07-06T00:03:00Z",
                 "flags": ["--history"],   # `done` is TERMINAL, so the default hides it; --history shows it
                 "expect": {"41-1": {"units": "2/2", "health": "done", "verdict": "NOT-SAT"}},
-                "why": "the report `.txt` carries a VERDICT line, so health is `done` (terminal, hidden by "
-                       "default) and the verdict is scraped as NOT-SAT (NOT SATISFIED is tested before "
-                       "SATISFIED, which it contains)",
+                "why": "the report record carries a binary verdict, so health is `done` (terminal, hidden "
+                       "by default) and the verdict is scraped as NOT-SAT",
             },
             "find-gating-split": {
                 "files": {PROGRESS_FILE: self.WORKED, PLAN_FILE: self.PLAN,
@@ -1362,8 +1425,8 @@ class Tables:
                 "files": {"review-7-1.progress.jsonl": [ident7(), started("u01")],
                           "review-7-1.a2.progress.jsonl": [ident7(launch_attempt="2"), started("u01")],
                           "review-7-1.plan.jsonl": self.PLAN,
-                          "review-7-1.txt": "VERDICT: SATISFIED\n",
-                          "review-7-1.a2.txt": "VERDICT: NOT SATISFIED\n"},
+                          "review-7-1.report.jsonl": SAT_REPORT,
+                          "review-7-1.a2.report.jsonl": NOT_SAT_REPORT},
                 "now": "2026-07-06T00:03:00Z",
                 "flags": ["--history"],
                 "expect": {"7-1": {"health": "done", "verdict": "SAT"},
@@ -1393,7 +1456,7 @@ class Tables:
             },
             "verify-column": {
                 "files": {PROGRESS_FILE: self.WORKED, PLAN_FILE: self.PLAN, INTENT_FILE: INTENT,
-                          "review-41-1.txt": SAT_REPORT},
+                          REPORT_FILE: SAT_REPORT},
                 "now": "2026-07-06T00:03:00Z",
                 "flags": ["--verify", "--history"],   # `done` is terminal — --history reveals it
                 "expect": {"41-1": {"units": "2/2", "verdict": "SAT", "counts(--verify)": "ok"}},
@@ -1446,17 +1509,17 @@ class Tables:
             # --- A TORN/CORRUPT progress file does not hide a pass's TERMINALITY (read from OTHER files) --
             "unreadable-done": {
                 "files": {PROGRESS_FILE: UNREADABLE, PLAN_FILE: self.PLAN,
-                          "review-41-1.txt": "Report body.\nVERDICT: SATISFIED\n"},
+                          REPORT_FILE: SAT_REPORT},
                 "now": "2026-07-06T00:03:00Z",
                 "flags": ["--history"],   # `done` is terminal — --history reveals the row
                 "expect": {"41-1": {"units": "?", "health": "done", "verdict": "SAT"}},
-                "why": "the PROGRESS file is a real corruption, but its REPORT carries a VERDICT: the pass "
+                "why": "the PROGRESS file is a real corruption, but its REPORT carries a verdict: the pass "
                        "FINISHED. The verdict is scraped and `done` wins BEFORE the unreadable give-up, so "
                        "the row reads `done`/`SAT`, never a live-looking `unreadable`",
             },
             "unreadable-done-hidden": {
                 "files": {PROGRESS_FILE: UNREADABLE, PLAN_FILE: self.PLAN,
-                          "review-41-1.txt": "Report body.\nVERDICT: SATISFIED\n"},
+                          REPORT_FILE: SAT_REPORT},
                 "now": "2026-07-06T00:03:00Z",
                 "absent": ["41-1"],
                 "footer": "1 terminal pass(es) hidden",
@@ -1538,6 +1601,8 @@ RULE_FUNCTIONS = (
     # …and the FINDINGS side: the intent, the anchor, the writer, and the artifact they live in.
     "parse_intent", "load_intent", "check_writer_repro", "check_finding", "findings_name",
     "check_findings_file", "load_findings", "cmd_finding_add",
+    # …and the REPORT side: the artifact that used to be free text, and its one record.
+    "report_name", "check_report", "check_report_file", "cmd_report_write",
 )
 ENFORCING_EXCEPTIONS = ("Defect", "OperatorError")
 # The NAMES as they are spelled in the source, because that is what the AST holds — `return UNUSABLE, …`
@@ -1599,10 +1664,10 @@ def build(tmp: Path, name: str, plan: "list[str] | None", progress: "list[str] |
     if plan is not None:
         (d / PLAN_FILE).write_text("".join(line + "\n" for line in plan), encoding="utf-8")
     if findings is not None:
-        findings_path = d / (progress_name[: -len(".progress.jsonl")] + ".findings.jsonl")
+        findings_path = d / (progress_name[: -len(PROGRESS_SUFFIX)] + FINDINGS_SUFFIX)
         findings_path.write_text("".join(line + "\n" for line in findings), encoding="utf-8")
     if report is not None:
-        report_path = d / (progress_name[: -len(".progress.jsonl")] + ".txt")
+        report_path = d / (progress_name[: -len(PROGRESS_SUFFIX)] + REPORT_SUFFIX)
         if isinstance(report, bytes):
             report_path.write_bytes(report)
         else:
@@ -1620,8 +1685,8 @@ def reads_back(mod: types.ModuleType, artifact: str, path: Path) -> "tuple[bool,
     An exception is the loudest failure of all: the read side owes a VERDICT on any bytes, and a crash is
     not a verdict.
 
-    Progress writes are checked through the same whole-file reader the write door uses. The report is a
-    separate reviewer output and cannot exist while an early progress event is being appended.
+    Every artifact is checked through the same whole-file reader its own write door uses — the report
+    included, now that it has one.
     """
     try:
         if artifact == PLAN_FILE:
@@ -1634,6 +1699,9 @@ def reads_back(mod: types.ModuleType, artifact: str, path: Path) -> "tuple[bool,
         if artifact == FINDINGS_FILE:
             mod.check_findings_file(path.read_text(encoding="utf-8"), path)
             return True, "the findings read back"
+        if artifact == REPORT_FILE:
+            mod.check_report_file(mod.read_text(path, "active review report"), path)
+            return True, "the report reads back"
         mod.check_progress_file(mod.read_text(path, "progress file"), path,
                                 lambda: mod.load_plan(mod.plan_path(path)))
         return True, "the progress file reads back"
@@ -1707,6 +1775,10 @@ def cli_key(i: int, argv: "list[str]") -> str:
 
 def find_key(i: int, name: str) -> str:
     return f"[finding-cli {i}] {name}"
+
+
+def report_key(i: int, name: str) -> str:
+    return f"[report-cli {i}] {name}"
 
 
 def run_cases(mod: types.ModuleType, T: Tables, tmp: Path) -> "dict[str, tuple[str, str]]":
@@ -1796,6 +1868,16 @@ def run_cases(mod: types.ModuleType, T: Tables, tmp: Path) -> "dict[str, tuple[s
             got[find_key(i, fname)] = (f"exit{code}", text)
         except Exception as exc:  # noqa: BLE001
             got[find_key(i, fname)] = (f"crash:{type(exc).__name__}", str(exc))
+    for i, (fname, seed, argv, _, _, _) in enumerate(T.REPORT_CLI_CASES):  # drops want, needle, why
+        d = build(tmp, f"report-cli-{i}", T.PLAN, T.WORKED, report=None).parent
+        target = d / fname
+        if seed is not None:
+            target.write_text(seed, encoding="utf-8")
+        try:
+            code, text = run_cli(mod, ["report-write", "--file", str(target), *argv])
+            got[report_key(i, fname)] = (f"exit{code}", text)
+        except Exception as exc:  # noqa: BLE001
+            got[report_key(i, fname)] = (f"crash:{type(exc).__name__}", str(exc))
     for name, (bound_scope, intent_defaults, defaults, sibling, create, _, _) in T.LEDGER_CASES.items():  # drops want, needle
         # The identity carries the DISPATCH-TIME scope binding; the intent block carries `intent_defaults`
         # (which the tally must IGNORE); the header carries `defaults`. A resynced-but-stale case sets the
@@ -1839,6 +1921,8 @@ def expectations(T: Tables) -> "dict[str, tuple[str, str, str]]":
                 for n, (_, _, c, needle, why) in T.PLAN_CHECK_CASES.items()})  # drops plan, tier
     out.update({find_key(i, p): (f"exit{c}", needle, why)
                 for i, (p, _, c, needle, why) in enumerate(T.FINDING_CLI_CASES)})  # drops argv
+    out.update({report_key(i, p): (f"exit{c}", needle, why)
+                for i, (p, _, _, c, needle, why) in enumerate(T.REPORT_CLI_CASES)})  # drops seed, argv
     out.update({f"[ledger] {n}": (f"exit{c}", needle,
                                   "`verify --ledger` refuses a pass whose DISPATCH-TIME pass_identity scope "
                                   "binding drifted from the run's current default_non_goals — a stale-scope "
@@ -2006,10 +2090,10 @@ def advertised(help_text: str) -> "tuple[list[str], set[str], set[str]]":
 def door_parsers(R: types.ModuleType) -> "dict[str, argparse.ArgumentParser]":
     """Every door the tool has, and the parser behind it — DERIVED from `build_parser`, never listed.
 
-    The two WRAPPERS are the doors that are separate SCRIPTS, so their parsers are rebuilt here from the
-    owner's own `add_emit_args`/`add_finding_args` — the same single definitions the wrappers call. What is
-    actually EXECUTED for them is the real script, as a subprocess, so a replica cannot hide a wrapper that
-    has drifted from it.
+    The WRAPPERS are the doors that are separate SCRIPTS, so their parsers are rebuilt here from the
+    owner's own `add_*_args` functions — the same single definitions the wrappers call. What is actually
+    EXECUTED for them is the real script, as a subprocess, so a replica cannot hide a wrapper that has
+    drifted from it.
     """
     p, _ = R.build_parser()  # drops the commands map
     doors: dict[str, argparse.ArgumentParser] = {}
@@ -2026,6 +2110,9 @@ def door_parsers(R: types.ModuleType) -> "dict[str, argparse.ArgumentParser]":
     amendment_wrapper = argparse.ArgumentParser(prog=AMENDMENT_WRAPPER_DOOR)
     R.add_amendment_args(amendment_wrapper)
     doors[AMENDMENT_WRAPPER_DOOR] = amendment_wrapper
+    report_wrapper = argparse.ArgumentParser(prog=REPORT_WRAPPER_DOOR)
+    R.add_report_args(report_wrapper)
+    doors[REPORT_WRAPPER_DOOR] = report_wrapper
     return doors
 
 
@@ -2048,6 +2135,8 @@ def door_script(door: str) -> Path:
         return FINDING_WRAPPER
     if door == AMENDMENT_WRAPPER_DOOR:
         return AMENDMENT_WRAPPER
+    if door == REPORT_WRAPPER_DOOR:
+        return REPORT_WRAPPER
     return OWNER
 
 
@@ -2069,7 +2158,7 @@ def seed_door(T: Tables, tmp: Path, door: str, case: str) -> "list[str]":
     if lines is not None:
         target.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
     if door == "verify":
-        (d / "review-41-1.txt").write_text(SAT_REPORT, encoding="utf-8")
+        (d / REPORT_FILE).write_text(SAT_REPORT, encoding="utf-8")
     return ["--file", str(target)]
 
 
@@ -2242,59 +2331,61 @@ def _write_ledger(path: Path, defaults: "list[str] | str") -> Path:
     return path
 
 
-def check_residual_salvage(R: types.ModuleType, T: Tables, tmp: Path) -> int:
-    """What each report CONTRIBUTES to the residual-risk record — the half `REPORT_CASES` cannot see.
+def check_residual_records(R: types.ModuleType, T: Tables, tmp: Path) -> int:
+    """WHAT REACHES THE RECORD — the half `REPORT_CASES` cannot see, driven END TO END through the door.
 
-    Those cases pin what each shape of this line costs the verdict — nothing, wherever it stands above
-    the verdict, and the pass itself when it stands below one; a verdict is all `evaluate` returns, so
-    they cannot say what was KEPT. Salvage that keeps nothing would satisfy every one of them while
-    quietly emptying the final report's calibration section, which is the only consumer the line has.
+    Those cases pin what each shape of a report costs the verdict; a verdict is all `evaluate` returns, so
+    they cannot say what was KEPT. A door that silently dropped every residual-risk remark would satisfy
+    every one of them while quietly emptying the final report's calibration section, which is the only
+    consumer these records have.
 
-    The rule pinned here is one sentence: every such line is carried AS WRITTEN, as its OWN record, minus
-    the prefix and trailing whitespace a reader cannot see. Not repaired, not split into fields, not
-    chosen between, and not joined to the next one — every one of those would be this tool putting words
-    in a reviewer's mouth, and the join did exactly that with the ` | ` it spliced between two records.
+    So each case here starts at the CLI the reviewer actually runs and ends at `parse_report`: the values
+    go in as argv, the record comes back out, and the rule pinned is one sentence — **every remark is
+    carried VERBATIM, as its OWN element, in the order written.** Not repaired, not split into fields, not
+    chosen between, and not joined to the next one. The join was a real defect: it spliced a ` | ` no
+    reviewer typed into text the final report then attributed to that reviewer.
 
-    Then `check_residual_rendering` leaves the fixtures and drives the real `verify` CLI, because the
-    record is only ever consumed through what that command PRINTS: the final report reproduces each record
-    as `verify` reports it, so a list kept faithfully in memory and flattened on the way to stdout would
-    be the same defect one layer down.
+    **THE CONTROL-CHARACTER CASE IS THE ONE THIS REDESIGN EXISTS FOR.** While the report was free text,
+    the remark was a LINE, and the line reader that found it ended a line at U+001C — so everything after
+    that character was silently lost, and the reader could not be changed because the SAME split decided
+    which line the verdict was. As an array element there is no split to lose it to.
+
+    The last case leaves the fixtures and drives the real `verify` CLI, because the records are consumed
+    through what that command PRINTS: the final report reproduces each record as `verify` reports it, so
+    records kept faithfully in the artifact and mangled on the way to stdout would be the same defect one
+    layer down.
     """
-    # U+FEFF, spelled rather than typed: a fixture whose point is an INVISIBLE prefix must not depend on
-    # an invisible byte surviving every editor that touches this file.
-    bom = chr(0xFEFF)
-    # report text -> the records it must produce (`[]` = this report contributes nothing).
-    cases: "dict[str, tuple[str, list[str]]]" = {
-        "canonical": ("Body.\nRESIDUAL-RISK: parser — hard\nVERDICT: SATISFIED\n",
-                      ["RESIDUAL-RISK: parser — hard"]),
-        "wrong-separator": ("Body.\nRESIDUAL-RISK: parser contract - hard\nVERDICT: SATISFIED\n",
-                            ["RESIDUAL-RISK: parser contract - hard"]),
-        "no-separator": ("Body.\nRESIDUAL-RISK: the whole diff read once\nVERDICT: SATISFIED\n",
-                         ["RESIDUAL-RISK: the whole diff read once"]),
-        "invisible-prefix-and-trailing-space": (
-            "Body.\n" + bom + "  RESIDUAL-RISK: parser — hard  \nVERDICT: SATISFIED\n",
-            ["RESIDUAL-RISK: parser — hard"]),
-        "midstream": ("RESIDUAL-RISK: parser — hard\nand then more prose\nVERDICT: SATISFIED\n",
-                      ["RESIDUAL-RISK: parser — hard"]),
-        # TWO LINES ARE TWO RECORDS. The joined form put a ` | ` the reviewer never typed inside the text
-        # the final report attributes to it; two elements carry both remarks with nothing added between.
-        "two-lines": ("RESIDUAL-RISK: first — hard\nRESIDUAL-RISK: second — harder\n"
-                      "VERDICT: SATISFIED\n",
-                      ["RESIDUAL-RISK: first — hard", "RESIDUAL-RISK: second — harder"]),
-        "none-written": ("Body.\nVERDICT: SATISFIED\n", []),
-        # SATISFIED-only: the final report records the least-certain area of each ACCEPTING pass, so on a
-        # blocking result there is no consumer and the line is dropped — dropped, never refused.
-        "not-satisfied": ("RESIDUAL-RISK: parser — hard\nVERDICT: NOT SATISFIED\n", []),
-        # A VISIBLE prefix is the reviewer QUOTING the instruction, not obeying it (`visible_start`).
-        "quoted-bullet": ("- RESIDUAL-RISK: <area> — <why> is asked of a SATISFIED report\n"
-                          "VERDICT: SATISFIED\n", []),
+    # argv-visible remarks -> what the record must hold. Each is passed as one `--residual-risk` value.
+    cases: "dict[str, list[str]]" = {
+        "canonical": ["parser — hard"],
+        "wrong-separator": ["parser contract - hard"],
+        "no-separator": ["the whole diff read once"],
+        "two-remarks": ["first — hard", "second — harder"],
+        "none-written": [],
+        # A remark holding the record separator that used to TRUNCATE it, and the newline that used to end
+        # the line it lived on. Both are the encoder's problem now, and it escapes them.
+        "control-character": ["parser\u001ccontract — hard"],
+        "embedded-newline": ["parser — hard\nand the rest of the same remark"],
+        # Leading and trailing whitespace is the reviewer's to type: there is no prose to strip a prefix
+        # from any more, so nothing is stripped and the value arrives as it was passed.
+        "surrounding-space": ["  parser — hard  "],
     }
     failures = 0
-    for name, (text, want) in cases.items():
-        path = build(tmp, f"residual-{name}", None, [], report=text)
+    for name, remarks in cases.items():
+        path = build(tmp, f"residual-{name}", T.PLAN, T.WORKED, report=None)
+        argv = ["report-write", "--file", str(path.parent / REPORT_FILE),
+                "--verdict", R.SATISFIED, "--deferred-reason", R.NO_DEFERRED_REASON,
+                "--summary", "Report body."]
+        for remark in remarks:
+            argv += ["--residual-risk", remark]
+        code, text = run_cli(R, argv)
+        if code != 0:
+            print(f"FAIL     [residual] {name}: the door refused the call ({code}): {text.strip()}")
+            failures += 1
+            continue
         got = R.parse_report(path)["residual_risk"]
-        if got != want:
-            print(f"FAIL     [residual] {name}: recorded {got!r}, expected {want!r}")
+        if got != remarks:
+            print(f"FAIL     [residual] {name}: recorded {got!r}, expected {remarks!r}")
             failures += 1
         else:
             print(f"ok       [residual] {name:36} -> {got!r}")
@@ -2332,25 +2423,24 @@ def check_residual_rendering(R: types.ModuleType, T: Tables, tmp: Path) -> int:
     decodes the printed field back (`recover_residual`) and requires it to equal what `parse_report`
     returned for that same report, and the pair is additionally required to print DIFFERENTLY.
 
-    `punctuated` carries `]`, `"`, `\\` and the old `; ` inside ONE record: a rendering that survives a
-    tidy record and loses one holding its own delimiter is a rendering that fails on precisely the
+    `punctuated` carries `]`, `"`, `\\`, the old `; ` and a U+001C inside ONE record: a rendering that
+    survives a tidy record and loses one holding its own delimiter — or one holding the character that
+    used to TRUNCATE it while the report was free text — is a rendering that fails on precisely the
     reviewer whose words most need carrying.
 
     Each case also pins that stdout stays ONE line, since the detail is a field of a single printed line.
     """
     reports = {
         # THE DEFECT'S OWN REPRODUCTION, both halves. One reviewer wrote a single remark that happens to
-        # contain the separator; the other wrote two remarks. `parse_report` tells them apart; before this
-        # rendering, `verify` printed the same bytes for both.
-        "one-record": "Body.\nRESIDUAL-RISK: first — hard; RESIDUAL-RISK: second — harder\n"
-                      "VERDICT: SATISFIED\n",
-        "two-records": "Body.\nRESIDUAL-RISK: first — hard\nRESIDUAL-RISK: second — harder\n"
-                       "VERDICT: SATISFIED\n",
-        "punctuated": 'Body.\nRESIDUAL-RISK: parser["x"] — holds ], a quote, a \\ and a ; too\n'
-                      "VERDICT: SATISFIED\n",
+        # contain the separator; the other wrote two remarks. The ARTIFACT tells them apart by
+        # construction now; before this rendering, `verify` printed the same bytes for both.
+        "one-record": report_line("satisfied", residual=["first — hard; second — harder"]),
+        "two-records": report_line("satisfied", residual=["first — hard", "second — harder"]),
+        "punctuated": report_line(
+            "satisfied", residual=['parser["x"] — holds ], a quote, a \\, a ; and a \u001c too']),
         # The field is printed even when the reviewer wrote nothing, so a reader never has to tell "no
         # records" apart from "the field is somewhere else".
-        "none-written": "Body.\nVERDICT: SATISFIED\n",
+        "none-written": report_line("satisfied"),
     }
     problems: "list[str]" = []
     printed: "dict[str, str]" = {}
@@ -2555,7 +2645,7 @@ def check_amendment_door(R: types.ModuleType, tmp: Path) -> int:
     if code != 0 or "u09" not in out:
         print(f"FAIL     [amend] the owner's door refused a valid amendment (exit {code}): {out.strip()}")
         failures += 1
-    (d / "review-41-1.txt").write_text(DEFERRED_REPORT, encoding="utf-8")
+    (d / REPORT_FILE).write_text(DEFERRED_REPORT, encoding="utf-8")
     # `verify --ledger` is REQUIRED (F2); the identity above is bound to [], so a same-dir []-defaults ledger
     # is in sync and the pass routes on its own merits, not the scope check.
     ledger = _write_ledger(d / "state.jsonl", [])
@@ -2593,7 +2683,7 @@ def check_amendment_door(R: types.ModuleType, tmp: Path) -> int:
         print(f"FAIL     [amend] the `emit-amendment.py` shim refused a valid amendment "
               f"(exit {run.returncode}): {(run.stdout + run.stderr).strip()}")
         failures += 1
-    (d / "review-41-1.txt").write_text(DEFERRED_REPORT, encoding="utf-8")
+    (d / REPORT_FILE).write_text(DEFERRED_REPORT, encoding="utf-8")
     ledger = _write_ledger(d / "state.jsonl", [])  # in-sync []-scope ledger for the now-required --ledger (F2)
     code, out = run_cli(R, ["verify", "--file", str(progress), "--head-sha", SHA, "--ledger", str(ledger)])
     if code != 1 or R.AMENDED not in out:
@@ -2715,8 +2805,15 @@ def check_unwritable_target(R: types.ModuleType, T: Tables, tmp: Path) -> int:
     read-only under `workspace-write`; every `emit-progress.py` append failed with `OSError: [Errno 30]
     Read-only file system`, the reviewer deferred with a bare "progress file is read-only", the
     orchestrator re-dispatched the SAME wrong command, and a ~20-minute pass was lost each time. The write
-    door now translates that OS failure into a DISPATCH-fault diagnostic naming the `-C` target and the
-    `VERDICT: DEFERRED` recovery.
+    door now translates that OS failure into a DISPATCH-fault diagnostic naming the `-C` target and what
+    the reviewer can still do about it.
+
+    **THE RECOVERY IT NAMES CHANGED WITH THE REPORT, AND SAYING SO IS THE POINT.** It used to tell the
+    reviewer to defer in its report's terminal line, which worked because an external process's final
+    output WAS the report. The report is written through a door under that same unwritable root now, so
+    the reviewer cannot deliver one at all: its final MESSAGE is the only channel left, the attempt is
+    unusable for having no report, and the orchestrator relaunches or parks. A diagnostic that still
+    promised the old recovery would send a reviewer to write a file it has just been told it cannot.
 
     We cannot mount a read-only filesystem in a unit test, so we reproduce the same errno family the door
     treats identically: appending to a `0o444` file raises `EACCES`, the sibling of the real `EROFS`.
@@ -2746,12 +2843,16 @@ def check_unwritable_target(R: types.ModuleType, T: Tables, tmp: Path) -> int:
         print("FAIL     [unwritable] emit into a read-only progress file EXITED 0 — the write door "
               "swallowed the OSError instead of deferring")
         return 1
-    if "-C" not in text or "DEFERRED" not in text:
+    if "-C" not in text or "final message" not in text:
         print(f"FAIL     [unwritable] emit refused (exit {code}) but its message names neither the `-C` "
-              f"target nor the DEFERRED recovery:\n         {text.strip()}")
+              f"target nor the still-available recovery:\n         {text.strip()}")
+        return 1
+    if "DEFERRED" in text:
+        print(f"FAIL     [unwritable] the diagnostic still promises a report-borne DEFERRED recovery, but "
+              f"the report is written under the same unwritable root:\n         {text.strip()}")
         return 1
     print(f"ok       [unwritable] emit into a read-only target -> exit {code}, DISPATCH-fault diagnostic "
-          f"names -C and VERDICT: DEFERRED")
+          f"names -C and the final-message recovery")
     return 0
 
 
@@ -2765,6 +2866,17 @@ def run(R: types.ModuleType, tmp: Path) -> int:
     T = Tables(R)
     expect = expectations(T)
     failures = 0
+
+    # The MECHANICAL half of "this suite builds fixtures where the tool looks". Every artifact name in
+    # this file is assembled from the three suffixes above, and the report's has already changed once —
+    # so they are reconciled against the owner's own constants rather than trusted to have been swept.
+    for name, mine in (("PROGRESS_SUFFIX", PROGRESS_SUFFIX), ("FINDINGS_SUFFIX", FINDINGS_SUFFIX),
+                       ("REPORT_SUFFIX", REPORT_SUFFIX)):
+        theirs = getattr(R, name)
+        if mine != theirs:
+            print(f"FAIL     [suffix] this suite spells {name} {mine!r}; review-pass.py says {theirs!r} — "
+                  f"every fixture below is built at a path the tool does not read")
+            failures += 1
 
     for problem in check_commands_covered(R, T):
         print(f"COMMANDS {problem}")
@@ -2800,7 +2912,7 @@ def run(R: types.ModuleType, tmp: Path) -> int:
     print()
     failures += check_docs(R)
     print()
-    failures += check_residual_salvage(R, T, tmp)
+    failures += check_residual_records(R, T, tmp)
     print()
     failures += check_intent_door(R, tmp)
     print()
@@ -2818,6 +2930,7 @@ def run(R: types.ModuleType, tmp: Path) -> int:
              f"MINIMAL invocation its OWN `--help` advertises EXECUTED, and it runs")
     print(f"all {len(T.CASES)} fixtures + {len(T.FINDING_CASES)} findings/intent fixtures + "
           f"{len(T.REPORT_CASES)} report fixtures + "
+          f"{len(T.REPORT_CLI_CASES)} report-write CLI cases + "
           f"{len(T.NAME_CASES)} name cases + "
           f"{len(T.CLI_CASES) + len(T.PLAN_CLI_CASES) + len(T.WAIVE_CLI_CASES) + len(T.PLAN_CHECK_CASES) + len(T.FINDING_CLI_CASES)} CLI cases + "
           f"{len(T.LEDGER_CASES)} verify --ledger dispatch-scope-binding cases + "

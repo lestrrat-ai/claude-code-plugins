@@ -734,7 +734,11 @@ def check_document_contract() -> None:
         "run_argv(argv: list[Text]",
         "review-dispatch.py prepare",
         "<TRANSPORT-RECORD>",
-        '"native-worker-write" | "external-process-capture"',
+        'report: { producer: "reviewer-tool-write", path: Path }',
+        "emit_report_path: Path,",
+        # The SWAP, said out loud in its owner: the captured final-output channel is authoritative for
+        # nothing, and a capture beside the door would be a second writer on one artifact.
+        "The captured final-output channel is authoritative for NOTHING",
         "ReviewIsolationCapability",
         "external_retry_spent: Bool",
         'event: "selected" | "external-system-failure" | "native-system-failure"',
@@ -745,12 +749,12 @@ def check_document_contract() -> None:
         "Missing native OS/startup controls alone never select",
         "### Review preparation mapping",
         "| `launch-external` | selected capability's external route | "
-        "`external-process-capture` | `standard` |",
+        "`reviewer-tool-write` | `standard` |",
         "| `retry-external` + `external-codex` | `external-codex` | "
-        "`external-process-capture` | `codex-recovery` |",
+        "`reviewer-tool-write` | `codex-recovery` |",
         "| `retry-external` + `external-claude` | `external-claude` | "
-        "`external-process-capture` | `standard` |",
-        "| `launch-native` / `fallback-native` | `native` | `native-worker-write` | `standard` |",
+        "`reviewer-tool-write` | `standard` |",
+        "| `launch-native` / `fallback-native` | `native` | `reviewer-tool-write` | `standard` |",
         "attempt `2` fails → prepare fresh native fallback attempt `3`",
         "dead or unusable attempt `3` → `park-machine-blocker`",
         'prompt_profile: "standard" | "codex-recovery"',
@@ -771,28 +775,31 @@ def check_document_contract() -> None:
 
     for needle in (
         "TRANSPORT is this JSON-decoded ReviewTransport record:",
-        'TRANSPORT.report.producer is "native-worker-write"',
-        '"external-process-capture", return the report only',
         'RUN_ARGV(["git", "-C", TRANSPORT.worktree, "diff"',
         'RUN_ARGV(["python3", TRANSPORT.emit_progress_path',
         'RUN_ARGV(["python3", TRANSPORT.emit_finding_path',
         'RUN_ARGV(["python3", TRANSPORT.emit_amendment_path',
+        'RUN_ARGV(["python3", TRANSPORT.emit_report_path',
+        # The producer swap, stated where the REVIEWER reads it: the door is the only producer, and both
+        # ways a reviewer used to deliver a report now produce none.
+        "It is the\n   ONLY producer of TRANSPORT.report.path",
+        "returning the report as your final message and writing that\n   path by hand BOTH produce no report",
     ):
         require(needle in prompt, f"review-prompt.txt lost reviewer operation: {needle}")
 
-    # The prompt IS the reviewer's contract, so the parser accepting a SATISFIED report without a
-    # RESIDUAL-RISK line has to be SAID here, not only in the references that summarise this file. Without
-    # it the prompt gives an unqualified order and a reviewer with no honest least-certain area is left
-    # between "output one line" and "do not manufacture a concern to fill it".
+    # The prompt IS the reviewer's contract, so the door accepting a satisfied report with NO residual-risk
+    # record has to be SAID here, not only in the references that summarise this file. Without it the prompt
+    # gives an unqualified order and a reviewer with no honest least-certain area is left between "name an
+    # area" and "do not manufacture a concern to fill it".
     for needle in (
-        "The line is REQUESTED, not required",
-        "SATISFIED report WITHOUT it is accepted and counts in full",
+        "--residual-risk is OPTIONAL",
+        "Passing none is accepted and counts in full",
     ):
         require(needle in prompt,
-                f"review-prompt.txt no longer states the residual-risk line is optional: {needle}")
+                f"review-prompt.txt no longer states the residual-risk record is optional: {needle}")
 
     require("producer rule applies to initial launch, relaunch, and native fallback" in reviewer,
-            "native report producer no longer covers every attempt state")
+            "the report producer rule no longer covers every attempt state")
     reviewer_flat = " ".join(reviewer.split())
     require("does not inspect provider error text" in reviewer_flat and
             "never resumes the failed external session" in reviewer_flat and
@@ -804,15 +811,28 @@ def check_document_contract() -> None:
             "Stage 2 canonical prepare argv lost ledger or prompt-profile data")
     require("used the `codex-recovery` prompt profile" in final_report,
             "final report no longer discloses external Codex recovery-profile use")
-    require('"-C", transport.review_root, "-o", transport.report.path, "-"' in cross,
+    require('"-C", transport.review_root, "-"' in cross,
             "external Codex argv contract drifted")
     codex_argv = cross.split("## Claude Code orchestrator → Codex reviewer", 1)[1].split(
         "```text", 1
     )[1].split("```", 1)[0]
     require(not any(option in codex_argv for option in ('"resume"', '"--model"', '"-m"')),
             "external Codex retry argv resumed a session or selected an untrusted alternate model")
+    # **NEITHER EXTERNAL ARGV MAY CAPTURE THE REPORT PATH.** The reviewer's report door is the sole
+    # producer, so a `-o` or a report `stdout_file` beside it is a SECOND writer — and the Codex capture
+    # runs after the process exits, so it would replace the record rather than race it.
+    claude_argv = cross.split("## Codex orchestrator → Claude Code reviewer", 1)[1].split(
+        "```text", 1
+    )[1].split("```", 1)[0]
+    require(not any(option in codex_argv for option in ('"-o"', '"--output-last-message"')),
+            "external Codex argv restored a capture of the report path beside the reviewer's report door")
+    # The prose around these blocks names `transport.report.path` on purpose — it says why nothing captures
+    # it. The ARGV is where a capture would actually live, so that is where the absence is asserted.
+    for name, block in (("Codex", codex_argv), ("Claude", claude_argv)):
+        require("transport.report.path" not in block,
+                f"external {name} argv restored a capture at transport.report.path")
     require('"--add-dir", transport.worktree' in cross and
-            "stdout_file: transport.report.path" in cross,
+            "stdout_file: null" in cross,
             "external Claude argv/capture contract drifted")
     require("parse_nul_porcelain_for_exact_branch" in adoption and
             "default_worktree(repository, headRefName)" in adoption and
@@ -923,7 +943,7 @@ def run_hostile_fixtures() -> None:
             review_pass="5",
             launch_attempt="2",
             prompt_profile="standard",
-            producer="native-worker-write",
+            producer="reviewer-tool-write",
             paths=paths,
         )
         encoded_record = json.dumps(record, ensure_ascii=False)
@@ -950,21 +970,20 @@ def run_hostile_fixtures() -> None:
         require(paths["prompt"].name == "review-58-5.a2.prompt.txt" and
                 paths["progress"].name == "review-58-5.a2.progress.jsonl" and
                 paths["findings"].name == "review-58-5.a2.findings.jsonl" and
-                paths["report"].name == "review-58-5.a2.txt",
+                paths["report"].name == "review-58-5.a2" + DISPATCH.RP.REPORT_SUFFIX,
                 "the executable materializer mixed launch attempts")
 
+        # **ONE PRODUCER, EVERY ROUTE.** This used to check that each route named exactly one of two
+        # owners; the two are retired, so the property it now states is the swap: the route table maps
+        # every route onto the reviewer's report door, and nothing else is a producer at all.
+        require(set(DISPATCH.ROUTE_PRODUCERS.values()) == {"reviewer-tool-write"},
+                "a route reintroduced a report producer other than the reviewer's report door")
+        require(DISPATCH.REPORT_PRODUCERS == ("reviewer-tool-write",),
+                "the report-producer enum reopened beyond the reviewer's report door")
         for launch_attempt in (1, 2, 7):
-            for transport, producer in (
-                ("native-codex", "native-worker-write"),
-                ("native-claude", "native-worker-write"),
-                ("native-codex-fallback", "native-worker-write"),
-                ("native-claude-fallback", "native-worker-write"),
-                ("external-codex", "external-process-capture"),
-                ("external-claude", "external-process-capture"),
-            ):
-                owners = [producer == "native-worker-write", producer == "external-process-capture"]
-                require(sum(owners) == 1,
-                        f"{transport} attempt {launch_attempt} does not have exactly one report owner")
+            for route in DISPATCH.ROUTE_PRODUCERS:
+                require(DISPATCH.ROUTE_PRODUCERS[route] in DISPATCH.REPORT_PRODUCERS,
+                        f"{route} attempt {launch_attempt} names a producer the tool would refuse")
 
         # Exercise the documented shell-only adapter: mechanically encode the complete argv list.
         probe = [sys.executable, "-c", "import json,sys; print(json.dumps(sys.argv[1:]))", *hostile]

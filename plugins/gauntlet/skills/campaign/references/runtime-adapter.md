@@ -183,11 +183,14 @@ are different enums:
 
 | `ReviewAction` | `route` | `report_producer` | `prompt_profile` |
 |---|---|---|---|
-| `launch-external` | selected capability's external route | `external-process-capture` | `standard` |
-| `retry-external` + `external-codex` | `external-codex` | `external-process-capture` | `codex-recovery` |
-| `retry-external` + `external-claude` | `external-claude` | `external-process-capture` | `standard` |
-| `launch-native` / `fallback-native` | `native` | `native-worker-write` | `standard` |
+| `launch-external` | selected capability's external route | `reviewer-tool-write` | `standard` |
+| `retry-external` + `external-codex` | `external-codex` | `reviewer-tool-write` | `codex-recovery` |
+| `retry-external` + `external-claude` | `external-claude` | `reviewer-tool-write` | `standard` |
+| `launch-native` / `fallback-native` | `native` | `reviewer-tool-write` | `standard` |
 | `park-machine-blocker` | no preparation | no preparation | no preparation |
+
+`report_producer` is one value for every route. It is still passed and still validated, because the field
+is what the reviewer reads in its transport record; what it no longer does is vary.
 
 Selected capability's external route is exactly `external-codex` or `external-claude`; never pass the
 `ReviewAction` string as `--route`.
@@ -225,7 +228,8 @@ ReviewTransport {
   prompt_profile: "standard" | "codex-recovery",
   prompt_path: Path, plan_path: Path, progress_path: Path, findings_path: Path,
   emit_progress_path: Path, emit_finding_path: Path, emit_amendment_path: Path,
-  report: { producer: "native-worker-write" | "external-process-capture", path: Path }
+  emit_report_path: Path,
+  report: { producer: "reviewer-tool-write", path: Path }
 }
 ```
 
@@ -239,20 +243,21 @@ prose commands. The materializer derives the active prompt/progress/findings/rep
 attempt identity and enforces the conflict rule owned by `review-dispatch.md`, **Prepare the active
 attempt**.
 
-Exactly one producer owns the final report:
+Exactly one producer owns the final report, and it is the same one on **every** route:
+`reviewer-tool-write`. The reviewer runs `emit_report_path` (`emit-report.py`), which validates the fields
+and writes the one report record at `report.path`. A missing report is an unusable attempt, on every route.
 
-- Native initial launch, native relaunch, and native fallback use `native-worker-write`. The dispatched
-  prompt requires the worker to write the **complete** final report to `report.path` with `write_bytes`
-  before returning the same text as its native task result. The orchestrator does not persist the result
-  a second time. A missing report is an unusable attempt.
-- External Codex and external Claude initial launches and relaunches use
-  `external-process-capture`. The reviewer returns the report on the process's designated final-output
-  channel; `run_argv` captures that channel at `report.path` (`codex -o` for Codex, `stdout_file` for
-  Claude). The reviewer MUST NOT write the path itself.
+**The captured final-output channel is authoritative for NOTHING, and that is a SWAP.** The producer used
+to depend on the route — a native worker wrote the file itself, and an external process's final output was
+captured at `report.path` (`codex -o` for Codex, `stdout_file` for Claude) with the reviewer forbidden to
+write it. Both are retired. Keeping either beside the door would put a SECOND writer on one artifact, and
+the Codex capture writes AFTER the process exits, so it would not race the record — it would replace it.
+Every route therefore passes no `-o` and no report `stdout_file` (`cross-agent-reviewers.md` owns the
+argv), and the process's final message is diagnostic output the orchestrator may read and never the report.
 
 Progress belongs to `emit-progress.py`, findings to `emit-finding.py`, plan amendments to
-`emit-amendment.py`, and prompt plus `pass_identity` preparation to `review-dispatch.py`. No transport
-adds a second writer. `reviewer.md`,
+`emit-amendment.py`, the report to `emit-report.py`, and prompt plus `pass_identity` preparation to
+`review-dispatch.py`. No transport adds a second writer. `reviewer.md`,
 `stage-2-review-gate.md`, `review-dispatch.md`, `cross-agent-reviewers.md`, and `pr-adoption.md` point here for the boundary;
 they may define argv values or workflow order, but they must not redefine quoting or artifact ownership.
 The plugin validator runs `scripts/review-dispatch.py self-test` and `scripts/transport-contract-test.py`

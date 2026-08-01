@@ -89,8 +89,8 @@ shortens, or duplicates the template, and it never asks the reviewer to contact 
 
 The shared prompt tells every route to review the whole `origin/<base>...HEAD` diff against the intent and plan,
 record progress/findings/amendments only through the bundled tools, perform the adversarial sweep, obey
-the finding-anchor rule, and return the exact verdict ending with its optional residual-risk line above
-it. These are prompt contents,
+the finding-anchor rule, and deliver the verdict and its optional residual-risk records by running the
+bundled report tool. These are prompt contents,
 not a second dispatch procedure; edit and test the bundled template when that contract changes.
 
 ### Launch the prepared attempt
@@ -99,11 +99,14 @@ not a second dispatch procedure; edit and test the bundled template when that co
 paths or prompt bytes.** Route selection and availability were decided before preparation:
 
 - `native` → pass the complete bytes at `transport.prompt_path` through `dispatch_native` in a fresh
-  `session`-class worker. The prompt assigns `native-worker-write` as sole report producer.
+  `session`-class worker.
 - `external-codex` / `external-claude` → use the canonical `run_argv` block in
   `cross-agent-reviewers.md`, "Claude Code orchestrator → Codex reviewer" or "Codex orchestrator →
-  Claude Code reviewer". The process transport assigns `external-process-capture` as sole report
-  producer.
+  Claude Code reviewer".
+
+Every route assigns the same sole report producer, `reviewer-tool-write`: the reviewer writes its report
+by running `transport.emit_report_path`, and neither transport captures a final-output channel at
+`transport.report.path` (`runtime-adapter.md`, "Review transport record and report ownership").
 
 Never embed the prompt in an argument or shell source. External prompt stdin is the prepared prompt file,
 which supplies immediate EOF. Launch in the background so completion triggers reconcile.

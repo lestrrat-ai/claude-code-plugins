@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Record ONE review finding — the reviewer's door into `review-pass.py`, and the ONLY way to report one.
 
-**A FINDING USED TO BE A PARAGRAPH.** It was prose in `review-<pr>-<n>.txt`: no schema, no citation rule,
+**A FINDING USED TO BE A PARAGRAPH.** It was prose in the report, back when the report was free text: no schema, no citation rule,
 no owner, and — the part that cost a night — **no way to decline one**. Every finding a reviewer reported
 became a fix; every fix added code; the next reviewer hunted the code the last fix added. One PR ran 21
 review rounds and never converged.

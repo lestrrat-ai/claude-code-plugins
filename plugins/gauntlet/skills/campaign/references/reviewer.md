@@ -91,17 +91,17 @@ command writes the one prompt every route receives and returns the active attemp
 not derive its paths, bind its intent, or reconstruct its record here. **The prompt IS the contract**:
 whatever it
 requires of a `codex exec` reviewer it requires of a native worker — the same question ("does this PR achieve its
-stated Purpose…"), the same emit-only rule, the same anchored findings, the same single-`VERDICT:` ending
-with its optional `RESIDUAL-RISK` line above it. Its terminal result and artifacts are read and verified by the same `review-pass.py verify`
+stated Purpose…"), the same emit-only rule, the same anchored findings, and the same one report record
+written through `emit-report.py` with its optional residual-risk records. Its result and artifacts are read and verified by the same `review-pass.py verify`
 (Stage 2a, "Does this pass COUNT?"), so a pass dispatched without those inputs is not a lighter pass — it is
 an `unusable` one.
 
 Only the **transport** differs from the external-reviewer form: it is a **background native-worker task**
-rather than a process. Prepare route `native` with report producer `native-worker-write`, then pass the
-complete bytes at returned `transport.prompt_path` through `dispatch_native`. The prompt explicitly
-requires the worker to write the complete report to the record's `report.path` through the host file API
-before returning the same text; the orchestrator does not persist the returned task message. This exact
-producer rule applies to initial launch, relaunch, and native fallback. Run it in the **`session` class**
+rather than a process. Prepare route `native` with report producer `reviewer-tool-write`, then pass the
+complete bytes at returned `transport.prompt_path` through `dispatch_native`. The prompt requires the
+worker to write its report by running the bundled `transport.emit_report_path`, exactly as an external
+reviewer does; the orchestrator does not persist the returned task message, which is not the report. This
+exact producer rule applies to initial launch, relaunch, and native fallback. Run it in the **`session` class**
 (above) and give each pass a **fresh, context-isolated** worker, so the gate holds: for a two-pass tier,
 launch review 2 only after review 1 is SATISFIED, one at a time per PR (see Stage 2a-triage for the per-tier
 pass count).
@@ -114,7 +114,7 @@ the prompt authority. Only `launch-external` or `retry-external` uses external a
 
 When the cross-engine reviewer (the default, or a user-selected engine) has an available capability, invoke it with
 `runtime-adapter.md`'s typed `run_argv` operation and the complete argv in the stage refs; set
-`report.producer` to `external-process-capture`. NEVER pass destructive
+`report.producer` to `reviewer-tool-write`. NEVER pass destructive
 instructions (delete, force-push, reset) to an external reviewer command, and NEVER use
 `--dangerously-bypass-approvals-and-sandbox`.
 
@@ -124,8 +124,8 @@ the former puts untrusted bytes at the wrong boundary, while the latter can stay
 
 An external reviewer can fail in a way that yields **no usable verdict**: quota/rate-limit
 exhaustion, auth failures, timeouts, or other system errors. Distinguish this from a real review — a
-run that returns an actual finding list or a `VERDICT: …` line is a *result*, act on it. A *failure*
-is the absence of a verdict.
+run that produced its report record — or reported a finding — is a *result*, act on it. A *failure*
+is the absence of a report.
 
 **On a capable external process failure, retry once. If it still can't deliver a verdict, take
 `runtime-adapter.md`'s fresh native fallback transition** rather than stalling, looping, or skipping the

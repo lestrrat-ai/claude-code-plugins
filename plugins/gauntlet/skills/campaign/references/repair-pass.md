@@ -86,15 +86,15 @@ never a summary), intent, cumulative per-commit file measurements, current three
 ledger-derived `permitted` result as JSON data. Dynamic bytes never become shell source.
 
 A drifted history holding MORE artifact passes than landed rounds is tolerated in exactly one shape:
-every surplus pass's active attempt ends in an explicit `VERDICT: DEFERRED — …`. Such a pass landed no
+every surplus pass's active attempt records a `deferred` verdict. Such a pass landed no
 verdict and is not a round — the bundle excludes it from the round mapping and lists it under the
 payload's `verdictless_rounds` so the reassessment worker still sees it happened. Any other mismatch — a
 hole in the pass numbering, landed verdicts the ledger did not count, a verdictless LATEST pass — is
 refused with the mismatch and recovery named.
 
 The command writes the prompt and `<output>.manifest.json`, then prints the manifest location and hashes.
-It refuses missing or duplicate active artifacts, an incomplete pass, a report whose framing `review-pass.py`
-rejects (no terminal `VERDICT:` line, or a verdict incoherent with the round's findings), a stale
+It refuses missing or duplicate active artifacts, an incomplete pass, a report `review-pass.py`
+rejects (not the pass's one valid record, or a verdict incoherent with the round's findings), a stale
 latest-review/ledger/worktree SHA, or a failed Git read. `<base>` is **this PR row's effective base** — its
 explicit `base_branch`, else the legacy header fallback (`ledger.py`'s `effective_base`), never the one
 header base — so a mixed-base run bundles each PR against its own release line. It resolves `origin/<base>`

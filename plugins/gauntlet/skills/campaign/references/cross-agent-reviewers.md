@@ -36,7 +36,7 @@ The external-reviewer argv below is the canonical spelling; `review-dispatch.md`
 run_argv(
   argv: ["codex", "exec", "--sandbox", "workspace-write", "-c",
          "sandbox_workspace_write.network_access=true", "--skip-git-repo-check",
-         "-C", transport.review_root, "-o", transport.report.path, "-"],
+         "-C", transport.review_root, "-"],
   cwd: transport.review_root,
   stdin_file: transport.prompt_path,
   stdout_file: null
@@ -50,7 +50,8 @@ isolation claim and does not create a stronger boundary:
   root;
   `--skip-git-repo-check` is required because that root is deliberately not the candidate repository.
 - **`-C` MUST be `transport.review_root` because that is the reviewer's only WRITABLE root.** Every
-  artifact the reviewer writes — progress, findings, amendments, the report — lives under `review_root`,
+  artifact the reviewer writes — progress, findings, amendments, and now the report itself — lives under
+  `review_root`,
   and `--sandbox workspace-write` makes only the `-C` root (and its `writable_roots`) writable. A `-C`
   pointed anywhere else (for example at the candidate worktree) leaves the run directory READ-ONLY, so
   every `emit` fails with a read-only-filesystem error and the reviewer defers with a read-only progress
@@ -60,7 +61,12 @@ isolation claim and does not create a stronger boundary:
 - `transport.worktree` is named only inside the bound prompt and is read through absolute paths (for
   example, the typed Git argv in the review prompt). Do not pass it through `-C` or `--add-dir`: either makes candidate
   content part of the writable workspace, and `-C` also enables candidate `AGENTS.md` discovery.
-- `-o` names `transport.report.path` as the external process's sole report producer.
+- **There is NO `-o`, and its absence is the producer swap.** The reviewer writes its report by running
+  `transport.emit_report_path`, which is the sole producer on every route (`runtime-adapter.md`, "Review
+  transport record and report ownership"). `-o transport.report.path` would be a SECOND writer on that
+  artifact — and `codex exec` writes the last agent message to that file AFTER the run, so it would not
+  race the record, it would replace it. Never add `-o` back, and never point it at the report path under
+  another name. The process's final message goes to captured stdout and is diagnostic only.
 - `stdin_file: transport.prompt_path` passes prompt bytes as data and supplies EOF; inherited
   interactive stdin is never left open.
 - `--sandbox workspace-write` is mandatory. Never use
@@ -81,7 +87,7 @@ run_argv(
          "--add-dir", transport.worktree],
   cwd: transport.review_root,
   stdin_file: transport.prompt_path,
-  stdout_file: transport.report.path
+  stdout_file: null
 )
 ```
 
@@ -96,12 +102,16 @@ This argv launches at the native-limitation level; it does not create a stronger
   not an OS read-only boundary; `--permission-mode dontAsk` and a prompt prohibition do not create that
   boundary. A future adapter that proves `os_filesystem_isolation` exposes the directory read-only instead.
 - Limit built-in tools to `Read` and `Bash`. The review prompt forbids source changes; Bash is needed
-  for git inspection and the two artifact emitters.
+  for git inspection and the bundled artifact tools — including `emit-report.py`, which is how this route
+  delivers its report.
 - `--permission-mode dontAsk` makes an unapproved operation fail instead of opening an interactive
   prompt. A permission or sandbox denial is a reviewer system failure; retry or fall back under
   `reviewer.md`. Never switch to `--dangerously-skip-permissions`.
-- Set `stdin_file` to `transport.prompt_path` and `stdout_file` to `transport.report.path`; the external
-  process capture is the sole report producer. Prompt and path values remain data.
+- Set `stdin_file` to `transport.prompt_path` and leave `stdout_file` null. The reviewer writes its
+  report by running `transport.emit_report_path`, which is the sole producer on every route
+  (`runtime-adapter.md`, "Review transport record and report ownership"); capturing stdout at
+  `transport.report.path` would be a SECOND writer on that artifact. Captured stdout is diagnostic only.
+  Prompt and path values remain data.
 
 The user's Claude Code settings still control sandboxing and policy. Do not widen them from campaign.
 Take every unavailable/failure transition through `runtime-adapter.md`'s capability owner; do not
