@@ -559,8 +559,9 @@ rule is sized for a reviewer working slowly, not one that never woke up. Gate ev
 - Before re-dispatching, **re-check the command** for the known launch faults — most of all the quoted
   prompt-file stdin redirect on every external reviewer (`review-dispatch.md`), and the external reviewer's
   `-C` target, which must be the run-artifact root (a `-C` off that root makes the run directory read-only
-  under `workspace-write`, so every emit fails and the reviewer defers). A relaunch of the same hanging
-  command hangs identically.
+  under `workspace-write`, so every emit fails, the report cannot land either, and the reviewer stops with
+  the write door's diagnostic as its final output — an attempt with no report, which is `unusable`). A
+  relaunch of the same hanging command hangs identically.
 - **A failed launch is a dispatch fault, not a review outcome.** It yields no verdict — it never
   counts SATISFIED or NOT SATISFIED, never touches `reviews_ok`, and never escalates the tier. It is
   also **not** a PR-task attempt: do **NOT** bump the ledger's `attempts` for it. That column drives
@@ -850,10 +851,14 @@ nothing outstanding returns `unusable` because the deferral points at nothing. N
 a NEW pass: a deferral spends no pass number, so any relaunch keeps the same pass and takes its next
 launch attempt (`runtime-adapter.md`, "Review preparation mapping").
 
-**A deferral whose reason names an UNWRITABLE progress/findings file is a DISPATCH fault, not a pass to
-route** — before any relaunch, re-check the launch argv against the canonical spelling
-(`cross-agent-reviewers.md`), above all the `-C` target, which must be the run-artifact root. Relaunching
-the same command makes the same run directory read-only and fails identically.
+**AN UNWRITABLE RUN DIRECTORY PRODUCES NO REPORT AT ALL, SO THERE IS NO DEFERRAL TO ROUTE.** The report is
+written through a door under the SAME root every other artifact is, so a reviewer whose emits fail cannot
+deliver one — and a deferral IS a report. What the reviewer can still do is report the write door's
+diagnostic as its FINAL OUTPUT and stop, which is where the `-C` target gets named; the attempt is
+`unusable` for having no report, and its final message is the only place the cause appears. That is a
+DISPATCH fault, not a pass to route: before any relaunch, correct the launch argv against the canonical
+spelling (`cross-agent-reviewers.md`), above all the `-C` target, which must be the run-artifact root.
+Relaunching the same command makes the same run directory read-only and fails identically.
 
 **A pass still in flight is watched with `review-pass.py status`, not verified.** `status` stays lenient
 for torn output; `verify` is strict because only its `ok` result can reach the ledger.

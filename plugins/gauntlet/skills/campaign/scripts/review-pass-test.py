@@ -2390,6 +2390,7 @@ def check_residual_records(R: types.ModuleType, T: Tables, tmp: Path) -> int:
         else:
             print(f"ok       [residual] {name:36} -> {got!r}")
     failures += check_residual_rendering(R, T, tmp)
+    failures += check_residual_line_breaks(R)
     return failures
 
 
@@ -2428,6 +2429,12 @@ def check_residual_rendering(R: types.ModuleType, T: Tables, tmp: Path) -> int:
     used to TRUNCATE it while the report was free text — is a rendering that fails on precisely the
     reviewer whose words most need carrying.
 
+    `unicode-line-breaks` is the same demand made of the three terminators the ENCODER does not
+    escape (U+0085, U+2028, U+2029): they are not C0 controls, so a record holding one printed it
+    literally and the detail line became TWO — the `len(lines) != 1` guard below is what caught it,
+    and `recover_residual` could not decode the truncated first line at all.
+    `check_residual_line_breaks` makes that whole CLASS mechanical rather than these three.
+
     Each case also pins that stdout stays ONE line, since the detail is a field of a single printed line.
     """
     reports = {
@@ -2438,6 +2445,16 @@ def check_residual_rendering(R: types.ModuleType, T: Tables, tmp: Path) -> int:
         "two-records": report_line("satisfied", residual=["first — hard", "second — harder"]),
         "punctuated": report_line(
             "satisfied", residual=['parser["x"] — holds ], a quote, a \\, a ; and a \u001c too']),
+        # THE THREE LINE TERMINATORS THE ENCODER DOES NOT ESCAPE FOR US. They are not C0 controls,
+        # so `ensure_ascii=False` printed them AS THEMSELVES: the detail line became TWO lines, and
+        # `recover_residual` — which reads the field out of the FIRST one, exactly as the doc hands
+        # the procedure to a driver — died on an unterminated string. Each record reaches this
+        # rendering through the ordinary door: the artifact's own write escapes them, so a report
+        # holding one is valid, one line, and accepted.
+        "unicode-line-breaks": report_line("satisfied", residual=[
+            "next-line \u0085 and the rest of the same remark",
+            "line-separator \u2028 and the rest of the same remark",
+            "paragraph-separator \u2029 and the rest of the same remark"]),
         # The field is printed even when the reviewer wrote nothing, so a reader never has to tell "no
         # records" apart from "the field is somewhere else".
         "none-written": report_line("satisfied"),
@@ -2489,6 +2506,57 @@ def check_residual_rendering(R: types.ModuleType, T: Tables, tmp: Path) -> int:
                         f"prints, so its recovery procedure points at nothing")
     for problem in problems:
         print(f"FAIL     [residual] {problem}")
+    return len(problems)
+
+
+def check_residual_line_breaks(R: types.ModuleType) -> int:
+    """EVERY character `str.splitlines()` ends a line at, WALKED rather than listed.
+
+    The rendered field is read as ONE line: `bailout-and-final-report.md` tells a driver to find
+    `residual-risk=` on `verify`'s detail line and decode the array that starts there, and
+    `recover_residual` above executes that procedure. So the property is not "the three characters we
+    remembered are escaped" but **no character a record may legally hold can end that line** — and the
+    set of such characters belongs to `str.splitlines()`, not to a list anybody maintains here.
+
+    So the set is DERIVED, by walking every code point and asking what splits. That is what makes the
+    module's `UNESCAPED_LINE_BREAKS` a checked claim rather than a remembered one: this reconciles it
+    against the terminators a bare `ensure_ascii=False` encoding leaves literal, so a Python that
+    recognises one more terminator, or an encoder change that stops escaping one, FAILS here instead of
+    silently splitting a reviewer's record in production.
+
+    U+0085, U+2028 and U+2029 are additionally named: they are the three the defect was reported with,
+    and requiring them to be IN the derived set is what stops this case going vacuous if the walk ever
+    finds nothing.
+    """
+    breaks = [chr(c) for c in range(0x110000) if len(f"a{chr(c)}b".splitlines()) > 1]
+    problems: "list[str]" = []
+    for named in ("\u0085", "\u2028", "\u2029"):
+        if named not in breaks:
+            problems.append(f"U+{ord(named):04X} is not in the derived terminator set, so this case no "
+                            f"longer covers the characters the defect was reported with")
+    # What a bare `ensure_ascii=False` encoding leaves LITERAL — everything else is a C0 control the
+    # encoder escapes on its own. This must be exactly the set `render_residual` escapes by hand.
+    naive = json.dumps(breaks, ensure_ascii=False)
+    unescaped = {c for c in breaks if c in naive}
+    if unescaped != set(R.UNESCAPED_LINE_BREAKS):
+        problems.append(f"the encoder leaves {sorted(hex(ord(c)) for c in unescaped)} literal, but "
+                        f"UNESCAPED_LINE_BREAKS names "
+                        f"{sorted(hex(ord(c)) for c in R.UNESCAPED_LINE_BREAKS)}")
+    for ch in breaks:
+        record = f"parser{ch}contract — hard"
+        rendered = R.render_residual([record])
+        if len(rendered.splitlines()) != 1:
+            problems.append(f"a record holding U+{ord(ch):04X} renders as "
+                            f"{len(rendered.splitlines())} lines, so the detail line splits and the "
+                            f"pinned recovery reads a truncated field: {rendered!r}")
+        elif json.loads(rendered) != [record]:
+            problems.append(f"a record holding U+{ord(ch):04X} does not decode back to itself: "
+                            f"{json.loads(rendered)!r}")
+    for problem in problems:
+        print(f"FAIL     [residual] {problem}")
+    if not problems:
+        print(f"ok       [residual] {'every splitlines terminator survives':36} -> "
+              f"{len(breaks)} derived, {len(R.UNESCAPED_LINE_BREAKS)} escaped by hand")
     return len(problems)
 
 
@@ -2797,8 +2865,40 @@ def run_status_cases(mod: types.ModuleType, T: Tables, tmp: Path) -> int:
     return failures
 
 
+# The docs that tell an agent what an UNWRITABLE run root means, and the fact each must carry. The write
+# door's diagnostic (`_append_line`) is the OWNER; these are the copies an agent actually reads before it
+# is ever launched, and they used to describe the recovery this root removed — a deferral the reviewer
+# cannot deliver, because a deferral is a report and the report lands under the same shut door. A needle
+# per file, so deleting or rewriting the correction FAILS here rather than sending the next reviewer to
+# write a file it has just been told it cannot.
+READONLY_DOC_NEEDLES = {
+    "cross-agent-reviewers.md": "report cannot land",
+    "stage-2-review-gate.md": "report cannot land",
+}
+
+
+def check_readonly_docs() -> int:
+    """The read-only-run-root RULE, checked where agents READ it — not only where it runs.
+
+    `check_unwritable_target` below pins what the TOOL says. That is half the rule: a reviewer follows the
+    reference docs, and a doc still describing the retired deferral sends it to attempt something that
+    cannot happen. Neither half implies the other, so both are checked.
+    """
+    refs = OWNER.parent.parent / "references"
+    problems = 0
+    for name, needle in sorted(READONLY_DOC_NEEDLES.items()):
+        text = (refs / name).read_text(encoding="utf-8").lower()
+        if needle.lower() in text:
+            print(f"ok       [unwritable] {name:36} -> states that the report cannot land either")
+        else:
+            print(f"FAIL     [unwritable] {name} no longer says the report cannot land under a read-only "
+                  f"run root, so its account of what a reviewer can still do is unpinned")
+            problems += 1
+    return problems
+
+
 def check_unwritable_target(R: types.ModuleType, T: Tables, tmp: Path) -> int:
-    """The EROFS/EACCES write-door diagnostic: an emit into an UNWRITABLE target must defer with the -C
+    """The EROFS/EACCES write-door diagnostic: an emit into an UNWRITABLE target must REFUSE with the -C
     diagnosis, not die with a bare `OSError` that names no cause.
 
     **THE REAL DEFECT.** A codex reviewer launched with `-C` at the candidate worktree made the run dir
@@ -2821,10 +2921,11 @@ def check_unwritable_target(R: types.ModuleType, T: Tables, tmp: Path) -> int:
     be created and the case skips cleanly — the diagnostic is behavioral, not a gate rule, so a skipped
     probe is honest rather than a false green.
     """
+    failures = check_readonly_docs()
     if not hasattr(os, "geteuid") or os.geteuid() == 0:
         print("skip     [unwritable] chmod does not restrict root — the EROFS/EACCES write door "
               "cannot be probed here")
-        return 0
+        return failures
     d = tmp / "unwritable"
     d.mkdir(parents=True, exist_ok=True)
     progress = d / PROGRESS_FILE
@@ -2841,19 +2942,19 @@ def check_unwritable_target(R: types.ModuleType, T: Tables, tmp: Path) -> int:
         progress.chmod(0o644)  # restore so the TemporaryDirectory cleanup can remove it
     if code == 0:
         print("FAIL     [unwritable] emit into a read-only progress file EXITED 0 — the write door "
-              "swallowed the OSError instead of deferring")
-        return 1
+              "swallowed the OSError instead of raising the DISPATCH-fault diagnostic")
+        return failures + 1
     if "-C" not in text or "final message" not in text:
         print(f"FAIL     [unwritable] emit refused (exit {code}) but its message names neither the `-C` "
               f"target nor the still-available recovery:\n         {text.strip()}")
-        return 1
+        return failures + 1
     if "DEFERRED" in text:
         print(f"FAIL     [unwritable] the diagnostic still promises a report-borne DEFERRED recovery, but "
               f"the report is written under the same unwritable root:\n         {text.strip()}")
-        return 1
+        return failures + 1
     print(f"ok       [unwritable] emit into a read-only target -> exit {code}, DISPATCH-fault diagnostic "
           f"names -C and the final-message recovery")
-    return 0
+    return failures
 
 
 def run(R: types.ModuleType, tmp: Path) -> int:

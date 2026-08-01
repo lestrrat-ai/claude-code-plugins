@@ -54,9 +54,12 @@ isolation claim and does not create a stronger boundary:
   `review_root`,
   and `--sandbox workspace-write` makes only the `-C` root (and its `writable_roots`) writable. A `-C`
   pointed anywhere else (for example at the candidate worktree) leaves the run directory READ-ONLY, so
-  every `emit` fails with a read-only-filesystem error and the reviewer defers with a read-only progress
-  file. That symptom is a DISPATCH fault, not a reviewer fault: relaunching the same argv fails
-  identically. Do not widen the sandbox to "fix" it (a `writable_roots` entry for the worktree would make
+  every `emit` fails with a read-only-filesystem error — **and the REPORT cannot land either**, because it
+  is written through a door under that same root. So the reviewer cannot defer: a deferral is a report,
+  and there is no report to write it in. It reports the write door's diagnostic as its FINAL OUTPUT and
+  stops; the attempt has no report and is therefore `unusable`. That symptom is a DISPATCH fault, not a
+  reviewer fault: relaunching the same argv fails identically, so the DRIVER corrects the launch before
+  relaunching. Do not widen the sandbox to "fix" it (a `writable_roots` entry for the worktree would make
   candidate content writable); point `-C` at `review_root`.
 - `transport.worktree` is named only inside the bound prompt and is read through absolute paths (for
   example, the typed Git argv in the review prompt). Do not pass it through `-C` or `--add-dir`: either makes candidate

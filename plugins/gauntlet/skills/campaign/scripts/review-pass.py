@@ -1501,6 +1501,13 @@ def check_report_file(text: str, path: Path) -> dict:
 # owns the format, because a reader is told to FIND this field before it decodes anything.
 RESIDUAL_RISK_FIELD = "residual-risk"
 
+# The characters `str.splitlines()` ENDS A LINE AT that a JSON encoder does NOT escape for us. Every other
+# one it recognises — LF, CR, U+000B, U+000C, U+001C, U+001D, U+001E — is a C0 control, and `json.dumps`
+# escapes those whatever `ensure_ascii` says; these three are not controls, so `ensure_ascii=False` prints
+# them as themselves. `render_residual` escapes exactly this set and owns the reasons. The set is DERIVED
+# rather than trusted by `review-pass-test.py`, which walks every code point and reconciles the two.
+UNESCAPED_LINE_BREAKS = ("\u0085", "\u2028", "\u2029")
+
 
 def render_residual(records: "list[str]") -> str:
     """The record's `residual_risk` list as ONE printable field — JSON, so the LIST survives being printed.
@@ -1521,20 +1528,36 @@ def render_residual(records: "list[str]") -> str:
     **JSON answers all three requirements at once.** It is LOSSLESS — `json.loads` of this field is `==`
     the list handed in. It is SELF-DELIMITING — the array ends at its own `]`, so the human-readable
     reason printed after it can never be read as part of a record, and a record containing `; `, `]`, or a
-    quote needs no cooperation from the reader. And it stays ONE LINE: `json.dumps` escapes every C0
-    control, `"` and `\\`, and the report artifact is itself JSONL — so a record that arrived through the
-    door carrying a line terminator (LF, CR, U+001C–U+001E, U+0085, U+2028, U+2029 among them) was escaped
-    on the way IN and is escaped again here, and cannot end this line either.
+    quote needs no cooperation from the reader. And it stays ONE LINE — **but only because this function
+    escapes the line terminators the ENCODER does not.** `json.dumps` escapes every C0 control, `"` and
+    `\\`, which covers LF, CR, U+000B, U+000C and U+001C–U+001E. It does NOT cover U+0085, U+2028 and
+    U+2029, which are not controls and which `str.splitlines()` ends a line at exactly the same
+    (`UNESCAPED_LINE_BREAKS`, the set this function escapes by hand after encoding). The ARTIFACT is safe
+    from them because its own write encodes with the default `ensure_ascii=True`; this field is not, and
+    a record holding one of the three used to print as TWO lines — so the pinned recovery, which reads the
+    field out of the FIRST line, hit an unterminated string and could not decode the reviewer's records at
+    all.
 
-    `ensure_ascii=False` is deliberate: this field is printed for a human as well as decoded by a driver,
-    and the records are the reviewer's own words. Escaping every em dash and every non-Latin character
-    would be equally lossless and unreadable. Nothing it leaves unescaped can end the line or the array,
-    per the paragraph above.
+    Escaping them costs a decoder nothing: `\\u0085` reads back as U+0085, so `json.loads` of this field
+    is still `==` the list handed in, and the LOSSLESSNESS above is unchanged.
+
+    `ensure_ascii=False` is deliberate, and it is why the escape is NARROW rather than the whole encoding:
+    this field is printed for a human as well as decoded by a driver, and the records are the reviewer's
+    own words. `ensure_ascii=True` would also end the split — it escapes those three among everything else
+    — but it spends every em dash and every non-Latin character to do it, which is equally lossless and
+    unreadable. Escaping the three characters that can actually END THE LINE buys the same guarantee and
+    keeps the words. Nothing left unescaped can end the line or the array.
 
     An empty list renders `[]` rather than vanishing, so the field is present on EVERY parsed report and a
     reader never has to tell "this pass wrote no records" apart from "the field is somewhere else".
     """
-    return json.dumps(records, ensure_ascii=False)
+    rendered = json.dumps(records, ensure_ascii=False)
+    # Only the string CONTENTS can hold one of these: every structural character JSON writes is ASCII, so
+    # replacing them cannot touch the array's own syntax, and each escape decodes back to the character
+    # it replaced.
+    for char in UNESCAPED_LINE_BREAKS:
+        rendered = rendered.replace(char, f"\\u{ord(char):04x}")
+    return rendered
 
 
 class ReportResult(TypedDict):
