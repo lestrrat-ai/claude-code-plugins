@@ -333,8 +333,9 @@
   progress = planned unit `done` or accepted plan amendment, not vague "still working" output. Two
   distinct bars, never collapsed: **launch evidence** = ANY reviewer-written line after `pass_identity`
   (a `started`/`done` `progress` event *or* a `plan_amendment_request`) — none within ~5 min of dispatch
-  → the pass never started → kill + `review-dispatch.py result --result transport-failure` + relaunch into attempt-scoped artifacts per the Stage 2a launch
-  check. **Meaningful progress** is the stronger bar (`done`/accepted amendment) — stale for ~15 min →
+  → the pass never started → kill + `review-dispatch.py result --result transport-failure` +
+  `review-dispatch.py allocation-status`-driven relaunch into attempt-scoped artifacts per the Stage 2a
+  launch check. **Meaningful progress** is the stronger bar (`done`/accepted amendment) — stale for ~15 min →
   suspicious review → retry/fallback per Stage 2a. Both bars judge a **live** process. A pass whose
   task is **dead** with no verdict (killed session) ignores launch evidence entirely. Settle its observed
   non-binary outcome through `review-dispatch.py result`, then follow

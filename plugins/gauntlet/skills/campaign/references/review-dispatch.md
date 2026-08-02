@@ -32,9 +32,13 @@ transport = prepared.transport
 
 Inputs have these owners:
 
-- `review_action`, `route`, `prompt_profile`, `report_producer`, `launch_attempt`, and `allocation_purpose` come from `runtime-adapter.md`,
+- `review_action`, `route`, `prompt_profile`, and `report_producer` come from `runtime-adapter.md`,
   **Review preparation mapping**. `prepare` never selects, probes, or changes them. It refuses an unknown
   profile and every action/route/profile combination outside that mapping before writing launch artifacts.
+- `launch_attempt` and `allocation_purpose` come only from `runtime-adapter.md`, **Review allocation
+  journal**, read through `review-dispatch.py allocation-status` after the prior attempt settles. The
+  journal supplies the next monotonic attempt and due allocation; **Review preparation mapping** selects
+  neither.
 - `review_root`, `worktree`, and `base` come from the invocation's typed `RepositoryContext` and ledger.
   `base` is **this PR row's effective base** — its explicit `base_branch`, else the legacy header fallback
   (`ledger.py`'s `effective_base`), never the one header base. It rides the typed transport as data (the

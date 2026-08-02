@@ -1225,11 +1225,38 @@ def t_zero_launch_evidence_settles_transport_failure_before_retry() -> None:
     stage = (refs / "stage-2-review-gate.md").read_text(encoding="utf-8")
     zero_launch = stage[stage.index("- **Zero launch evidence"):stage.index("- **This deadline test")]
     check(zero_launch.index("result --result transport-failure") <
+          zero_launch.index("allocation-status") <
           zero_launch.index("Review preparation mapping"),
-          "zero-launch recovery selects a retry before settling transport failure")
+          "zero-launch recovery does not settle transport failure before allocation-status selects a retry")
+    check("--allocation-purpose final" in zero_launch,
+          "zero-launch recovery does not select the reserved final allocation when it is due")
+    loop = (refs / "loop-control.md").read_text(encoding="utf-8")
+    loop_launch = loop[loop.index("- a review pass is in flight"):loop.index("- CI red")]
+    check(loop_launch.index("result --result\n     transport-failure") <
+          loop_launch.index("allocation-status") <
+          loop_launch.index("Review preparation mapping"),
+          "loop-control selects a zero-launch retry before recording allocation status")
+    check("--allocation-purpose final" in loop_launch,
+          "loop-control omits the reserved final allocation from zero-launch recovery")
     critical = (refs / "critical-rules.md").read_text(encoding="utf-8")
-    check("review-dispatch.py result --result transport-failure" in critical,
-          "critical rules omit zero-launch transport-failure settlement")
+    critical_launch = critical[critical.index("distinct bars, never collapsed"):critical.index("- Reviewers do not own the plan")]
+    check("review-dispatch.py result --result transport-failure" in critical_launch and
+          "review-dispatch.py allocation-status" in critical_launch,
+          "critical rules omit allocation-status-driven zero-launch recovery")
+    reviewer = (refs / "reviewer.md").read_text(encoding="utf-8")
+    never_started = reviewer[reviewer.index("A reviewer that **never starts**"):]
+    check("Settle it as `transport-failure`" in never_started and
+          "`review-dispatch.py allocation-status`" in never_started,
+          "reviewer guidance omits allocation-status-driven zero-launch recovery")
+
+    dispatch = (refs / "review-dispatch.md").read_text(encoding="utf-8")
+    owners = dispatch[dispatch.index("Inputs have these owners:"):dispatch.index("- `review_root`")]
+    check("`review_action`, `route`, `prompt_profile`, and `report_producer` come from" in owners,
+          "review preparation mapping owns fields beyond its action, route, producer, and profile")
+    check("`launch_attempt` and `allocation_purpose` come only from" in owners and
+          "`review-dispatch.py allocation-status`" in owners and
+          "**Review preparation mapping** selects\n  neither" in owners,
+          "review-dispatch.md does not make the allocation journal the sole allocation-purpose owner")
 
 
 def t_killed_session_resume_uses_allocation_journal() -> None:

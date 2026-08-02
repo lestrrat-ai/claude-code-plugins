@@ -533,10 +533,15 @@ rules keep their own wording; these are illustrations of them, not a second copy
      that file's `pass_identity.dispatched_at`) →
      it **never started** (Stage 2a launch check — a reviewer hung on stdin, a bad path, a sandbox
      denial). Kill the task, re-check the command for the known launch faults (above all the quoted
-     prompt-file stdin route), then take the next action and fresh attempt from `runtime-adapter.md`,
-     **Review preparation mapping**. `review-dispatch.py prepare` creates coherent attempt-scoped
-     artifacts, never the dead attempt's files, which a surviving process could still write to. A failed
-     launch yields no verdict: it never touches `reviews_ok` and never bumps the row's `attempts`;
+     prompt-file stdin route), settle the allocation with `review-dispatch.py result --result
+     transport-failure`, then run `review-dispatch.py allocation-status`. Read its durable history through
+     `runtime-adapter.md`, **Review allocation journal**, to choose the due allocation purpose: when the
+     final allocation remains reserved and due, prepare the next monotonic attempt with
+     `--allocation-purpose final`; otherwise prepare the due `initial` or `recovery` allocation. Then take
+     the route/profile branch in **Review preparation mapping**. `review-dispatch.py prepare` creates
+     coherent attempt-scoped artifacts, never the dead attempt's files, which a surviving process could
+     still write to. A failed launch yields no verdict: it never touches `reviews_ok` and never bumps the
+     row's `attempts`;
    - CI red and no fix is already in flight for that PR/SHA → **CLASSIFY the failure from the check logs
      first (Stage 2b, "Classify, then set the model class") — never dispatch a worker straight off a red
      check.** The class picks the logical model class: a **formatting/lint** failure → a scoped CI-fix

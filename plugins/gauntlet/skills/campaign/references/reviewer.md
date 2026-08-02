@@ -146,7 +146,7 @@ model-selection argument.
 A reviewer that **never starts** is a distinct failure — it produces not even a partial result — and
 has its own guard: the Stage 2a **launch check** kills any pass that has written **no launch evidence**
 within ~5 min of dispatch (launch evidence = any reviewer-written line after `pass_identity`, including
-a `plan_amendment_request`, not just a `progress` event). Settle and relaunch it through
-`runtime-adapter.md`, **Review allocation journal**, into attempt-scoped artifacts. A missing or wrong
-prompt-file stdin redirect is a common cause, so re-check the command before relaunching: an identical
-relaunch hangs identically.
+a `plan_amendment_request`, not just a `progress` event). Settle it as `transport-failure`, then use
+`review-dispatch.py allocation-status` and `runtime-adapter.md`, **Review allocation journal**, to select
+the due fresh allocation into attempt-scoped artifacts. A missing or wrong prompt-file stdin redirect is a
+common cause, so re-check the command before relaunching: an identical relaunch hangs identically.

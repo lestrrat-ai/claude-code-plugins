@@ -566,10 +566,13 @@ rule is sized for a reviewer working slowly, not one that never woke up. Gate ev
   A `started` event is launch evidence but is **not** meaningful progress. Never collapse the two.
 - **Zero launch evidence past the deadline → the pass never started.** Do NOT wait out the 15-min stale
   path. Kill the task, settle its allocation with `review-dispatch.py result --result transport-failure`,
-  then take the exact next action and fresh attempt from `runtime-adapter.md`,
-  **Review preparation mapping**. `review-dispatch.py prepare` creates fresh attempt-scoped artifacts;
-  anything a killed attempt later writes stays inert. The allocation journal keeps the recovery budget on
-  disk, so a new agent cannot restart it from memory.
+  then run `review-dispatch.py allocation-status`. Read its durable history through
+  `runtime-adapter.md`, **Review allocation journal**, to choose the due allocation purpose: when the
+  final allocation remains reserved and due, prepare the next monotonic attempt with
+  `--allocation-purpose final`; otherwise prepare the due `initial` or `recovery` allocation. Then take
+  the route/profile branch in **Review preparation mapping**. `review-dispatch.py prepare` creates fresh
+  attempt-scoped artifacts; anything a killed attempt later writes stays inert. The allocation journal
+  keeps the recovery budget on disk, so a new agent cannot restart it from memory.
 - **This deadline test applies ONLY to a pass whose process is still alive.** It asks "this thing is
   running — has it started?", and launch evidence is the answer. A pass whose task is **gone** (the
   session died with it) is a different question entirely, and launch evidence is **irrelevant** to it:
