@@ -25,6 +25,7 @@ check = checker(D.SelfTestFailure)
 
 
 SHA = "a3f29c1b7d4e6f8091a2b3c4d5e6f708192a3b4c"
+HISTORICAL_SHA = "b" * 40
 STAMP = "2026-07-20T00:00:00Z"
 
 
@@ -49,6 +50,39 @@ def _write_inputs(rundir: Path, pr: str = "41", review_pass: str = "2", intent: 
     return intent_path
 
 
+def _write_landed_pass(rundir: Path, pr: str, review_pass: str, head_sha: str,
+                        *, verdict: str = "satisfied") -> None:
+    """Write one completed active attempt through the artifact shapes `prepare` must validate later."""
+    _write_inputs(rundir, pr, review_pass)
+    paths = D.attempt_paths(rundir, pr, review_pass, "1")
+    progress = [
+        {"type": D.RP.IDENTITY, "pr": pr, "pass": review_pass, "head_sha": head_sha,
+         "launch_attempt": "1", "dispatched_at": STAMP, "default_non_goals": []},
+        {"type": D.RP.PROGRESS, "unit": "u01", "status": D.RP.STARTED},
+        {"type": D.RP.PROGRESS, "unit": "u01", "status": D.RP.DONE,
+         "evidence": "Reviewed src/review.py."},
+    ]
+    paths["progress"].write_text(
+        "\n".join(json.dumps(record, separators=(",", ":")) for record in progress) + "\n",
+        encoding="utf-8",
+    )
+    paths["report"].write_text(
+        json.dumps({
+            "type": D.RP.REVIEW_REPORT,
+            "verdict": verdict,
+            "deferred_reason": "-" if verdict != D.RP.DEFERRED else "Review plan needs a decision.",
+            "residual_risk": [],
+            "summary": "The pass completed.",
+        }, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _seed_contiguous_history(rundir: Path, pr: str, review_pass: str) -> None:
+    for number in range(1, int(review_pass)):
+        _write_landed_pass(rundir, pr, str(number), "bcdef0123456789a"[(number - 1) % 16] * 40)
+
+
 def _fixture(
     root: Path,
     *,
@@ -62,11 +96,14 @@ def _fixture(
     base: str = "main",
     file: str | None = None,
     default_non_goals: str = "[]",
+    seed_history: bool = True,
 ) -> SimpleNamespace:
     rundir = root / "run artifacts"
     worktree = root / "candidate worktree"
     rundir.mkdir(parents=True)
     worktree.mkdir(parents=True)
+    if seed_history:
+        _seed_contiguous_history(rundir, pr, review_pass)
     intent_path = _write_inputs(rundir, pr, review_pass, intent)
     return SimpleNamespace(
         cmd="prepare",
@@ -96,6 +133,11 @@ def _refused(args: SimpleNamespace, contains: str) -> None:
         check(False, f"preparation should have refused: {contains}")
 
 
+def _default_launch_artifacts_absent(rundir: Path) -> bool:
+    paths = D.attempt_paths(rundir, "41", "2", "1")
+    return not paths["prompt"].exists() and not paths["progress"].exists()
+
+
 def t_relaunch_paths_share_one_attempt_identity() -> None:
     """A relaunch cannot mix attempt-1 and attempt-2 output paths."""
     with tempfile.TemporaryDirectory() as raw:
@@ -108,6 +150,40 @@ def t_relaunch_paths_share_one_attempt_identity() -> None:
         check(paths["report"].name == f"{expected}{D.RP.REPORT_SUFFIX}",
               "report lost launch attempt 2 or its artifact suffix")
         check(paths["plan"].name == "review-41-2.plan.jsonl", "the per-pass plan gained an attempt suffix")
+
+
+def t_missing_historical_pass_refuses_later_dispatch() -> None:
+    """The Decad gap had completed pass 1 and pass 3 artifacts, but no pass 2 evidence."""
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw), review_pass="3", seed_history=False)
+        rundir = Path(args.run_dir)
+        _write_landed_pass(rundir, "41", "1", HISTORICAL_SHA)
+        paths = D.attempt_paths(rundir, "41", "3", "1")
+        _refused(args, "missing completed pass 2")
+        check(not paths["prompt"].exists() and not paths["progress"].exists(),
+              "a missing historical pass still prepared later launch artifacts")
+
+
+def t_contiguous_history_accepts_prior_heads_after_repair() -> None:
+    """Each earlier pass validates against its recorded head, not the head being reviewed now."""
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw), review_pass="3")
+        rundir = Path(args.run_dir)
+        first = D.attempt_paths(rundir, "41", "1", "1")["progress"]
+        events = D.RP.parse_lines(first.read_text(encoding="utf-8"), first.name)
+        prior_identity = D.RP.check_identity(events, "41", "1", "1")
+        check(prior_identity["head_sha"] == HISTORICAL_SHA and prior_identity["head_sha"] != args.head_sha,
+              "the fixture must preserve a valid review completed before the repair head")
+        payload = D.prepare(args)
+        check(payload["transport"]["attempt"]["pass"] == 3,
+              "contiguous historical evidence on prior heads must allow the later pass")
+
+
+def t_nonbinary_historical_verdict_refuses_later_dispatch() -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw), seed_history=False)
+        _write_landed_pass(Path(args.run_dir), "41", "1", HISTORICAL_SHA, verdict=D.RP.DEFERRED)
+        _refused(args, "terminal binary verdict")
 
 
 def t_prepare_attempt_one_materializes_one_record() -> None:
@@ -247,7 +323,7 @@ def t_prompt_profiles_are_typed_and_route_scoped() -> None:
             )
             _refused(args, expected)
             rundir = Path(args.run_dir)
-            check(not list(rundir.glob("*.prompt.txt")) and not list(rundir.glob("*.progress.jsonl")),
+            check(_default_launch_artifacts_absent(rundir),
                   f"{route} attempt {launch_attempt} invalid profile created launch artifacts")
 
 
@@ -304,7 +380,7 @@ def t_invalid_identifiers_create_nothing() -> None:
             setattr(args, field, value)
             _refused(args, "review-dispatch" if field != "dispatched_at" else "real UTC")
             rundir = Path(args.run_dir)
-            check(not list(rundir.glob("*.prompt.txt")) and not list(rundir.glob("*.progress.jsonl")),
+            check(_default_launch_artifacts_absent(rundir),
                   f"invalid {field} must create no launch artifacts")
 
 
@@ -317,7 +393,7 @@ def t_invalid_utf8_filesystem_path_is_controlled_refusal() -> None:
         args = _fixture(Path(os.fsdecode(bad_bytes)))
         _refused(args, "UTF-8")
         rundir = Path(args.run_dir)
-        check(not list(rundir.glob("*.prompt.txt")) and not list(rundir.glob("*.progress.jsonl")),
+        check(_default_launch_artifacts_absent(rundir),
               "a non-UTF-8 transport path must create no launch artifacts")
 
 
@@ -333,7 +409,7 @@ def t_missing_or_wrong_intent_and_bad_plan_create_nothing() -> None:
         other.write_bytes(Path(args.intent_file).read_bytes())
         args.intent_file = os.fspath(other)
         _refused(args, "derived artifact")
-        check(not list(Path(args.run_dir).glob("*.progress.jsonl")), "wrong-PR intent created identity")
+        check(_default_launch_artifacts_absent(Path(args.run_dir)), "wrong-PR intent created identity")
     with tempfile.TemporaryDirectory() as raw:
         args = _fixture(Path(raw))
         (Path(args.run_dir) / "review-41-2.plan.jsonl").write_text("\n", encoding="utf-8")
@@ -346,7 +422,7 @@ def t_overlapping_run_dir_and_worktree_create_nothing() -> None:
 
     def _no_artifacts(rundir: Path) -> None:
         check(
-            not list(rundir.glob("*.prompt.txt")) and not list(rundir.glob("*.progress.jsonl")),
+            _default_launch_artifacts_absent(rundir),
             "an overlapping run-dir/worktree pair created a launch artifact",
         )
 
@@ -729,6 +805,7 @@ def t_unicode_worktree_delivers_under_ascii_stdout() -> None:
         worktree = root / "雪-worktree"
         rundir.mkdir(parents=True)
         worktree.mkdir(parents=True)
+        _seed_contiguous_history(rundir, "41", "2")
         intent_path = _write_inputs(rundir)
         argv = [
             "prepare", "--run-dir", os.fspath(rundir), "--pr", "41", "--pass", "2",
@@ -926,6 +1003,12 @@ CASES = [
         "all relaunch artifacts derive from one attempt identity",
         t_relaunch_paths_share_one_attempt_identity,
     ),
+    ("history-gap", "a missing earlier pass refuses later review preparation",
+     t_missing_historical_pass_refuses_later_dispatch),
+    ("history-prior-head", "contiguous history validates each prior pass against its recorded head",
+     t_contiguous_history_accepts_prior_heads_after_repair),
+    ("history-binary-verdict", "a prior deferred result refuses later review preparation",
+     t_nonbinary_historical_verdict_refuses_later_dispatch),
     ("attempt-one", "prepare materializes one coherent attempt-1 record", t_prepare_attempt_one_materializes_one_record),
     ("later-external-attempt", "later attempts preserve suffix and the reviewer's report door", t_later_attempt_keeps_the_reviewer_report_door),
     ("producer-pairing", "route and sole report producer must agree", t_route_and_report_owner_must_agree),

@@ -50,8 +50,9 @@ Inputs have these owners:
   block (`stage-2-review-gate.md`, "Does this pass COUNT?"). A malformed value is a controlled refusal.
 - `intent_file` is the absolute derived `<rundir>/intent-<pr>.md` path. The command refuses another path.
 
-The command validates the existing per-pass plan and per-PR intent through `review-pass.py`, derives the
-prompt/progress/findings/report paths from one attempt identity, resolves every bundled emitter the
+The command validates the existing per-pass plan and per-PR intent through `review-pass.py`. It then runs
+`stage-2-review-gate.md`, **"Review-history integrity guard"**, before it creates any launch artifact and
+derives the prompt/progress/findings/report paths from one attempt identity, resolves every bundled emitter the
 transport names from its installed script directory, writes the exact bound prompt, and writes the
 validated `pass_identity` as the progress file's first line. The emitter set is the code's, not this
 document's: `review-dispatch.py` owns which `emit_*_path` fields the transport carries, and it refuses to

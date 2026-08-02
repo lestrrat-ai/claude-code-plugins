@@ -191,6 +191,15 @@ cap; it's only the two reviews for the same PR that serialize.) Each pass is a s
 shared context, so the second verdict is a fresh, context-isolated execution rather than a
 continuation influenced by the first.
 
+#### Review-history integrity guard
+
+**`review-dispatch.py prepare` MUST refuse pass `<n>` when any earlier numbered pass `1..n-1` lacks valid,
+terminal evidence.** For each earlier pass, it reads only the active highest-attempt artifact, validates the
+artifact contract against that pass's immutable `pass_identity.head_sha`, and requires one binary report
+verdict: `satisfied` or `not-satisfied`. A repair normally moves the current PR head, so NEVER compare an
+older pass to the head for the launch being prepared. Missing artifacts, malformed evidence, incomplete
+passes, and `deferred` reports block preparation before it writes the later pass's prompt or identity.
+
 #### Kill doomed passes — don't let them finish
 
 **Kill doomed passes — don't let them finish.** If a precondition goes dirty while a review is in
@@ -260,8 +269,9 @@ enforced: the progress file is a plaintext file in a directory the reviewer can 
  "--report-producer", report_producer, "--head-sha", head_sha,
  "--dispatched-at", utc_timestamp, "--default-non-goals", ledger_default_non_goals,
  "--intent-file", intent_file]
-    # write identity (BINDING the run's default_non_goals as the dispatch-time scope) + exact prompt and
-    # return the one typed transport record; review-dispatch.md owns it
+    # first enforce "Review-history integrity guard", then write identity (BINDING the run's
+    # default_non_goals as the dispatch-time scope) + exact prompt and return the one typed transport;
+    # review-dispatch.md owns the handoff
 ["python3", review_pass_script, "verify", "--file", progress_file,
  "--head-sha", live_head_sha, "--amendments-ruled", count, "--ledger", ledger_file]
     # --ledger is a TALLY PRECONDITION: it compares the pass's dispatch-time pass_identity.default_non_goals

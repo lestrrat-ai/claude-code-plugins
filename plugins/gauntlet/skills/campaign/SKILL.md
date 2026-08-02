@@ -162,8 +162,9 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
     **1 if TRIVIAL, else 2** (any code/agent-doc/sensitive change is 2) — plus green CI.
     Before each launch, `review-pass.py plan-check --file <plan> --tier <tier>` must pass (a refusal
     blocks the launch; `references/stage-2-review-gate.md`, "Review work-plan ledger", owns the rule),
-    then run `review-dispatch.py prepare` to write the attempt identity and exact prompt
-    and return the one typed transport; `references/review-dispatch.md` owns the invocation and handoff.
+    then run `review-dispatch.py prepare`. It applies `references/stage-2-review-gate.md`,
+    "Review-history integrity guard", before writing the attempt identity and exact prompt and returning
+    the one typed transport; `references/review-dispatch.md` owns the invocation and handoff.
 15. The review is measured against the PR's INTENT, never "is anything wrong with this code?". The
     reviewer receives `intent-<pr>.md` verbatim — its base Purpose/Non-goals/Threat model PLUS the run's
     default Non-goals, folded into the managed block by `intent-sync` — and answers ONE question: does
@@ -282,7 +283,7 @@ a line the tool writes.
 | `heartbeat.py` | Emit the lean same-session wake prompts (scheduled heartbeat and session watchdog) the driver arms for its next wake | `references/runtime-adapter.md` |
 | `ledger.py` | Schema-owning accessor for `state.jsonl` — plus `verdict`, the ONLY verdict recorder (tally, caps, `repairing` hold), and `dispatch-check`, the allow-list dispatch guard run before any mutating action | `references/files-and-ledger.md` |
 | `review-pass.py` | Executable contract for a review pass's artifacts — plan (`plan-add`/`plan-waive`, with `plan-check` gating dispatch on the default dimensions), `pass_identity`, progress, findings, the active attempt's report record (`report-write`), `intent-check`, and the `verify` that answers "does this pass COUNT?" | `references/stage-2-review-gate.md` |
-| `review-dispatch.py` | `prepare` — validate one fresh review attempt and its typed prompt profile, derive every artifact path, write `pass_identity` + exact bound prompt, and return the host-neutral typed transport record; never selects or launches a route | `references/review-dispatch.md` |
+| `review-dispatch.py` | `prepare` — validate one fresh review attempt, including `stage-2-review-gate.md`, "Review-history integrity guard", and its typed prompt profile; derive every artifact path, write `pass_identity` + exact bound prompt, and return the host-neutral typed transport record; never selects or launches a route | `references/review-dispatch.md` |
 | `finding-audit.py` | Schema-owning accessor for complete gating-finding audits, mechanically derived review-fix scope, and durable standoff rulings | `references/finding-audit.md` |
 | `emit-progress.py` | Reviewer's door: append one unit-progress event (the only sanctioned way) | `references/stage-2-review-gate.md` |
 | `emit-finding.py` | Reviewer's door: record one FINDING (the only sanctioned way; findings must anchor or they do not gate) | `references/stage-2-review-gate.md` |
