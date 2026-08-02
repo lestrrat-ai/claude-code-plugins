@@ -3,9 +3,10 @@
 
 This command is the executable boundary between campaign policy and host dispatch. The host first chooses
 an available route through ``runtime-adapter.md``. ``prepare`` then validates that route's report owner,
-derives every attempt-scoped path from one identity, validates the existing plan and intent through
-``review-pass.py``, creates the progress identity and bound prompt, and prints the canonical JSON record
-the host launches. It does not select a route, test route availability, or launch a reviewer.
+the complete earlier review history, and the existing plan and intent through ``review-pass.py``. It derives
+every attempt-scoped path from one identity, creates the progress identity and bound prompt, and prints the
+canonical JSON record the host launches. It does not select a route, test route availability, or launch a
+reviewer.
 """
 
 from __future__ import annotations
@@ -119,6 +120,63 @@ def _reject_overlapping_dirs(rundir: Path, worktree: Path) -> None:
         refuse(
             f"--worktree must not be nested inside --run-dir; {real_worktree} is inside {real_rundir}"
         )
+
+
+def _recorded_head(progress: Path) -> str:
+    """Read one active attempt's validated, immutable review head."""
+    pr, review_pass, launch_attempt = RP.parse_name(progress)
+    events = RP.parse_lines(RP.read_text(progress, "historical progress file"), progress.name)
+    RP.check_events(events, progress.name)
+    identity = RP.check_identity(events, pr, review_pass, launch_attempt)
+    return identity["head_sha"]
+
+
+def require_contiguous_history(rundir: Path, pr: str, review_pass: str) -> None:
+    """Refuse a later pass unless every prior pass has usable terminal evidence.
+
+    A repair moves the PR head after an earlier review lands. Historical passes therefore validate against
+    their OWN immutable ``pass_identity.head_sha``, not the current launch's head or current intent. Only
+    each pass's active (highest-attempt) artifact is historical evidence; superseded retry attempts never
+    landed a result.
+    """
+    target = int(review_pass)
+    if target == 1:
+        return
+
+    historical: dict[int, Path] = {}
+    for progress in RP.active_attempts(rundir):
+        artifact_pr, artifact_pass, _ = RP.parse_name(progress)
+        number = int(artifact_pass)
+        if artifact_pr == pr and number < target:
+            historical[number] = progress
+
+    for number in range(1, target):
+        progress = historical.get(number)
+        if progress is None:
+            refuse(
+                f"review history for pr {pr} is missing completed pass {number} before requested pass "
+                f"{review_pass} — recover or restart the missing pass before dispatching later review work"
+            )
+        try:
+            recorded_head = _recorded_head(progress)
+            # A terminal report records the reviewer verdict, not a durable orchestrator ruling count.
+            outcome, reason, report = RP.evaluate_historical_detail(progress, recorded_head)
+        except (OSError, RP.Defect) as exc:
+            refuse(
+                f"review history for pr {pr} pass {number} is invalid: {exc} — recover or restart that "
+                "pass before dispatching later review work"
+            )
+        if report is None or report["verdict"] not in (RP.SATISFIED, RP.NOT_SATISFIED):
+            verdict = None if report is None else report["verdict"]
+            refuse(
+                f"review history for pr {pr} pass {number} has no terminal binary verdict "
+                f"(got {verdict!r}) — recover or restart that pass before dispatching later review work"
+            )
+        if outcome != RP.OK:
+            refuse(
+                f"review history for pr {pr} pass {number} is invalid: {reason} — recover or restart "
+                "that pass before dispatching later review work"
+            )
 
 
 def attempt_paths(rundir: Path, pr: str, review_pass: str, launch_attempt: str) -> "dict[str, Path]":
@@ -493,6 +551,7 @@ def prepare(args) -> dict:
         intent = intent_path.read_bytes()
     except (RP.Defect, OSError) as exc:
         refuse(str(exc))
+    require_contiguous_history(rundir, args.pr, args.review_pass)
 
     try:
         template = TEMPLATE.read_bytes()

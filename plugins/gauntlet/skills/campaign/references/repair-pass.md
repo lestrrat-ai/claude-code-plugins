@@ -167,7 +167,7 @@ Use this fail-closed procedure:
 3. Use only that final round's `findings` artifact. Require `present = true`; require SHA-256 of its embedded
    UTF-8 `content` to equal its `sha256`; require its `path` to be the active findings path derived from the
    final round's progress artifact; and validate each JSONL row through the historical, non-re-anchoring
-   schema path owned by `repair-pass.py`'s `load_historical_findings`. If the active findings file still
+   schema path owned by `review-pass.py`'s `load_historical_findings`. If the active findings file still
    exists, its bytes must equal the embedded content. If it is absent, the validated embedded content is the
    bundle-bound source of truth.
 4. Record one follow-up for every row in that recovered final-cap list, leave every row unfixed, and use the

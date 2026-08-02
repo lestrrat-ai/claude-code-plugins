@@ -139,26 +139,18 @@ def read_source(path: Path) -> list[dict]:
 def read_source_historical(path: Path) -> list[dict]:
     """Read a LANDED round's findings WITHOUT re-anchoring their `purpose` to the current intent.
 
-    Structurally symmetric with `repair-pass.py load_historical_findings`: run the artifact owner's strict
-    name check, parser, and every non-anchor finding rule, but validate each finding's `purpose` against
-    the round's OWN recorded purpose strings — historical evidence — instead of loading the current
-    `intent-<pr>.md`. A sanctioned REPAIR-INTENT may re-author that intent and drop a purpose an earlier
-    round anchored to; re-anchoring would then reject the round's complete audit and WEDGE the PR, so a
-    later historical read of the audit (a standoff ruling, or a standoff-phase fix-list) uses this door.
+    `review-pass.py check_historical_findings_file` owns the strict name, JSONL, and non-anchor finding
+    checks. It validates each finding's `purpose` against the round's OWN recorded purpose strings —
+    historical evidence — instead of loading the current `intent-<pr>.md`. A sanctioned REPAIR-INTENT may
+    re-author that intent and drop a purpose an earlier round anchored to; re-anchoring would then reject
+    the round's complete audit and WEDGE the PR, so a later historical read of the audit (a standoff ruling,
+    or a standoff-phase fix-list) uses this door.
 
     It reads finding CONTENT (`read_source` does; `check_landed_audit_complete` does not), so the digest
     the caller computes over these findings still catches a genuinely CHANGED source finding as stale.
     """
     try:
-        R.findings_name(path)
-        records = R.parse_lines(R.read_text(path, "findings file"), path.name)
-        historical_purposes = [
-            rec.get("purpose") for rec in records
-            if isinstance(rec.get("purpose"), str) and rec.get("purpose") != R.NO_PURPOSE
-        ]
-        for line_no, rec in enumerate(records, start=1):
-            R.check_finding(rec, f"{path.name} line {line_no}", historical_purposes)
-        return records
+        return R.check_historical_findings_file(R.read_text(path, "findings file"), path)
     except R.Defect as exc:
         raise AuditError(str(exc)) from exc
 

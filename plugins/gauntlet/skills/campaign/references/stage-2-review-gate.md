@@ -191,6 +191,21 @@ cap; it's only the two reviews for the same PR that serialize.) Each pass is a s
 shared context, so the second verdict is a fresh, context-isolated execution rather than a
 continuation influenced by the first.
 
+#### Review-history integrity guard
+
+**`review-dispatch.py prepare` MUST refuse pass `<n>` when any earlier numbered pass `1..n-1` lacks valid,
+terminal evidence.** For each earlier pass, it reads only the active highest-attempt artifact, validates the
+artifact contract against that pass's immutable `pass_identity.head_sha`, and requires one binary report
+verdict: `satisfied` or `not-satisfied`. A repair normally moves the current PR head, so NEVER compare an
+older pass to the head for the launch being prepared. A prior amendment can count only when a durable
+orchestrator ruling count proves it was ruled. A terminal binary report does not provide that count, and the
+history artifacts record none, so history uses `review-pass.py`'s zero default. An earlier artifact with an
+amendment blocks preparation. Missing artifacts, malformed evidence, incomplete passes, and `deferred`
+reports block preparation before it writes the later pass's prompt or identity. `review-pass.py`'s history
+reader still validates each findings artifact's name, JSONL, and non-anchor fields, but it NEVER re-anchors
+a landed finding's `purpose` to the mutable current intent: a sanctioned REPAIR-INTENT may have dropped
+that old purpose after the earlier pass landed.
+
 #### Kill doomed passes — don't let them finish
 
 **Kill doomed passes — don't let them finish.** If a precondition goes dirty while a review is in
@@ -260,8 +275,9 @@ enforced: the progress file is a plaintext file in a directory the reviewer can 
  "--report-producer", report_producer, "--head-sha", head_sha,
  "--dispatched-at", utc_timestamp, "--default-non-goals", ledger_default_non_goals,
  "--intent-file", intent_file]
-    # write identity (BINDING the run's default_non_goals as the dispatch-time scope) + exact prompt and
-    # return the one typed transport record; review-dispatch.md owns it
+    # first enforce "Review-history integrity guard", then write identity (BINDING the run's
+    # default_non_goals as the dispatch-time scope) + exact prompt and return the one typed transport;
+    # review-dispatch.md owns the handoff
 ["python3", review_pass_script, "verify", "--file", progress_file,
  "--head-sha", live_head_sha, "--amendments-ruled", count, "--ledger", ledger_file]
     # --ledger is a TALLY PRECONDITION: it compares the pass's dispatch-time pass_identity.default_non_goals
@@ -742,7 +758,7 @@ shape and passes untouched.
 **AND THE INTENT IS CHECKED FOR EVERY PASS — whatever it found, and even when it found nothing.** A
 guard whose input can be absent never fires, and the pass with no findings is precisely the ordinary
 case — the one that **merges the PR**. `verify` derives the PR from the progress
-file's own name and loads `<rundir>/intent-<pr>.md` on **every** pass; anything short of a **usable** block
+file's own name and loads `<rundir>/intent-<pr>.md` on **every live** pass; anything short of a **usable** block
 makes the pass `unusable` and no verdict is tallied from it. **What "usable" means is NOT restated here** —
 `pr-adoption.md` step 3a states it for the human writing the file, and `review-pass.py`'s parser IS the
 definition (`review-pass.py intent-check --file <rundir>/intent-<pr>.md --ledger <rundir>/state.jsonl` is

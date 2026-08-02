@@ -234,10 +234,10 @@ FINDING = "finding"
 #
 # **ADDING A KEY HERE BREAKS EVERY FINDING ALREADY ON DISK, AND THAT IS A DISCLOSED RESIDUAL, NOT AN
 # OVERSIGHT.** Exactness cuts both ways: a record written before the new key is now MISSING a required one,
-# so it is refused. That refusal reaches further than the door that wrote it, because the two HISTORICAL
-# readers — `repair-pass.py`'s `load_historical_findings` and `finding-audit.py`'s `read_source_historical`
-# — run this same check over LANDED rounds. Both exist so that re-authoring an intent cannot wedge a PR;
-# neither can help with this, because the missing key is not an anchor they can hold historical.
+# so it is refused. That refusal reaches further than the door that wrote it, because the HISTORICAL reader
+# below and `finding-audit.py`'s `read_source_historical` run this same check over LANDED rounds. Both exist
+# so that re-authoring an intent cannot wedge a PR; neither can help with this, because the missing key is
+# not an anchor they can hold historical.
 #
 # So a run whose early rounds landed under the previous key set cannot bundle its own history after the
 # plugin updates, and the PR wedges at the next cap. It is accepted because of what the artifact IS: the
@@ -598,8 +598,8 @@ NO_DEFERRED_REASON = "-"
 # and never re-derived: a heartbeat is a fresh agent instance, and an intent held only in context is one that
 # gets invented a second time, differently.
 #
-# **EVERY PASS IS JUDGED AGAINST ONE — `evaluate` loads it whatever the pass found, and that is the whole
-# rule.** It used to be loaded only where a finding needed ANCHORING, which meant a pass with NO findings
+# **EVERY LIVE PASS IS JUDGED AGAINST ONE — `evaluate_detail` loads it whatever the pass found, and that is
+# the whole rule.** It used to be loaded only where a finding needed ANCHORING, which meant a pass with NO findings
 # never asked whether the intent existed at all: the guard's input could simply be ABSENT, and a guard whose
 # input can be absent never fires. A SATISFIED pass that found nothing is the COMMON case and the one that
 # merges a PR, so that was the hole in the exact shape of the door it was guarding.
@@ -1182,7 +1182,7 @@ def check_intent_scope(intent: Path, ledger: Path) -> "list[str]":
 def load_intent(path: Path) -> "dict[str, list[str]]":
     """The PR's intent, or a Defect saying it is not there.
 
-    **A MISSING INTENT IS NOT AN EMPTY INTENT.** It is refused, loudly, and it is refused for EVERY pass —
+    **A MISSING INTENT IS NOT AN EMPTY INTENT.** It is refused, loudly, and it is refused for EVERY LIVE pass —
     not merely for one that has a finding to anchor. A finding cannot be anchored to a document that does
     not exist, and the alternative (treat every `purpose` as unverifiable and wave it through) hands the
     reviewer a field it can write anything into. Adoption writes this file before the PR's first review
@@ -1191,7 +1191,7 @@ def load_intent(path: Path) -> "dict[str, list[str]]":
 
     **BOTH DOORS CALL IT, AND SO DOES THE PASS ITSELF.** `cmd_finding_add` calls it to check an anchor at
     the moment the reviewer records one; `check_findings_file` calls it to check every anchor already on
-    disk; and `evaluate` calls it for EVERY pass it judges — a pass with zero findings has nothing to
+    disk; and `evaluate_detail` calls it for EVERY LIVE pass it judges — a pass with zero findings has nothing to
     anchor and is still measured against an intent, because "was this reviewer told what the PR is FOR?"
     is a question about the PASS, not about its findings. One function, one definition, three callers.
 
@@ -1207,7 +1207,7 @@ def load_intent(path: Path) -> "dict[str, list[str]]":
         raise Defect(
             f"no intent block at {path} — THE RUN SKIPPED A STEP, and this is not a reviewer failure. "
             f"`{INTENT_NAME.format(pr='<pr>')}` is written at ADOPTION (`pr-adoption.md` step 3a), before "
-            f"the PR's first review pass is ever dispatched, and EVERY pass is measured against it — a pass "
+            f"the PR's first review pass is ever dispatched, and EVERY LIVE pass is measured against it — a pass "
             f"that found nothing included. Re-rolling the reviewer cannot produce one. Write the intent "
             f"block, then re-dispatch the pass"
         )
@@ -1357,7 +1357,7 @@ def check_findings_file(text: str, path: Path) -> "list[dict]":
     **THAT IS A STATEMENT ABOUT THIS FILE, AND IT IS NOT — EVER — A STATEMENT ABOUT THE PASS.** "No
     findings, therefore no intent needed" was once true of both, and it was the hole: a pass with no
     findings never loaded the intent at all, so a SATISFIED pass on a PR whose intent was never written
-    verified `ok`. The pass-level rule lives in `evaluate`, which loads the intent for EVERY pass it
+    verified `ok`. The live pass-level rule lives in `evaluate_detail`, which loads the intent for EVERY LIVE pass it
     judges, whatever this file holds — including when it does not exist.
     """
     pr = findings_name(path).group("pr")
@@ -1367,6 +1367,28 @@ def check_findings_file(text: str, path: Path) -> "list[dict]":
     purposes = load_intent(intent_path(path.parent, pr))[PURPOSE_H]
     for n, rec in enumerate(records, start=1):
         check_finding(rec, f"{path.name} line {n}", purposes)
+    return records
+
+
+def check_historical_findings_file(text: str, path: Path) -> "list[dict]":
+    """Validate landed findings without re-anchoring them to the mutable current intent.
+
+    A live pass must quote a purpose from the current `intent-<pr>.md`; `check_findings_file` owns that
+    door. Once its binary verdict has landed, the finding's purpose is historical evidence: a sanctioned
+    REPAIR-INTENT may replace the one current intent and drop that old purpose. This reader keeps the name,
+    JSONL, and every non-anchor finding check, then validates each non-sentinel purpose against the landed
+    artifact's own recorded purposes rather than reading the current intent. It is for historical consumers
+    only; using it for an in-flight pass would let a reviewer invent its own purpose anchor.
+    """
+    findings_name(path)
+    records = parse_lines(text, path.name)
+    historical_purposes: list[str] = []
+    for rec in records:
+        purpose = rec.get("purpose")
+        if isinstance(purpose, str) and purpose != NO_PURPOSE:
+            historical_purposes.append(purpose)
+    for n, rec in enumerate(records, start=1):
+        check_finding(rec, f"{path.name} line {n}", historical_purposes)
     return records
 
 
@@ -1615,13 +1637,25 @@ def load_findings(progress: Path) -> "list[dict]":
     **AND IT IS NOT A LICENCE TO SKIP THE INTENT EITHER.** This function is the one place a whole artifact
     is allowed to be absent, so it is the one place that could quietly take the intent check down with it —
     and it DID: an absent findings file returned `[]` here, `load_intent` was never reached, and a pass on
-    a PR with NO intent block at all counted. `evaluate` loads the intent for every pass, so absence here
+    a PR with NO intent block at all counted. `evaluate_detail` loads the intent for every live pass, so absence here
     now means exactly what it says — zero findings — and nothing more.
     """
     path = findings_path(progress)
     if not path.exists():
         return []
     return check_findings_file(read_text(path, "findings file"), path)
+
+
+def load_historical_findings(progress: Path) -> "list[dict]":
+    """Read a landed pass's findings through `check_historical_findings_file`.
+
+    An absent findings artifact remains zero findings. A present artifact must pass the history-only reader,
+    which retains structural validation while deliberately avoiding the current intent's mutable purposes.
+    """
+    path = findings_path(progress)
+    if not path.exists():
+        return []
+    return check_historical_findings_file(read_text(path, "findings file"), path)
 
 
 # --- the progress events -------------------------------------------------------------------------
@@ -2110,6 +2144,27 @@ def evaluate(progress: Path, head_sha: str, ruled: int = 0,
     del legacy_verdict
     outcome, reason, _ = evaluate_detail(progress, head_sha, ruled)
     return outcome, reason
+
+
+def evaluate_historical_detail(progress: Path, head_sha: str, ruled: int = 0) -> \
+        "tuple[str, str, ReportResult | None]":
+    """Validate one landed pass as history without loading its later re-authored intent.
+
+    This is deliberately narrower than `evaluate_detail`: it checks the pass's plan, identity, recorded
+    head, progress, report, amendment ruling, and findings through `load_historical_findings`, but never
+    re-reads `intent-<pr>.md` or current run scope. A terminal pass had to satisfy those live checks before
+    it landed. Later history consumers must preserve that evidence across a REPAIR-INTENT while still
+    refusing malformed artifacts.
+    """
+    try:
+        plan = plan_path(progress)
+        report = parse_report(progress)
+        events, units = check_progress_file(text=read_text(progress, "progress file"), path=progress,
+                                            plan=lambda: load_plan(plan), head_sha=head_sha)
+        outcome, reason = decide(events, units, ruled, load_historical_findings(progress), report["verdict"])
+        return outcome, reason, report
+    except Defect as exc:
+        return UNUSABLE, str(exc), None
 
 
 def check_events(events: "list[dict]", name: str) -> None:
