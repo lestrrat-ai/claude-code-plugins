@@ -195,6 +195,8 @@ is what the reviewer reads in its transport record; what it no longer does is va
 
 Selected capability's external route is exactly `external-codex` or `external-claude`; never pass the
 `ReviewAction` string as `--route`.
+Pass that selected `ReviewAction` as `--review-action`; `review-dispatch.py prepare` validates the action,
+route, and prompt-profile mapping before writing launch artifacts.
 
 ### Review allocation journal
 
@@ -206,15 +208,20 @@ allocations follow it. `final` is the separately reserved fresh review due after
 plan; it may be the first allocation of a new post-repair pass.
 
 **Record every completed attempt through `review-dispatch.py result` before allocating another.** Its
-`provider-failure`, `transport-failure`, `malformed-output`, `incomplete-plan`, `amended`, and `reviewed`
-values name the outcome that the heartbeat observed. Run `allocation-status` after settling a dead attempt,
-when a row is held, or when a budget question reaches the final report; it renders every launch attempt's
-purpose and result from the journal rather than guessing from filenames or a lost context.
+`provider-failure`, `transport-failure`, `malformed-output`, `incomplete-plan`, `amended`, `reviewed`,
+`head-invalidated`, and `scope-invalidated` values name the outcome that the heartbeat observed. Use
+`head-invalidated` only when the allocated head differs from the live selected ledger row. Use
+`scope-invalidated` only when the attempt's dispatch-time `default_non_goals` binding differs from the
+live ledger defaults. Run `allocation-status` after settling a dead attempt, when a row is held, or when a
+budget question reaches the final report; it renders every launch attempt's purpose and result from the
+journal rather than guessing from filenames or a lost context.
 
-**Keep the final allocation reserved after `provider-failure`, `transport-failure`, `malformed-output`, `incomplete-plan`, or `amended`.** Prepare a new attempt-scoped artifact set with
-`--allocation-purpose final` after the routing or plan repair. Only `reviewed` — a usable binary review
-that can reach `ledger.py verdict` — consumes the final allocation. A final retry is still a fresh reviewer
-and a new `launch_attempt`; it never reuses a failed attempt's files.
+**Keep the final allocation reserved after `provider-failure`, `transport-failure`, `malformed-output`,
+`incomplete-plan`, `amended`, `head-invalidated`, or `scope-invalidated`.** Prepare a new attempt-scoped
+artifact set with `--allocation-purpose final` after the routing or plan repair. Only `reviewed` — a usable
+binary review whose allocated head and dispatch-time scope still match the live ledger — consumes the final
+allocation. A final retry is still a fresh reviewer and a new `launch_attempt`; it never reuses a failed
+attempt's files.
 
 **Allocate `launch_attempt` monotonically for every reviewer launch passed to `prepare`.** An unavailable
 external route is never prepared and consumes no number, so its immediate native fallback takes the
@@ -223,11 +230,11 @@ journal decides whether that launch is `initial`, `recovery`, or the final reser
 gap or out-of-order number. Never reuse an attempt's artifacts.
 
 **Select `prompt_profile` only from the table, never from provider output.** `standard` and
-`codex-recovery` are a closed typed enum. Attempt `1` is always `standard`; the existing external Codex
-attempt `2` is the only `codex-recovery` case; external Claude attempt `2` and native attempt `3` stay
-`standard`. `review-dispatch.py prepare` refuses every other route/attempt/profile combination before
-writing launch artifacts. The profile changes only the retry's opening repository-maintenance framing.
-It adds no attempt, changes no review rule, and selects no route or model.
+`codex-recovery` are a closed typed enum. Only `retry-external` on `external-codex` uses
+`codex-recovery`; every other mapped action uses `standard`, including a `launch-external` final retry on
+its second launch attempt. `review-dispatch.py prepare` refuses every action/route/profile combination
+outside this mapping before writing launch artifacts. The profile changes only the retry's opening
+repository-maintenance framing. It adds no attempt, changes no review rule, and selects no route or model.
 
 **A pass number is spent only by a LANDED verdict.** Every relaunch after a dead, unusable, or DEFERRED
 attempt — whatever its route — is the SAME `--pass` with the next `launch_attempt`, never a new pass

@@ -49,6 +49,17 @@ ROUTE_PRODUCERS = {
 }
 REPORT_PRODUCERS = tuple(sorted(set(ROUTE_PRODUCERS.values())))
 PROMPT_PROFILES = ("standard", "codex-recovery")
+LAUNCH_EXTERNAL = "launch-external"
+RETRY_EXTERNAL = "retry-external"
+LAUNCH_NATIVE = "launch-native"
+FALLBACK_NATIVE = "fallback-native"
+REVIEW_ACTION_ROUTES = {
+    LAUNCH_EXTERNAL: ("external-codex", "external-claude"),
+    RETRY_EXTERNAL: ("external-codex", "external-claude"),
+    LAUNCH_NATIVE: ("native",),
+    FALLBACK_NATIVE: ("native",),
+}
+REVIEW_ACTIONS = tuple(REVIEW_ACTION_ROUTES)
 INITIAL_ALLOCATION = "initial"
 RECOVERY_ALLOCATION = "recovery"
 FINAL_ALLOCATION = "final"
@@ -67,6 +78,8 @@ MALFORMED_OUTPUT = "malformed-output"
 INCOMPLETE_PLAN = "incomplete-plan"
 AMENDED = "amended"
 REVIEWED = "reviewed"
+HEAD_INVALIDATED = "head-invalidated"
+SCOPE_INVALIDATED = "scope-invalidated"
 ALLOCATION_RESULTS = (
     PROVIDER_FAILURE,
     TRANSPORT_FAILURE,
@@ -74,6 +87,8 @@ ALLOCATION_RESULTS = (
     INCOMPLETE_PLAN,
     AMENDED,
     REVIEWED,
+    HEAD_INVALIDATED,
+    SCOPE_INVALIDATED,
 )
 FINAL_RETRYABLE_RESULTS = frozenset(ALLOCATION_RESULTS) - {REVIEWED}
 CODEX_RECOVERY_PREAMBLE = (
@@ -403,6 +418,50 @@ def allocation_summary(allocations: dict[str, dict], results: dict[str, dict], *
     return {"ordinary_limit": ORDINARY_ALLOCATION_LIMIT, "final_state": final_state, "attempts": attempts}
 
 
+def _load_live_ledger_row(ledger: Path, pr: str) -> dict:
+    """Read the selected row that decides whether this attempt's head still exists."""
+    try:
+        _header, rows = L.load(ledger)
+    except SystemExit as exc:
+        refuse(f"cannot read run ledger {ledger}: {exc}")
+    row = L.find_row(rows, pr)
+    if row is None:
+        refuse(f"run ledger {ledger} has no selected row for pr {pr}")
+    return row
+
+
+def _require_live_allocated_head(ledger: Path, pr: str, launch_attempt: str, allocation: dict) -> None:
+    """Require the ledger's selected row to still name the allocated review head."""
+    row = _load_live_ledger_row(ledger, pr)
+    if row["head_sha"] != allocation["head_sha"]:
+        refuse(
+            f"launch attempt {launch_attempt} cannot record reviewed: allocated head "
+            f"{allocation['head_sha']} differs from live ledger head {row['head_sha']}"
+        )
+
+
+def _require_scope_invalidated(rundir: Path, pr: str, review_pass: str, launch_attempt: str) -> None:
+    """Require the dispatch-time scope binding to differ from the current run defaults."""
+    ledger = rundir / "state.jsonl"
+    if not ledger.is_file():
+        refuse(
+            f"launch attempt {launch_attempt} cannot record scope-invalidated without the run ledger "
+            f"{ledger}"
+        )
+    paths = attempt_paths(rundir, pr, review_pass, launch_attempt)
+    try:
+        events = RP.parse_lines(paths["progress"].read_text(encoding="utf-8"), paths["progress"].name)
+        identity = RP.check_identity(events, pr, review_pass, launch_attempt)
+        current = RP.current_default_non_goals(ledger)
+    except (OSError, RP.Defect, SystemExit) as exc:
+        refuse(f"launch attempt {launch_attempt} cannot check scope invalidation: {exc}")
+    if identity["default_non_goals"] == current:
+        refuse(
+            f"launch attempt {launch_attempt} cannot record scope-invalidated: its dispatch-time "
+            "default_non_goals still match the live ledger scope"
+        )
+
+
 def _require_usable_binary_review(rundir: Path, pr: str, review_pass: str, launch_attempt: str,
                                   allocation: dict) -> None:
     """Refuse ``reviewed`` until the allocated attempt verifies as a binary pass result.
@@ -419,6 +478,7 @@ def _require_usable_binary_review(rundir: Path, pr: str, review_pass: str, launc
             f"launch attempt {launch_attempt} cannot record reviewed without the run ledger {ledger} — "
             "a binary result must verify against this run's current review scope"
         )
+    _require_live_allocated_head(ledger, pr, launch_attempt, allocation)
     outcome, reason, report = RP.evaluate_detail(paths["progress"], allocation["head_sha"], ledger=ledger)
     if outcome != RP.OK:
         refuse(
@@ -452,6 +512,21 @@ def record_result(args) -> dict:
             args.launch_attempt,
             allocations[args.launch_attempt],
         )
+    elif args.result == HEAD_INVALIDATED:
+        ledger = rundir / "state.jsonl"
+        if not ledger.is_file():
+            refuse(
+                f"launch attempt {args.launch_attempt} cannot record head-invalidated without the run ledger "
+                f"{ledger}"
+            )
+        row = _load_live_ledger_row(ledger, args.pr)
+        if row["head_sha"] == allocations[args.launch_attempt]["head_sha"]:
+            refuse(
+                f"launch attempt {args.launch_attempt} cannot record head-invalidated: its allocated head "
+                "is still the live ledger head"
+            )
+    elif args.result == SCOPE_INVALIDATED:
+        _require_scope_invalidated(rundir, args.pr, args.review_pass, args.launch_attempt)
     stamped = datetime.now(timezone.utc).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
     record = {
         "type": ALLOCATION_RESULT,
@@ -466,18 +541,19 @@ def record_result(args) -> dict:
     return allocation_summary(allocations, results)
 
 
-def validate_prompt_profile(route: str, launch_attempt: str, prompt_profile: str) -> None:
-    """Require the one profile assigned by the runtime action/route mapping."""
+def validate_prompt_profile(review_action: str, route: str, prompt_profile: str) -> None:
+    """Require the profile assigned by the runtime action/route mapping."""
     if prompt_profile not in PROMPT_PROFILES:
         refuse(f"unknown prompt profile {prompt_profile!r}; expected one of {list(PROMPT_PROFILES)}")
-    required = (
-        "codex-recovery"
-        if route == "external-codex" and launch_attempt == "2"
-        else "standard"
-    )
+    if review_action not in REVIEW_ACTION_ROUTES:
+        refuse(f"unknown review action {review_action!r}; expected one of {list(REVIEW_ACTIONS)}")
+    routes = REVIEW_ACTION_ROUTES[review_action]
+    if route not in routes:
+        refuse(f"review action {review_action!r} requires route in {list(routes)}, not {route!r}")
+    required = "codex-recovery" if review_action == RETRY_EXTERNAL and route == "external-codex" else "standard"
     if prompt_profile != required:
         refuse(
-            f"route {route!r} launch attempt {launch_attempt} requires prompt profile "
+            f"review action {review_action!r} on route {route!r} requires prompt profile "
             f"{required!r}, not {prompt_profile!r}"
         )
 
@@ -799,7 +875,7 @@ def prepare(args) -> dict:
 
     if args.route not in ROUTE_PRODUCERS:
         refuse(f"unknown review route {args.route!r}; expected one of {list(ROUTE_PRODUCERS)}")
-    validate_prompt_profile(args.route, args.launch_attempt, args.prompt_profile)
+    validate_prompt_profile(args.review_action, args.route, args.prompt_profile)
     if args.report_producer not in REPORT_PRODUCERS:
         refuse(f"unknown report producer {args.report_producer!r}; expected one of {list(REPORT_PRODUCERS)}")
     required_producer = ROUTE_PRODUCERS[args.route]
@@ -921,6 +997,8 @@ def build_parser() -> argparse.ArgumentParser:
                                                         "asserted against the row's effective base")
     command.add_argument("--file", help="OPTIONAL ledger (state.jsonl); when given, --base is asserted "
                                         "against the selected --pr row's effective base")
+    command.add_argument("--review-action", required=True, choices=REVIEW_ACTIONS,
+                         help="ReviewAction selected by the host transition before preparation")
     command.add_argument("--route", required=True, choices=tuple(ROUTE_PRODUCERS),
                          help="route already selected by the host adapter")
     command.add_argument("--prompt-profile", required=True, choices=PROMPT_PROFILES,

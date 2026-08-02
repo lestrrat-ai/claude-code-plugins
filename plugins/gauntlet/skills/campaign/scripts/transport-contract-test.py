@@ -767,6 +767,7 @@ def check_document_contract() -> None:
         '["python3", review_dispatch_script, "prepare"',
         '"--prompt-profile", prompt_profile',
         '"--allocation-purpose", allocation_purpose',
+        '"--review-action", review_action',
         "prepared = JSON_DECODE(result.stdout)",
         "scripts/review-prompt.txt",
         "one review contract/template",
@@ -811,8 +812,10 @@ def check_document_contract() -> None:
             "reviewer retry recovered provider matching, session resume, or model switching")
     stage_flat = " ".join(stage.split())
     require('"--file", ledger_file' in stage_flat and
-            '"--prompt-profile", prompt_profile' in stage_flat,
-            "Stage 2 canonical prepare argv lost ledger or prompt-profile data")
+            '"--prompt-profile", prompt_profile' in stage_flat and
+            '"--allocation-purpose", allocation_purpose' in stage_flat and
+            '"--review-action", review_action' in stage_flat,
+            "Stage 2 canonical prepare argv lost allocation, action, ledger, or prompt-profile data")
     require("used the `codex-recovery` prompt profile" in final_report,
             "final report no longer discloses external Codex recovery-profile use")
     require('"-C", transport.review_root, "-"' in cross,

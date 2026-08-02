@@ -304,8 +304,10 @@ rules keep their own wording; these are illustrations of them, not a second copy
    the progress file and returns `amended` (fold the amendment, re-run the pass) or `incomplete`
    (relaunch), and only a binary `satisfied`/`not-satisfied` ever reaches the ledger below.
    **After a binary pass verifies `ok`, record `review-dispatch.py result --result reviewed` for its active
-   attempt before recording its verdict.** The journal preserves the reserved final review across a fresh
-   heartbeat; this completion step never infers a budget from attempt filenames.
+   attempt before recording its verdict.** If the allocation's head or dispatch-time scope is stale, this
+   refuses; settle it as `head-invalidated` or `scope-invalidated` before selecting the final retry. The
+   journal preserves the reserved final review across a fresh heartbeat; this completion step never infers
+   a budget from attempt filenames.
    **Then record the verdict with `scripts/ledger.py verdict --pr <N> --head-sha <sha> --verdict …`** — the
    ONLY sanctioned path, and the only thing that bumps `review_rounds` (Stage 2a, "Recording a verdict");
    never set `reviews_ok` by hand. It refuses unless the base-preflight `proceed` above stamped `base_ok_sha`

@@ -270,7 +270,9 @@ enforced: the progress file is a plaintext file in a directory the reviewer can 
     # It does NOT gate the tally — the tally reads the dispatch-time pass_identity binding, not this intent
 ["python3", review_dispatch_script, "prepare", "--run-dir", review_root,
  "--pr", pr, "--pass", review_pass, "--launch-attempt", launch_attempt,
+ "--allocation-purpose", allocation_purpose,
  "--worktree", worktree, "--base", base, "--file", ledger_file,
+ "--review-action", review_action,
  "--route", route, "--prompt-profile", prompt_profile,
  "--report-producer", report_producer, "--head-sha", head_sha,
  "--dispatched-at", utc_timestamp, "--default-non-goals", ledger_default_non_goals,
@@ -563,7 +565,8 @@ rule is sized for a reviewer working slowly, not one that never woke up. Gate ev
   stronger one (a planned unit `done` or an accepted amendment, ~15 min, "is it getting anywhere?").
   A `started` event is launch evidence but is **not** meaningful progress. Never collapse the two.
 - **Zero launch evidence past the deadline → the pass never started.** Do NOT wait out the 15-min stale
-  path. Kill the task, then take the exact next action and fresh attempt from `runtime-adapter.md`,
+  path. Kill the task, settle its allocation with `review-dispatch.py result --result transport-failure`,
+  then take the exact next action and fresh attempt from `runtime-adapter.md`,
   **Review preparation mapping**. `review-dispatch.py prepare` creates fresh attempt-scoped artifacts;
   anything a killed attempt later writes stays inert. The allocation journal keeps the recovery budget on
   disk, so a new agent cannot restart it from memory.

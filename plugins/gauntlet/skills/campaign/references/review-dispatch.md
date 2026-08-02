@@ -16,6 +16,7 @@ result = run_argv(
          "--pr", pr, "--pass", review_pass, "--launch-attempt", launch_attempt,
          "--allocation-purpose", allocation_purpose,
          "--worktree", worktree, "--base", base, "--file", ledger,
+         "--review-action", review_action,
          "--route", route, "--prompt-profile", prompt_profile,
          "--report-producer", report_producer,
          "--head-sha", head_sha, "--dispatched-at", dispatched_at,
@@ -31,9 +32,9 @@ transport = prepared.transport
 
 Inputs have these owners:
 
-- `route`, `prompt_profile`, `report_producer`, `launch_attempt`, and `allocation_purpose` come from `runtime-adapter.md`,
+- `review_action`, `route`, `prompt_profile`, `report_producer`, `launch_attempt`, and `allocation_purpose` come from `runtime-adapter.md`,
   **Review preparation mapping**. `prepare` never selects, probes, or changes them. It refuses an unknown
-  profile and every route/attempt/profile combination outside that mapping before writing launch artifacts.
+  profile and every action/route/profile combination outside that mapping before writing launch artifacts.
 - `review_root`, `worktree`, and `base` come from the invocation's typed `RepositoryContext` and ledger.
   `base` is **this PR row's effective base** — its explicit `base_branch`, else the legacy header fallback
   (`ledger.py`'s `effective_base`), never the one header base. It rides the typed transport as data (the
@@ -86,15 +87,16 @@ attempt's progress/findings/report paths with the active prompt.
 ```text
 python3 <skill-dir>/scripts/review-dispatch.py result \
   --run-dir <review_root> --pr <pr> --pass <review_pass> --launch-attempt <launch_attempt> \
-  --result provider-failure|transport-failure|malformed-output|incomplete-plan|amended|reviewed
+  --result provider-failure|transport-failure|malformed-output|incomplete-plan|amended|reviewed|head-invalidated|scope-invalidated
 ```
 
 `runtime-adapter.md`, **Review allocation journal**, owns which allocation is due and which outcomes leave
 the final review reserved. The journal is driver state, not reviewer evidence: do not add allocation lines
 to a progress or report artifact. `result --result reviewed` derives that allocated attempt's artifacts and
-requires its same-run `<rundir>/state.jsonl` scope check to pass, like `review-pass.py verify --ledger`.
-It refuses a missing, deferred, malformed, or otherwise unusable report, leaving the allocation unrecorded
-for the observed outcome.
+requires its allocated head and same-run `<rundir>/state.jsonl` scope check to pass, like
+`review-pass.py verify --ledger`. It refuses a missing, deferred, malformed, stale-head, stale-scope, or
+otherwise unusable report. Settle a stale head as `head-invalidated` and a stale scope as
+`scope-invalidated`; both require the matching live-ledger difference and preserve the final reserve.
 `allocation-status` renders its durable history after a dead attempt settles, for a held PR, or for a final
 report.
 
