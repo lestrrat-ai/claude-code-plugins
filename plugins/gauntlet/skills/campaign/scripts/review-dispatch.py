@@ -403,6 +403,28 @@ def allocation_summary(allocations: dict[str, dict], results: dict[str, dict], *
     return {"ordinary_limit": ORDINARY_ALLOCATION_LIMIT, "final_state": final_state, "attempts": attempts}
 
 
+def _require_usable_binary_review(rundir: Path, pr: str, review_pass: str, launch_attempt: str,
+                                  allocation: dict) -> None:
+    """Refuse ``reviewed`` until the allocated attempt verifies as a binary pass result.
+
+    The allocation journal is driver state, not review evidence.  Its ``reviewed`` outcome consumes the
+    final reserve, so it must be backed by the same active attempt that ``review-pass.py verify`` can
+    count.  Deriving the progress/report paths here prevents a caller from settling one allocation with
+    another attempt's report.
+    """
+    paths = attempt_paths(rundir, pr, review_pass, launch_attempt)
+    outcome, reason, report = RP.evaluate_detail(paths["progress"], allocation["head_sha"])
+    if outcome != RP.OK:
+        refuse(
+            f"launch attempt {launch_attempt} cannot record reviewed: review-pass verify returned "
+            f"{outcome}: {reason}"
+        )
+    if report is None or report["verdict"] not in (RP.SATISFIED, RP.NOT_SATISFIED):
+        # `evaluate_detail` currently makes this unreachable, but keep the allocation boundary explicit:
+        # a deferred result is not a verdict and must never consume the final reserve.
+        refuse(f"launch attempt {launch_attempt} cannot record reviewed without a usable binary review")
+
+
 def record_result(args) -> dict:
     rundir = Path(args.run_dir)
     _absolute_directory(rundir, "run-dir")
@@ -416,6 +438,14 @@ def record_result(args) -> dict:
         refuse(f"launch attempt {args.launch_attempt} already recorded result {results[args.launch_attempt]['result']!r}")
     if args.result not in ALLOCATION_RESULTS:
         refuse(f"--result must be one of {list(ALLOCATION_RESULTS)}, got {args.result!r}")
+    if args.result == REVIEWED:
+        _require_usable_binary_review(
+            rundir,
+            args.pr,
+            args.review_pass,
+            args.launch_attempt,
+            allocations[args.launch_attempt],
+        )
     stamped = datetime.now(timezone.utc).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
     record = {
         "type": ALLOCATION_RESULT,

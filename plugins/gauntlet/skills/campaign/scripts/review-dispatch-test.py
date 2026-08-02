@@ -163,6 +163,40 @@ def _record_result(args: SimpleNamespace, result: str) -> dict:
     ))
 
 
+def _result_refused(args: SimpleNamespace, result: str, contains: str) -> None:
+    journal = D.allocation_path(Path(args.run_dir), args.pr, args.review_pass)
+    before = journal.read_bytes()
+    try:
+        _record_result(args, result)
+    except D.Refusal as exc:
+        check(contains in str(exc), f"refusal must mention {contains!r}, got {exc!r}")
+    else:
+        check(False, f"result {result!r} should have refused: {contains}")
+    check(journal.read_bytes() == before, "a refused result must not append an allocation outcome")
+
+
+def _write_report(args: SimpleNamespace, verdict: str) -> None:
+    paths = D.attempt_paths(Path(args.run_dir), args.pr, args.review_pass, args.launch_attempt)
+    reason = "-" if verdict != D.RP.DEFERRED else "fixture deferred the review"
+    code, _out, err = capture_cli(D.RP.main, [
+        "report-write", "--file", os.fspath(paths["report"]), "--verdict", verdict,
+        "--deferred-reason", reason, "--summary", "Fixture report.",
+    ])
+    check(code == 0 and err == "", f"fixture report-write failed: code={code}, stderr={err!r}")
+
+
+def _complete_usable_binary_review(args: SimpleNamespace) -> None:
+    paths = D.attempt_paths(Path(args.run_dir), args.pr, args.review_pass, args.launch_attempt)
+    for argv in (
+        ["emit", "--file", os.fspath(paths["progress"]), "--unit", "u01", "--status", "started"],
+        ["emit", "--file", os.fspath(paths["progress"]), "--unit", "u01", "--status", "done",
+         "--evidence", "review-dispatch-test.py:1"],
+    ):
+        code, _out, err = capture_cli(D.RP.main, argv)
+        check(code == 0 and err == "", f"fixture emit failed: code={code}, stderr={err!r}")
+    _write_report(args, D.RP.SATISFIED)
+
+
 def _prepare_predecessors(args: SimpleNamespace) -> None:
     """Materialize and settle every earlier allocation before testing a later attempt."""
     target_attempt = int(args.launch_attempt)
@@ -918,6 +952,7 @@ def t_allocation_reserves_final_review_after_nonterminal_outcomes() -> None:
 
         args.launch_attempt = "6"
         D.prepare(args)
+        _complete_usable_binary_review(args)
         summary = _record_result(args, D.REVIEWED)
         check(summary["final_state"] == "consumed", f"usable final review did not consume the reserve: {summary}")
         check([(row["purpose"], row["result"]) for row in summary["attempts"]] == [
@@ -936,6 +971,7 @@ def t_allocation_reserves_final_review_after_nonterminal_outcomes() -> None:
     with tempfile.TemporaryDirectory() as raw:
         args = _fixture(Path(raw))
         D.prepare(args)
+        _complete_usable_binary_review(args)
         summary = _record_result(args, D.REVIEWED)
         check(summary["final_state"] == "consumed",
               f"an ordinary usable review did not consume the final allocation: {summary}")
@@ -947,6 +983,7 @@ def t_allocation_reserves_final_review_after_nonterminal_outcomes() -> None:
     runtime = (refs / "runtime-adapter.md").read_text(encoding="utf-8")
     stage = (refs / "stage-2-review-gate.md").read_text(encoding="utf-8")
     loop = (refs / "loop-control.md").read_text(encoding="utf-8")
+    dispatch = (refs / "review-dispatch.md").read_text(encoding="utf-8")
     check("three ordinary allocations plus one reserved final allocation" in runtime,
           "runtime owner does not reserve the final review allocation")
     check("provider-failure`, `transport-failure`, `malformed-output`, `incomplete-plan`, or `amended`" in runtime,
@@ -956,6 +993,56 @@ def t_allocation_reserves_final_review_after_nonterminal_outcomes() -> None:
     for name, text in (("Stage 2", stage), ("killed-session", loop)):
         check("Review allocation journal" in text,
               f"{name} recovery does not point to the allocation-policy owner")
+    check("result --result reviewed" in dispatch and "missing, deferred" in dispatch,
+          "review-dispatch.md does not state the reviewed-result evidence requirement")
+
+
+def t_reviewed_result_requires_usable_binary_review() -> None:
+    """`reviewed` cannot consume the reserve without a verify-countable active attempt."""
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw))
+        D.prepare(args)
+        _result_refused(args, D.REVIEWED, "review-pass verify returned unusable")
+        paths = D.attempt_paths(Path(args.run_dir), args.pr, args.review_pass, args.launch_attempt)
+        check(not paths["report"].exists(), "missing-report fixture accidentally wrote review evidence")
+
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw))
+        D.prepare(args)
+        _write_report(args, D.RP.DEFERRED)
+        paths = D.attempt_paths(Path(args.run_dir), args.pr, args.review_pass, args.launch_attempt)
+        check(D.RP.parse_report(paths["progress"])["verdict"] == D.RP.DEFERRED,
+              "deferred fixture did not reach review-pass's report reader")
+        _result_refused(args, D.REVIEWED, "review-pass verify returned incomplete")
+
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw))
+        D.prepare(args)
+        paths = D.attempt_paths(Path(args.run_dir), args.pr, args.review_pass, args.launch_attempt)
+        paths["report"].write_text('{"type":"review_report"}\n', encoding="utf-8")
+        _result_refused(args, D.REVIEWED, "review-pass verify returned unusable")
+
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw))
+        D.prepare(args)
+        _write_report(args, D.RP.SATISFIED)
+        _result_refused(args, D.REVIEWED, "review-pass verify returned incomplete")
+
+
+def t_killed_session_resume_uses_allocation_journal() -> None:
+    refs = OWNER.parent.parent / "references"
+    for name in ("loop-control.md", "stage-2-review-gate.md", "critical-rules.md"):
+        text = (refs / name).read_text(encoding="utf-8")
+        check("allocation-status" in text and "Review allocation journal" in text,
+              f"{name} does not route a dead review through durable allocation state")
+        check("--allocation-purpose final" in text,
+              f"{name} does not prepare the reserved final allocation when it is due")
+    loop = (refs / "loop-control.md").read_text(encoding="utf-8")
+    stage = (refs / "stage-2-review-gate.md").read_text(encoding="utf-8")
+    check("highest-numbered launch\nattempt's `pass_identity`" not in loop,
+          "killed-session recovery still budgets from the highest attempt identity")
+    check("`launch_attempt` **alone** through" not in stage,
+          "Stage 2 still selects a killed-session recovery from attempt number alone")
 
 
 def t_transition_actions_map_directly_to_prepare_inputs() -> None:
@@ -1213,6 +1300,10 @@ CASES = [
     ("malformed-identity-refused", "a malformed lone identity is refused, not reclaimed", t_malformed_lone_identity_is_refused_not_reclaimed),
     ("allocation-final-reserve", "nonterminal outcomes preserve one fresh final review allocation",
      t_allocation_reserves_final_review_after_nonterminal_outcomes),
+    ("reviewed-needs-binary", "reviewed refuses a missing, deferred, malformed, or incomplete review",
+     t_reviewed_result_requires_usable_binary_review),
+    ("killed-session-allocation", "killed-session recovery selects the durable due allocation",
+     t_killed_session_resume_uses_allocation_journal),
     ("transition-mapping", "review actions map directly to route, producer, and prompt profile",
      t_transition_actions_map_directly_to_prepare_inputs),
     ("unicode-delivery", "a Unicode path is delivered as UTF-8 bytes under ASCII stdout", t_unicode_worktree_delivers_under_ascii_stdout),

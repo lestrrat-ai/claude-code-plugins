@@ -87,10 +87,13 @@ rules keep their own wording; these are illustrations of them, not a second copy
    ghost gives up), and a hand-run query must ask for `--json number,labels` and match locally, the way
    `run-identity-and-lease.md`'s no-arg **discover runs** step already does. Three cases:
 
-   - **This run has live work → resume.** Resolve a dead review pass — no verdict, no live task — from its
-     highest-numbered `launch_attempt` through `runtime-adapter.md`, **Review preparation mapping**, **NOT
-     by a blind re-launch**. Why launch evidence is irrelevant on this path lives in **"Resume after a
-     killed session"** below (Stage 2a).
+   - **This run has live work → resume.** Resolve a dead review pass — no verdict, no live task — through
+     `review-dispatch.py allocation-status` before selecting a route. Use its durable attempt purposes and
+     results with `runtime-adapter.md`, **Review allocation journal**, to choose the due allocation purpose:
+     when the final allocation remains reserved and due, prepare its next attempt with
+     `--allocation-purpose final`; otherwise choose the due `initial` or `recovery` allocation. Then take
+     the route/profile branch in **Review preparation mapping**, never a blind re-launch. Why launch
+     evidence is irrelevant on this path lives in **"Resume after a killed session"** below (Stage 2a).
      **Reconcile against ground truth** — do NOT redo *completed* work; a CI task whose output file is
      missing may be re-launched, since in-flight tasks die with their session — then, for each of this
      run's branches/PRs read the live SHA, CI status, and verdict files, and refresh the ledger: write
@@ -772,11 +775,14 @@ in-flight tasks do.
 tasks die with the session, but nothing authoritative is lost. A new invocation reconciles against
 git/gh and continues — completed work is never redone (existing PRs, landed verdict files); a CI task
 whose output file is missing re-launches, and a **review** with no verdict and no live task goes through
-**Stage 2a active-attempt resolution** rather than a blind re-launch: read the highest-numbered launch
-attempt's `pass_identity` and take the exact branch in `runtime-adapter.md`, **Review preparation
-mapping**. **The relaunch budget lives on disk, not in the session**, so it survives
-the death of the agent that spent it — otherwise each new instance would rediscover a missing output
-file, relaunch the same hung reviewer, die, and repeat forever.
+**Stage 2a active-attempt resolution** rather than a blind re-launch: first run
+`review-dispatch.py allocation-status` for that pass. Read its durable purpose/result history through
+`runtime-adapter.md`, **Review allocation journal**, before selecting the route/profile branch in
+**Review preparation mapping**. When the final allocation remains reserved and is due, prepare the next
+monotonic attempt with `--allocation-purpose final`; otherwise prepare the due `initial` or `recovery`
+allocation. **The relaunch budget lives in the allocation journal, not in the session**, so it survives the
+death of the agent that spent it — otherwise each new instance would rediscover a missing output file,
+relaunch the same hung reviewer, die, and repeat forever.
 
 **Every dead pass must land on exactly one branch in Review preparation mapping.** Do NOT gate the resume
 path on launch evidence: a dead attempt that wrote a `started` line still has no process capable of

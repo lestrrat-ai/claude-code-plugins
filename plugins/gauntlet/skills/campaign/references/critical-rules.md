@@ -337,8 +337,10 @@
   check. **Meaningful progress** is the stronger bar (`done`/accepted amendment) — stale for ~15 min →
   suspicious review → retry/fallback per Stage 2a. Both bars judge a **live** process. A pass whose
   task is **dead** with no verdict (killed session) ignores launch evidence entirely and follows
-  `runtime-adapter.md`, **Review preparation mapping**, from the highest `launch_attempt`. Never invent
-  another recovery branch.
+  `review-dispatch.py allocation-status` plus `runtime-adapter.md`, **Review allocation journal**, to
+  choose its due allocation purpose before taking **Review preparation mapping**. When the final
+  allocation remains reserved and due, prepare it with `--allocation-purpose final`. Never invent another
+  recovery branch.
 - Reviewers do not own the plan but must not treat it as presumptively complete: critically evaluate
   its coverage first — its waiver rows included — and raise any plan gap via a
   `plan_amendment_request` event rather than silently reviewing only the listed units. Never rewrite

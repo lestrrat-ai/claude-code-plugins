@@ -495,9 +495,10 @@ timestamp **that PARSES as a real moment**: `2026-99-99T99:99:99Z` has the exact
 it), and the run's `default_non_goals` — the DISPATCH-TIME review scope this pass's verdict is measured
 against at tally. Four rules depend on it: a late verdict is ignored unless its attempt
 id still matches the active pass; `dispatched_at` is the clock the launch check below measures against;
-`launch_attempt` is how a *later heartbeat* — possibly a fresh agent — knows which recovery branch
-this pass has already consumed: the highest `launch_attempt` records how far it has walked the
-`runtime-adapter.md`, **Review preparation mapping** budget; and `verify --ledger` compares the bound
+`launch_attempt` identifies the active artifact attempt for a *later heartbeat* — possibly a fresh
+agent. The heartbeat reads `review-dispatch.py allocation-status` and the
+`runtime-adapter.md`, **Review allocation journal**, to learn which allocation purpose remains due; and
+`verify --ledger` compares the bound
 `default_non_goals` to the run's live defaults at tally (`check_scope`), voiding a verdict earned under a
 scope the operator has since moved. A progress file holding **only** this line is
 therefore evidence that the reviewer has produced nothing — not evidence of a missing file.
@@ -563,15 +564,16 @@ rule is sized for a reviewer working slowly, not one that never woke up. Gate ev
 - **Zero launch evidence past the deadline → the pass never started.** Do NOT wait out the 15-min stale
   path. Kill the task, then take the exact next action and fresh attempt from `runtime-adapter.md`,
   **Review preparation mapping**. `review-dispatch.py prepare` creates fresh attempt-scoped artifacts;
-  anything a killed attempt later writes stays inert. The highest-numbered `pass_identity` keeps the
-  recovery budget on disk, so a new agent cannot restart it from memory.
+  anything a killed attempt later writes stays inert. The allocation journal keeps the recovery budget on
+  disk, so a new agent cannot restart it from memory.
 - **This deadline test applies ONLY to a pass whose process is still alive.** It asks "this thing is
   running — has it started?", and launch evidence is the answer. A pass whose task is **gone** (the
   session died with it) is a different question entirely, and launch evidence is **irrelevant** to it:
   a dead process will never produce a verdict no matter what it wrote before dying. Dispatch on
-  `launch_attempt` **alone** through `runtime-adapter.md`, **Review preparation mapping** (Loop control,
-  "Resume after a killed session"). Every dead pass lands on exactly one mapping branch; launch evidence
-  never suppresses it.
+  `review-dispatch.py allocation-status` and `runtime-adapter.md`, **Review allocation journal**, before
+  taking **Review preparation mapping** (Loop control, "Resume after a killed session"). When the final
+  allocation is reserved and due, prepare it with `--allocation-purpose final`. Every dead pass lands on
+  exactly one mapping branch; launch evidence never suppresses it.
 - Before re-dispatching, **re-check the command** for the known launch faults — most of all the quoted
   prompt-file stdin redirect on every external reviewer (`review-dispatch.md`), and the external reviewer's
   `-C` target, which must be the run-artifact root (a `-C` off that root makes the run directory read-only
