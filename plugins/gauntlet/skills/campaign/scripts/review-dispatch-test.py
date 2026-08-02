@@ -474,6 +474,7 @@ def t_prompt_profiles_are_typed_and_action_scoped() -> None:
 
     refused = (
         ("launch-external", "external-codex", "1", "initial", "codex-recovery", "standard"),
+        ("launch-external", "external-codex", "2", "final", "codex-recovery", "standard"),
         ("retry-external", "external-codex", "2", "recovery", "standard", "codex-recovery"),
         ("retry-external", "external-claude", "2", "recovery", "codex-recovery", "standard"),
         ("launch-native", "native", "3", "recovery", "codex-recovery", "standard"),
@@ -492,9 +493,11 @@ def t_prompt_profiles_are_typed_and_action_scoped() -> None:
                 producer=producer,
                 prompt_profile=profile,
             )
+            _prepare_predecessors(args)
+            args.allocation_purpose = purpose
             _refused(args, expected)
-            rundir = Path(args.run_dir)
-            check(_default_launch_artifacts_absent(rundir),
+            paths = D.attempt_paths(Path(args.run_dir), args.pr, args.review_pass, args.launch_attempt)
+            check(not paths["prompt"].exists() and not paths["progress"].exists(),
                   f"{route} attempt {launch_attempt} invalid profile created launch artifacts")
 
 
@@ -964,14 +967,28 @@ def t_allocation_reserves_final_review_after_nonterminal_outcomes() -> None:
 
         args.launch_attempt = "4"
         args.allocation_purpose = "final"
-        D.prepare(args)
-        _record_result(args, D.MALFORMED_OUTPUT)
+        args.route = "external-codex"
+        args.review_action = "launch-external"
+        args.prompt_profile = "standard"
+        transport = D.prepare(args)["transport"]
+        check(transport["prompt_profile"] == "standard",
+              "a final external-Codex launch must use the launch-external standard profile")
+        _record_result(args, D.PROVIDER_FAILURE)
 
         args.launch_attempt = "5"
-        D.prepare(args)
+        args.review_action = "retry-external"
+        args.prompt_profile = "codex-recovery"
+        transport = D.prepare(args)["transport"]
+        check(transport["prompt_profile"] == "codex-recovery",
+              "a final external-Codex retry must use the retry-external recovery profile")
+        check(Path(transport["prompt_path"]).read_bytes().startswith(D.CODEX_RECOVERY_PREAMBLE),
+              "a final external-Codex retry lost its recovery framing")
         _record_result(args, D.INCOMPLETE_PLAN)
 
         args.launch_attempt = "6"
+        args.route = "native"
+        args.review_action = "fallback-native"
+        args.prompt_profile = "standard"
         D.prepare(args)
         _complete_usable_binary_review(args)
         summary = _record_result(args, D.REVIEWED)
@@ -980,7 +997,7 @@ def t_allocation_reserves_final_review_after_nonterminal_outcomes() -> None:
             ("initial", D.PROVIDER_FAILURE),
             ("recovery", D.TRANSPORT_FAILURE),
             ("recovery", D.AMENDED),
-            ("final", D.MALFORMED_OUTPUT),
+            ("final", D.PROVIDER_FAILURE),
             ("final", D.INCOMPLETE_PLAN),
             ("final", D.REVIEWED),
         ], f"allocation journal lost a purpose/result: {summary}")

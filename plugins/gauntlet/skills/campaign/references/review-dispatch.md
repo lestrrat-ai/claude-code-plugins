@@ -110,8 +110,9 @@ or substitute record fields into shell source.
 
 **Keep one review contract/template for both prompt profiles.** `standard` binds the template directly.
 `codex-recovery` adds the binder-owned repository-maintenance preamble before the same complete template;
-it is valid only for external Codex attempt `2`. The preamble states the concrete local goal through the
-bound Intent and asks for proof from the local diff, repository tests, and fixtures. It never changes,
+it is valid only for `retry-external` on `external-codex`; every other `ReviewAction` uses `standard`.
+The preamble states the concrete local goal through the bound Intent and asks for proof from the local diff,
+repository tests, and fixtures. It never changes,
 shortens, or duplicates the template, and it never asks the reviewer to contact a third-party system.
 
 The shared prompt tells every route to review the whole `origin/<base>...HEAD` diff against the intent and plan,

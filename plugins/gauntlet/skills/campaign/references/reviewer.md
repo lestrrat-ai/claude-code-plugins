@@ -136,11 +136,12 @@ like an external pass. The runtime owner defines allocation, native limitations,
 machine-blocker transition; do not restate them here.
 
 **Prepare every retry from `runtime-adapter.md`, "Review preparation mapping".** The transition does not
-inspect provider error text: it assigns `codex-recovery` to the existing external Codex attempt `2` and
-`standard` to every other route. The retry always starts a fresh process and never resumes the failed
-external session. The profile changes only the opening framing, does not require a model switch, and
-keeps the complete shared prompt contract, allocation journal, producer, and canonical argv. The shipped
-adapter has no trusted alternate-model mapping, so it passes no model-selection argument.
+inspect provider error text: it assigns `codex-recovery` only to `retry-external` on `external-codex`, at
+every launch attempt, and assigns `standard` to every other `ReviewAction`. The retry always starts a
+fresh process and never resumes the failed external session. The profile changes only the opening framing,
+does not require a model switch, and keeps the complete shared prompt contract, allocation journal,
+producer, and canonical argv. The shipped adapter has no trusted alternate-model mapping, so it passes no
+model-selection argument.
 
 A reviewer that **never starts** is a distinct failure — it produces not even a partial result — and
 has its own guard: the Stage 2a **launch check** kills any pass that has written **no launch evidence**
