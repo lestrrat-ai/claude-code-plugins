@@ -51,7 +51,7 @@ def _write_inputs(rundir: Path, pr: str = "41", review_pass: str = "2", intent: 
 
 
 def _write_landed_pass(rundir: Path, pr: str, review_pass: str, head_sha: str,
-                        *, verdict: str = "satisfied") -> None:
+                        *, verdict: str = "satisfied", ruled_amendment: bool = False) -> None:
     """Write one completed active attempt through the artifact shapes `prepare` must validate later."""
     _write_inputs(rundir, pr, review_pass)
     paths = D.attempt_paths(rundir, pr, review_pass, "1")
@@ -62,6 +62,19 @@ def _write_landed_pass(rundir: Path, pr: str, review_pass: str, head_sha: str,
         {"type": D.RP.PROGRESS, "unit": "u01", "status": D.RP.DONE,
          "evidence": "Reviewed src/review.py."},
     ]
+    if ruled_amendment:
+        progress.append({
+            "type": D.RP.AMENDMENT,
+            "ts": STAMP,
+            "reason": "Cover generated documentation.",
+            "proposed_unit": {
+                "type": "unit",
+                "id": "u02",
+                "kind": "docs",
+                "target": "docs/generated.md",
+                "checks": ["matches the reviewed behavior"],
+            },
+        })
     paths["progress"].write_text(
         "\n".join(json.dumps(record, separators=(",", ":")) for record in progress) + "\n",
         encoding="utf-8",
@@ -177,6 +190,26 @@ def t_contiguous_history_accepts_prior_heads_after_repair() -> None:
         payload = D.prepare(args)
         check(payload["transport"]["attempt"]["pass"] == 3,
               "contiguous historical evidence on prior heads must allow the later pass")
+
+
+def t_contiguous_history_accepts_prior_ruled_amendments() -> None:
+    """A terminal report proves every amendment in each historical active artifact was ruled."""
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw), review_pass="3", seed_history=False)
+        rundir = Path(args.run_dir)
+        _write_landed_pass(rundir, "41", "1", HISTORICAL_SHA, ruled_amendment=True)
+        _write_landed_pass(rundir, "41", "2", "c" * 40, ruled_amendment=True)
+        for number in ("1", "2"):
+            progress = D.attempt_paths(rundir, "41", number, "1")["progress"]
+            events = D.RP.parse_lines(progress.read_text(encoding="utf-8"), progress.name)
+            identity = D.RP.check_identity(events, "41", number, "1")
+            ruled = sum(event["type"] == D.RP.AMENDMENT for event in events)
+            outcome, _, report = D.RP.evaluate_detail(progress, identity["head_sha"], ruled)
+            check(outcome == D.RP.OK and report is not None and report["verdict"] == D.RP.SATISFIED,
+                  f"pass {number} must be valid after its amendment ruling")
+        payload = D.prepare(args)
+        check(payload["transport"]["attempt"]["pass"] == 3,
+              "later preparation must accept every prior pass whose amendments were ruled")
 
 
 def t_nonbinary_historical_verdict_refuses_later_dispatch() -> None:
@@ -1007,6 +1040,8 @@ CASES = [
      t_missing_historical_pass_refuses_later_dispatch),
     ("history-prior-head", "contiguous history validates each prior pass against its recorded head",
      t_contiguous_history_accepts_prior_heads_after_repair),
+    ("history-ruled-amendments", "contiguous history accepts prior terminal amendment rulings",
+     t_contiguous_history_accepts_prior_ruled_amendments),
     ("history-binary-verdict", "a prior deferred result refuses later review preparation",
      t_nonbinary_historical_verdict_refuses_later_dispatch),
     ("attempt-one", "prepare materializes one coherent attempt-1 record", t_prepare_attempt_one_materializes_one_record),

@@ -197,8 +197,11 @@ continuation influenced by the first.
 terminal evidence.** For each earlier pass, it reads only the active highest-attempt artifact, validates the
 artifact contract against that pass's immutable `pass_identity.head_sha`, and requires one binary report
 verdict: `satisfied` or `not-satisfied`. A repair normally moves the current PR head, so NEVER compare an
-older pass to the head for the launch being prepared. Missing artifacts, malformed evidence, incomplete
-passes, and `deferred` reports block preparation before it writes the later pass's prompt or identity.
+older pass to the head for the launch being prepared. A terminal binary report is durable evidence that the
+orchestrator ruled every amendment in that active artifact, so history validation supplies its exact amendment
+count to `review-pass.py`; the live-read default of zero does not apply to settled history. Missing artifacts,
+malformed evidence, incomplete passes, and `deferred` reports block preparation before it writes the later
+pass's prompt or identity.
 
 #### Kill doomed passes — don't let them finish
 
