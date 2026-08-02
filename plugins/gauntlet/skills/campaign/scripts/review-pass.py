@@ -1382,10 +1382,11 @@ def check_historical_findings_file(text: str, path: Path) -> "list[dict]":
     """
     findings_name(path)
     records = parse_lines(text, path.name)
-    historical_purposes = [
-        rec.get("purpose") for rec in records
-        if isinstance(rec.get("purpose"), str) and rec.get("purpose") != NO_PURPOSE
-    ]
+    historical_purposes: list[str] = []
+    for rec in records:
+        purpose = rec.get("purpose")
+        if isinstance(purpose, str) and purpose != NO_PURPOSE:
+            historical_purposes.append(purpose)
     for n, rec in enumerate(records, start=1):
         check_finding(rec, f"{path.name} line {n}", historical_purposes)
     return records
