@@ -965,7 +965,14 @@ def t_allocation_reserves_final_review_after_nonterminal_outcomes() -> None:
               "native fallback did not receive fresh attempt-3 artifacts")
         _record_result(args, D.AMENDED)
 
+        _path, _text, _records, allocations, results = D.load_allocations(
+            Path(args.run_dir), args.pr, args.review_pass)
+        check(D.allocation_summary(allocations, results)["final_state"] == "reserved",
+              "an amended plan did not retain the final review reservation")
         args.launch_attempt = "4"
+        args.allocation_purpose = "recovery"
+        _refused(args, "amended plan at allocation attempt 3 requires the reserved final review")
+
         args.allocation_purpose = "final"
         args.route = "external-codex"
         args.review_action = "launch-external"

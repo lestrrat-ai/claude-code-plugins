@@ -364,6 +364,14 @@ def _ensure_allocation_available(allocations: dict[str, dict], results: dict[str
     if any(result["result"] == REVIEWED for result in results.values()):
         refuse("this pass already has a usable binary review result; do not allocate another review")
     final_attempts = [record for record in allocations.values() if record["purpose"] == FINAL_ALLOCATION]
+    amended_attempts = [
+        attempt for attempt, result in results.items() if result["result"] == AMENDED
+    ]
+    if amended_attempts and not final_attempts and purpose != FINAL_ALLOCATION:
+        refuse(
+            f"amended plan at allocation attempt {amended_attempts[-1]} requires the reserved final review; "
+            "prepare that final allocation before ordinary recovery work"
+        )
     if purpose == FINAL_ALLOCATION:
         if final_attempts:
             last = final_attempts[-1]

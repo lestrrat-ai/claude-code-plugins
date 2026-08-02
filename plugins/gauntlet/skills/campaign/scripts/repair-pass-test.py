@@ -723,10 +723,13 @@ def t_bundle_refuses_unreconcilable_pass_histories(tmp: Path) -> None:
     code, _, err = run_bundle(last, last["rundir"] / "bundle.txt")
     check(code == 1 and "latest artifact pass" in err,
           f"a verdictless latest pass was not refused: {err!r}")
-    check("relaunch pass 4" in err,
-          f"the verdictless-latest refusal names no recovery action: {err!r}")
-    check("park the PR for the user" in err,
-          f"the verdictless-latest refusal names no park fallback: {err!r}")
+    for needle in ("review-dispatch.py result", "allocation-status", "--allocation-purpose", "relaunch pass 4",
+                   "park the PR for the user"):
+        check(needle in err, f"the verdictless-latest refusal omits {needle!r}: {err!r}")
+    check(err.index("review-dispatch.py result") < err.index("allocation-status") <
+          err.index("--allocation-purpose") < err.index("relaunch pass 4") <
+          err.index("park the PR for the user"),
+          f"the verdictless-latest recovery does not settle before choosing or relaunching: {err!r}")
 
     # A verdictless LATEST pass at attempt 3 can still use the separately reserved final allocation. The
     # repair bundle cannot infer that from the filename, so its refusal must direct the driver to the
@@ -775,8 +778,26 @@ def t_bundle_refuses_unreconcilable_pass_histories(tmp: Path) -> None:
     reledger(torn, "3")
     code, _, err = run_bundle(torn, torn["rundir"] / "bundle.txt")
     check(code == 1 and "cannot arbitrate" in err, f"a torn surplus report was not refused: {err!r}")
-    check("relaunch pass 2" in err,
-          f"the unparseable-surplus refusal names no recovery action: {err!r}")
+    for needle in ("review-dispatch.py result", "allocation-status", "--allocation-purpose", "relaunch pass 2",
+                   "park only when the final reservation is consumed"):
+        check(needle in err, f"the unparseable-surplus refusal omits {needle!r}: {err!r}")
+    check(err.index("review-dispatch.py result") < err.index("allocation-status") <
+          err.index("--allocation-purpose") < err.index("relaunch pass 2") <
+          err.index("park only when the final reservation is consumed"),
+          f"the unparseable-surplus recovery does not settle before choosing or relaunching: {err!r}")
+
+
+def t_readme_settles_dead_reviews_before_relaunch(tmp: Path) -> None:
+    """The README summary keeps the allocation-journal recovery sequence intact."""
+    del tmp
+    readme = OWNER.parent.parent / "README.md"
+    text = readme.read_text(encoding="utf-8")
+    section = text[text.index("A reviewer that never gets going"):text.index("- It works through GitHub PRs")]
+    for needle in ("transport-failure", "allocation-status", "--allocation-purpose", "relaunch"):
+        check(needle in section, f"README recovery summary omits {needle!r}")
+    check(section.index("transport-failure") < section.index("allocation-status") <
+          section.index("--allocation-purpose") < section.index("relaunch"),
+          "README relaunches a dead reviewer before settlement selects its due allocation")
 
 
 def t_unreconcilable_history_park_is_documented_at_each_boundary(tmp: Path) -> None:
@@ -1712,6 +1733,7 @@ CASES = [
     ("bundle-order-active", "bundle orders rounds numerically and selects only the active relaunch", t_bundle_orders_rounds_and_selects_active_attempt),
     ("bundle-skips-deferred-pass", "a verdictless (DEFERRED) surplus pass is excluded, listed, and never wedges", t_bundle_skips_an_explicitly_deferred_pass),
     ("bundle-pass-history-refusals", "every other pass-numbering drift is refused with the mismatch and recovery named", t_bundle_refuses_unreconcilable_pass_histories),
+    ("readme-dead-review-recovery", "README settles a dead review before choosing its relaunch", t_readme_settles_dead_reviews_before_relaunch),
     ("unreconcilable-history-park-docs", "the cap, ledger, and bailout guidance retain the machine-blocker park", t_unreconcilable_history_park_is_documented_at_each_boundary),
     ("bundle-deterministic", "bundle bytes/hash are deterministic and hostile payloads stay data", t_bundle_is_deterministic_and_payloads_are_data),
     ("bundle-refusals", "missing, stale, and duplicate active inputs fail before output", t_bundle_refuses_missing_stale_and_duplicate_inputs),

@@ -388,9 +388,10 @@ def select_active_rounds(rundir: Path, pr: str,
         except RP.Defect as exc:
             fail(f"pr {pr} has {len(actual)} artifact passes but the ledger counts only {expected_rounds} "
                  f"landed rounds, and pass {round_no}'s active report cannot arbitrate the surplus: {exc}; "
-                 f"relaunch pass {round_no} as its next launch attempt so a parseable report can "
-                 f"arbitrate. Record the result and inspect review-dispatch.py allocation-status before "
-                 f"parking: its final reservation, not this filename, decides whether a fresh review remains")
+                 f"record pass {round_no}'s observed non-binary result through review-dispatch.py result, then "
+                 f"inspect review-dispatch.py allocation-status and runtime-adapter.md, Review allocation "
+                 f"journal, to choose its due --allocation-purpose (including final). Only then relaunch pass "
+                 f"{round_no} as its next launch attempt, or park only when the final reservation is consumed")
         if result["verdict"] == RP.DEFERRED:
             verdictless.append({"round": round_no, "launch_attempt": attempt_no,
                                 "deferred_reason": result["deferred_reason"]})
@@ -403,9 +404,11 @@ def select_active_rounds(rundir: Path, pr: str,
              f"(machine blocker), never hand-edit the ledger or artifacts")
     if actual[-1] not in landed:
         fail(f"pr {pr}'s latest artifact pass {actual[-1]} is verdictless (DEFERRED) — a repair cap trips "
-             f"only on a landed NOT SATISFIED, so the latest pass must be a landed round; relaunch pass "
-             f"{actual[-1]} as its next launch attempt instead of bundling, or park the PR for the user "
-             f"only when review-dispatch.py allocation-status reports its final reservation consumed")
+             f"only on a landed NOT SATISFIED, so the latest pass must be a landed round; record its observed "
+             f"non-binary result through review-dispatch.py result, then inspect review-dispatch.py "
+             f"allocation-status and runtime-adapter.md, Review allocation journal, to choose its due "
+             f"--allocation-purpose (including final). Only then relaunch pass {actual[-1]} as its next launch "
+             f"attempt, or park the PR for the user only when the final reservation is consumed")
     return ([(round_no, *active[round_no]) for round_no in landed], verdictless)
 
 
