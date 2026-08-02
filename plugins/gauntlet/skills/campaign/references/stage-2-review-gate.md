@@ -197,13 +197,14 @@ continuation influenced by the first.
 terminal evidence.** For each earlier pass, it reads only the active highest-attempt artifact, validates the
 artifact contract against that pass's immutable `pass_identity.head_sha`, and requires one binary report
 verdict: `satisfied` or `not-satisfied`. A repair normally moves the current PR head, so NEVER compare an
-older pass to the head for the launch being prepared. A terminal binary report is durable evidence that the
-orchestrator ruled every amendment in that active artifact, so history validation supplies its exact amendment
-count to `review-pass.py`; the live-read default of zero does not apply to settled history. Missing artifacts,
-malformed evidence, incomplete passes, and `deferred` reports block preparation before it writes the later
-pass's prompt or identity. `review-pass.py`'s history reader still validates each findings artifact's name,
-JSONL, and non-anchor fields, but it NEVER re-anchors a landed finding's `purpose` to the mutable current
-intent: a sanctioned REPAIR-INTENT may have dropped that old purpose after the earlier pass landed.
+older pass to the head for the launch being prepared. A prior amendment can count only when a durable
+orchestrator ruling count proves it was ruled. A terminal binary report does not provide that count, and the
+history artifacts record none, so history uses `review-pass.py`'s zero default. An earlier artifact with an
+amendment blocks preparation. Missing artifacts, malformed evidence, incomplete passes, and `deferred`
+reports block preparation before it writes the later pass's prompt or identity. `review-pass.py`'s history
+reader still validates each findings artifact's name, JSONL, and non-anchor fields, but it NEVER re-anchors
+a landed finding's `purpose` to the mutable current intent: a sanctioned REPAIR-INTENT may have dropped
+that old purpose after the earlier pass landed.
 
 #### Kill doomed passes — don't let them finish
 

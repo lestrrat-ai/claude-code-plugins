@@ -122,18 +122,13 @@ def _reject_overlapping_dirs(rundir: Path, worktree: Path) -> None:
         )
 
 
-def _recorded_history(progress: Path) -> "tuple[str, int]":
-    """Read one active attempt's immutable head and its terminal amendment ruling count.
-
-    A binary report is durable evidence that the orchestrator ruled every amendment the active artifact
-    records. Historical validation therefore supplies that exact count rather than the live-read default
-    of zero, which only applies before an operator has ruled an in-flight pass.
-    """
+def _recorded_head(progress: Path) -> str:
+    """Read one active attempt's validated, immutable review head."""
     pr, review_pass, launch_attempt = RP.parse_name(progress)
     events = RP.parse_lines(RP.read_text(progress, "historical progress file"), progress.name)
     RP.check_events(events, progress.name)
     identity = RP.check_identity(events, pr, review_pass, launch_attempt)
-    return identity["head_sha"], sum(1 for event in events if event["type"] == RP.AMENDMENT)
+    return identity["head_sha"]
 
 
 def require_contiguous_history(rundir: Path, pr: str, review_pass: str) -> None:
@@ -163,8 +158,9 @@ def require_contiguous_history(rundir: Path, pr: str, review_pass: str) -> None:
                 f"{review_pass} — recover or restart the missing pass before dispatching later review work"
             )
         try:
-            recorded_head, ruled_amendments = _recorded_history(progress)
-            outcome, reason, report = RP.evaluate_historical_detail(progress, recorded_head, ruled_amendments)
+            recorded_head = _recorded_head(progress)
+            # A terminal report records the reviewer verdict, not a durable orchestrator ruling count.
+            outcome, reason, report = RP.evaluate_historical_detail(progress, recorded_head)
         except (OSError, RP.Defect) as exc:
             refuse(
                 f"review history for pr {pr} pass {number} is invalid: {exc} — recover or restart that "
