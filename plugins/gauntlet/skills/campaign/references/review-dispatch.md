@@ -14,6 +14,7 @@ result = run_argv(
   argv: ["python3", review_dispatch_script, "prepare",
          "--run-dir", review_root,
          "--pr", pr, "--pass", review_pass, "--launch-attempt", launch_attempt,
+         "--allocation-purpose", allocation_purpose,
          "--worktree", worktree, "--base", base, "--file", ledger,
          "--route", route, "--prompt-profile", prompt_profile,
          "--report-producer", report_producer,
@@ -30,7 +31,7 @@ transport = prepared.transport
 
 Inputs have these owners:
 
-- `route`, `prompt_profile`, `report_producer`, and `launch_attempt` come from `runtime-adapter.md`,
+- `route`, `prompt_profile`, `report_producer`, `launch_attempt`, and `allocation_purpose` come from `runtime-adapter.md`,
   **Review preparation mapping**. `prepare` never selects, probes, or changes them. It refuses an unknown
   profile and every route/attempt/profile combination outside that mapping before writing launch artifacts.
 - `review_root`, `worktree`, and `base` come from the invocation's typed `RepositoryContext` and ledger.
@@ -76,6 +77,22 @@ never delete it. A non-zero exit prepares nothing usable; do not launch.
 `transport` is per-attempt: attempt 1 uses `review-<pr>-<n>.*`; attempt `k >= 2` uses
 `review-<pr>-<n>.a<k>.*`. The command derives the complete set once, so a relaunch cannot mix a dead
 attempt's progress/findings/report paths with the active prompt.
+
+### Record allocation outcomes
+
+**Settle the prepared launch through `review-dispatch.py result` before preparing another.** Pass the same
+`--run-dir`, `--pr`, `--pass`, and `--launch-attempt`, plus the result the heartbeat observed:
+
+```text
+python3 <skill-dir>/scripts/review-dispatch.py result \
+  --run-dir <review_root> --pr <pr> --pass <review_pass> --launch-attempt <launch_attempt> \
+  --result provider-failure|transport-failure|malformed-output|incomplete-plan|amended|reviewed
+```
+
+`runtime-adapter.md`, **Review allocation journal**, owns which allocation is due and which outcomes leave
+the final review reserved. The journal is driver state, not reviewer evidence: do not add allocation lines
+to a progress or report artifact. `allocation-status` renders its durable history for a held PR or final
+report.
 
 ### Prompt bytes have one owner
 

@@ -299,6 +299,8 @@ rules keep their own wording; these are illustrations of them, not a second copy
    not a verdict, so it is never tallied — the tool routes on
    the progress file and returns `amended` (fold the amendment, re-run the pass) or `incomplete`
    (relaunch), and only a binary `satisfied`/`not-satisfied` ever reaches the ledger below.
+   **Record the observed route or artifact outcome through `runtime-adapter.md`, "Review allocation journal", before preparing that relaunch.** The journal preserves the reserved final review across a
+   fresh heartbeat; this completion step never infers a budget from attempt filenames.
    **Then record the verdict with `scripts/ledger.py verdict --pr <N> --head-sha <sha> --verdict …`** — the
    ONLY sanctioned path, and the only thing that bumps `review_rounds` (Stage 2a, "Recording a verdict");
    never set `reviews_ok` by hand. It refuses unless the base-preflight `proceed` above stamped `base_ok_sha`

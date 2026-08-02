@@ -218,8 +218,8 @@ a late SATISFIED verdict — planned at the now-too-shallow depth — would refi
 against the deeper tier; stop that pass too (`loop-control.md` re-triage step). The freed slot
 immediately refills with the next due review (Loop control step 3).
 
-Route every selected reviewer through `runtime-adapter.md`'s capability/transition owner and
-`reviewer.md`'s retry budget. Any resulting native-worker pass receives this same complete review
+Route every selected reviewer through `runtime-adapter.md`'s capability/transition owner and **Review
+allocation journal**. Any resulting native-worker pass receives this same complete review
 contract and counts toward the gate exactly like an external pass; when native workers are already the
 selected reviewer, that is the normal path rather than a fallback. Do not restate transport properties
 or park conditions here.
@@ -591,7 +591,7 @@ events and vague "still working" lines prove only process liveness and MUST NOT 
 progress timer. The reviewer MUST append progress events immediately as units complete, not batch them
 at final output. If no meaningful progress lands for ~15 min while the review process is still alive,
 mark the review suspicious; if it remains stale on the next heartbeat, treat it as a reviewer system
-failure: apply `reviewer.md`'s retry budget and `runtime-adapter.md`'s owned transition. Ignore any
+failure: apply `runtime-adapter.md`, **Review allocation journal**, and its owned transition. Ignore any
 late verdict from a stale/superseded attempt unless its attempt id still matches the active review pass.
 
 #### A finer liveness signal — the reviewer's OUTPUT STREAM
@@ -618,9 +618,9 @@ stream written within the quiet window (`alive`) means the process is emitting, 
 false stall while the progress file is merely coarse-stale; a stream unwritten past the window (`quiet`),
 **and an `absent` stream, corroborate a hang ONLY AFTER launch evidence exists** — the reviewer wrote at
 least one line after `pass_identity` (a `started` event or an amendment) and then went quiet —
-in which case apply `reviewer.md`'s retry budget without waiting the full meaningful-progress cap.
+in which case apply `runtime-adapter.md`, **Review allocation journal**, without waiting the full meaningful-progress cap.
 **BEFORE launch evidence, a `quiet`/`absent` stream is NOT a hang signal:** the launch-evidence gate (the
-Stage 2a launch deadline, above) still owns that window, and triggering the retry budget there would kill a
+Stage 2a launch deadline, above) still owns that window, and triggering allocation recovery there would kill a
 healthy warming-up reviewer or pre-empt the launch-evidence recovery. **This is process liveness, NOT
 meaningful progress** — exactly like the `started`/"still working"
 lines above, a growing stream **MUST NOT reset the meaningful-progress timer**: a reviewer that streams
@@ -866,6 +866,9 @@ nothing left for the read side to be lenient about. Every rule that DOES gate �
 nothing outstanding returns `unusable` because the deferral points at nothing. None of these routes opens
 a NEW pass: a deferral spends no pass number, so any relaunch keeps the same pass and takes its next
 launch attempt (`runtime-adapter.md`, "Review preparation mapping").
+
+**Record this attempt before selecting its relaunch through `runtime-adapter.md`, "Review allocation journal".** The journal owns which outcome preserves the final review reserve; this gate owns only the
+artifact result that names the outcome.
 
 **AN UNWRITABLE RUN DIRECTORY PRODUCES NO REPORT AT ALL, SO THERE IS NO DEFERRAL TO ROUTE.** The report is
 written through a door under the SAME root every other artifact is, so a reviewer whose emits fail cannot

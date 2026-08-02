@@ -17,9 +17,11 @@ import os
 import re
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, NoReturn
 
+from _gauntlet.atomic import replace_text
 from _gauntlet.modules import load_module_from_path, load_sibling
 from _gauntlet.testing import run_sibling_suite
 
@@ -47,6 +49,33 @@ ROUTE_PRODUCERS = {
 }
 REPORT_PRODUCERS = tuple(sorted(set(ROUTE_PRODUCERS.values())))
 PROMPT_PROFILES = ("standard", "codex-recovery")
+INITIAL_ALLOCATION = "initial"
+RECOVERY_ALLOCATION = "recovery"
+FINAL_ALLOCATION = "final"
+ALLOCATION_PURPOSES = (INITIAL_ALLOCATION, RECOVERY_ALLOCATION, FINAL_ALLOCATION)
+
+# A review pass keeps three bounded launch allocations for the ordinary route-recovery sequence.  The
+# final allocation is separate: it is the independent review owed after a plan repair/amendment, and a
+# provider/transport/artifact failure must never silently spend it.  Its retries receive new attempt
+# artifacts but retain this one reservation until a usable binary review lands.
+ORDINARY_ALLOCATION_LIMIT = 3
+ALLOCATION = "review_allocation"
+ALLOCATION_RESULT = "review_allocation_result"
+PROVIDER_FAILURE = "provider-failure"
+TRANSPORT_FAILURE = "transport-failure"
+MALFORMED_OUTPUT = "malformed-output"
+INCOMPLETE_PLAN = "incomplete-plan"
+AMENDED = "amended"
+REVIEWED = "reviewed"
+ALLOCATION_RESULTS = (
+    PROVIDER_FAILURE,
+    TRANSPORT_FAILURE,
+    MALFORMED_OUTPUT,
+    INCOMPLETE_PLAN,
+    AMENDED,
+    REVIEWED,
+)
+FINAL_RETRYABLE_RESULTS = frozenset(ALLOCATION_RESULTS) - {REVIEWED}
 CODEX_RECOVERY_PREAMBLE = (
     b"REPOSITORY MAINTENANCE REVIEW RETRY\n"
     b"Review this local repository maintenance change. The concrete local goal is to decide whether "
@@ -195,6 +224,210 @@ def attempt_paths(rundir: Path, pr: str, review_pass: str, launch_attempt: str) 
         "report": rundir / f"{attempt_stem}{RP.REPORT_SUFFIX}",
         "intent": rundir / f"intent-{pr}.md",
     }
+
+
+def allocation_path(rundir: Path, pr: str, review_pass: str) -> Path:
+    """The per-pass allocation journal, distinct from reviewer-owned gate artifacts."""
+    _validate_id("pr", pr)
+    _validate_id("pass", review_pass)
+    return rundir / f"review-{pr}-{review_pass}.allocation.jsonl"
+
+
+def _strict_records(path: Path) -> tuple[str, list[dict]]:
+    """Read a journal as strict JSONL without making reviewer artifacts accept new records."""
+    if not os.path.lexists(os.fspath(path)):
+        return "", []
+    if path.is_symlink() or not path.is_file():
+        refuse(f"allocation journal must be a regular file: {path}")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        refuse(f"cannot read allocation journal {path}: {exc}")
+    if not text:
+        refuse(f"allocation journal {path} is empty — a durable journal cannot have no record")
+    try:
+        records = RP.parse_lines(text, path.name)
+    except RP.Defect as exc:
+        refuse(f"allocation journal {path} is malformed: {exc}")
+    return text, records
+
+
+def _check_allocation_time(value: object, where: str) -> None:
+    if not isinstance(value, str) or not RP.TS_RE.match(value) or not RP.real_utc(value):
+        refuse(f"{where} must be a real UTC ISO-8601 timestamp, got {value!r}")
+
+
+def _check_allocation_record(record: dict, where: str, pr: str, review_pass: str) -> None:
+    if record.get("type") != ALLOCATION:
+        refuse(f"{where} must be a {ALLOCATION!r} record, got {record.get('type')!r}")
+    keys = {"type", "pr", "pass", "launch_attempt", "head_sha", "dispatched_at", "purpose"}
+    if set(record) != keys:
+        refuse(f"{where} must carry exactly {sorted(keys)}, got {sorted(record)}")
+    for field in ("pr", "pass", "launch_attempt", "head_sha", "dispatched_at", "purpose"):
+        if not isinstance(record[field], str):
+            refuse(f"{where} field {field!r} must be text")
+    if record["pr"] != pr or record["pass"] != review_pass:
+        refuse(f"{where} names pr/pass {record['pr']}/{record['pass']}, not {pr}/{review_pass}")
+    _validate_id("pr", record["pr"])
+    _validate_id("pass", record["pass"])
+    _validate_id("launch_attempt", record["launch_attempt"])
+    _validate_id("head_sha", record["head_sha"])
+    _check_allocation_time(record["dispatched_at"], f"{where} dispatched_at")
+    if record["purpose"] not in ALLOCATION_PURPOSES:
+        refuse(f"{where} purpose must be one of {list(ALLOCATION_PURPOSES)}, got {record['purpose']!r}")
+
+
+def _check_result_record(record: dict, where: str, pr: str, review_pass: str,
+                         allocations: dict[str, dict], settled: set[str]) -> None:
+    if record.get("type") != ALLOCATION_RESULT:
+        refuse(f"{where} must be a {ALLOCATION_RESULT!r} record, got {record.get('type')!r}")
+    keys = {"type", "pr", "pass", "launch_attempt", "result", "recorded_at"}
+    if set(record) != keys:
+        refuse(f"{where} must carry exactly {sorted(keys)}, got {sorted(record)}")
+    for field in ("pr", "pass", "launch_attempt", "result", "recorded_at"):
+        if not isinstance(record[field], str):
+            refuse(f"{where} field {field!r} must be text")
+    if record["pr"] != pr or record["pass"] != review_pass:
+        refuse(f"{where} names pr/pass {record['pr']}/{record['pass']}, not {pr}/{review_pass}")
+    _validate_id("launch_attempt", record["launch_attempt"])
+    if record["launch_attempt"] not in allocations:
+        refuse(f"{where} settles launch attempt {record['launch_attempt']}, which was never allocated")
+    if record["launch_attempt"] in settled:
+        refuse(f"{where} settles launch attempt {record['launch_attempt']} twice")
+    if record["result"] not in ALLOCATION_RESULTS:
+        refuse(f"{where} result must be one of {list(ALLOCATION_RESULTS)}, got {record['result']!r}")
+    _check_allocation_time(record["recorded_at"], f"{where} recorded_at")
+
+
+def load_allocations(rundir: Path, pr: str, review_pass: str) -> tuple[Path, str, list[dict], dict[str, dict], dict[str, dict]]:
+    """Load and validate one pass's append-only allocation history.
+
+    Allocation and result records deliberately live outside the progress/report files.  Those files are
+    gate evidence written by the reviewer and `review-pass.py` must remain able to reject every unknown
+    line.  This journal is the driver's durable recovery decision record.
+    """
+    path = allocation_path(rundir, pr, review_pass)
+    text, records = _strict_records(path)
+    allocations: dict[str, dict] = {}
+    results: dict[str, dict] = {}
+    for number, record in enumerate(records, start=1):
+        where = f"{path.name} line {number}"
+        if record.get("type") == ALLOCATION:
+            _check_allocation_record(record, where, pr, review_pass)
+            attempt = record["launch_attempt"]
+            if attempt in allocations:
+                refuse(f"{where} allocates launch attempt {attempt} twice")
+            expected = str(len(allocations) + 1)
+            if attempt != expected:
+                refuse(f"{where} allocates launch attempt {attempt}, but the next allocation must be {expected}")
+            allocations[attempt] = record
+            continue
+        if record.get("type") == ALLOCATION_RESULT:
+            _check_result_record(record, where, pr, review_pass, allocations, set(results))
+            results[record["launch_attempt"]] = record
+            continue
+        refuse(f"{where} has unrecognised record type {record.get('type')!r}")
+    return path, text, records, allocations, results
+
+
+def _append_allocation_record(path: Path, text: str, record: dict) -> None:
+    try:
+        line = json.dumps(record, separators=(",", ":")) + "\n"
+        replace_text(path, text + line, temp_prefix=".review-allocation-", encoding="utf-8")
+    except OSError as exc:
+        refuse(f"cannot durably record allocation state at {path}: {exc}")
+
+
+def _ensure_allocation_available(allocations: dict[str, dict], results: dict[str, dict],
+                                 purpose: str) -> None:
+    if purpose not in ALLOCATION_PURPOSES:
+        refuse(f"--allocation-purpose must be one of {list(ALLOCATION_PURPOSES)}, got {purpose!r}")
+    outstanding = sorted(attempt for attempt in allocations if attempt not in results)
+    if outstanding:
+        refuse(f"launch attempt(s) {outstanding} have no recorded result — settle the completed attempt before "
+               "allocating another one")
+    if any(result["result"] == REVIEWED for result in results.values()):
+        refuse("this pass already has a usable binary review result; do not allocate another review")
+    final_attempts = [record for record in allocations.values() if record["purpose"] == FINAL_ALLOCATION]
+    if purpose == FINAL_ALLOCATION:
+        if final_attempts:
+            last = final_attempts[-1]
+            result = results.get(last["launch_attempt"])
+            if result is None:
+                refuse(f"final allocation attempt {last['launch_attempt']} is still in flight")
+            if result["result"] not in FINAL_RETRYABLE_RESULTS:
+                refuse(f"final allocation was consumed by {result['result']!r}; no later final review is due")
+        return
+    if final_attempts:
+        refuse("a final review allocation already began; continue or settle that reservation instead of "
+               "allocating ordinary recovery work")
+    ordinary = [record for record in allocations.values() if record["purpose"] != FINAL_ALLOCATION]
+    if purpose == RECOVERY_ALLOCATION and not ordinary:
+        refuse("a recovery allocation requires the initial review allocation first")
+    if purpose == INITIAL_ALLOCATION and ordinary:
+        refuse("an initial review allocation already exists; use recovery or the reserved final review")
+    if purpose == RECOVERY_ALLOCATION and len(ordinary) >= ORDINARY_ALLOCATION_LIMIT:
+        refuse(f"the {ORDINARY_ALLOCATION_LIMIT} ordinary allocations are spent; use the reserved final review")
+    if purpose == INITIAL_ALLOCATION and len(ordinary) >= ORDINARY_ALLOCATION_LIMIT:
+        refuse(f"the {ORDINARY_ALLOCATION_LIMIT} ordinary allocations are spent; use the reserved final review")
+
+
+def _ensure_next_launch_attempt(allocations: dict[str, dict], launch_attempt: str) -> None:
+    """Keep a pass's attempt identity contiguous and monotonically increasing."""
+    expected = str(len(allocations) + 1)
+    if launch_attempt != expected:
+        refuse(f"--launch-attempt must be the next allocation {expected}, got {launch_attempt}")
+
+
+def allocation_summary(allocations: dict[str, dict], results: dict[str, dict], *, journal_present: bool = True) -> dict:
+    """Render journal state for a later heartbeat or final report without inferring from filenames."""
+    attempts = []
+    for attempt, allocation in allocations.items():
+        result = results.get(attempt)
+        attempts.append({
+            "launch_attempt": int(attempt),
+            "purpose": allocation["purpose"],
+            "result": result["result"] if result is not None else "in-flight",
+        })
+    finals = [item for item in attempts if item["purpose"] == FINAL_ALLOCATION]
+    if not journal_present:
+        final_state = "unknown"
+    elif any(result["result"] == REVIEWED for result in results.values()):
+        final_state = "consumed"
+    elif not finals:
+        final_state = "reserved"
+    elif finals[-1]["result"] == "in-flight":
+        final_state = "in-flight"
+    else:
+        final_state = "reserved"
+    return {"ordinary_limit": ORDINARY_ALLOCATION_LIMIT, "final_state": final_state, "attempts": attempts}
+
+
+def record_result(args) -> dict:
+    rundir = Path(args.run_dir)
+    _absolute_directory(rundir, "run-dir")
+    _validate_id("pr", args.pr)
+    _validate_id("pass", args.review_pass)
+    _validate_id("launch_attempt", args.launch_attempt)
+    path, text, _, allocations, results = load_allocations(rundir, args.pr, args.review_pass)
+    if args.launch_attempt not in allocations:
+        refuse(f"launch attempt {args.launch_attempt} has no allocation record in {path}")
+    if args.launch_attempt in results:
+        refuse(f"launch attempt {args.launch_attempt} already recorded result {results[args.launch_attempt]['result']!r}")
+    if args.result not in ALLOCATION_RESULTS:
+        refuse(f"--result must be one of {list(ALLOCATION_RESULTS)}, got {args.result!r}")
+    stamped = datetime.now(timezone.utc).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
+    record = {
+        "type": ALLOCATION_RESULT,
+        "pr": args.pr,
+        "pass": args.review_pass,
+        "launch_attempt": args.launch_attempt,
+        "result": args.result,
+        "recorded_at": stamped,
+    }
+    _append_allocation_record(path, text, record)
+    results = {**results, args.launch_attempt: record}
+    return allocation_summary(allocations, results)
 
 
 def validate_prompt_profile(route: str, launch_attempt: str, prompt_profile: str) -> None:
@@ -472,6 +705,9 @@ def prepare(args) -> dict:
     _validate_id("pass", args.review_pass)
     _validate_id("launch_attempt", args.launch_attempt)
     _validate_id("head_sha", args.head_sha)
+    if args.allocation_purpose not in ALLOCATION_PURPOSES:
+        refuse(f"--allocation-purpose must be one of {list(ALLOCATION_PURPOSES)}, "
+               f"got {args.allocation_purpose!r}")
     if not args.base.strip():
         refuse("--base must be non-blank text")
 
@@ -538,6 +774,11 @@ def prepare(args) -> dict:
         )
 
     paths = attempt_paths(rundir, args.pr, args.review_pass, args.launch_attempt)
+    allocation_journal, allocation_text, _, allocations, allocation_results = load_allocations(
+        rundir, args.pr, args.review_pass
+    )
+    _ensure_allocation_available(allocations, allocation_results, args.allocation_purpose)
+    _ensure_next_launch_attempt(allocations, args.launch_attempt)
     if not intent_path.is_absolute():
         refuse(f"--intent-file must be an absolute path, got {intent_path}")
     if intent_path != paths["intent"]:
@@ -599,6 +840,24 @@ def prepare(args) -> dict:
     except OSError as exc:
         refuse(f"could not atomically prepare the launch attempt: {exc}")
 
+    allocation = {
+        "type": ALLOCATION,
+        "pr": args.pr,
+        "pass": args.review_pass,
+        "launch_attempt": args.launch_attempt,
+        "head_sha": args.head_sha,
+        "dispatched_at": args.dispatched_at,
+        "purpose": args.allocation_purpose,
+    }
+    try:
+        _append_allocation_record(allocation_journal, allocation_text, allocation)
+    except Refusal:
+        # The caller never received a launch record, so these are still the inert pair `prepare` owns.
+        # Remove them rather than strand a reviewer artifact with no durable allocation account.
+        paths["prompt"].unlink(missing_ok=True)
+        paths["progress"].unlink(missing_ok=True)
+        raise
+
     return {"route": args.route, "transport": transport}
 
 
@@ -619,6 +878,8 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--pr", required=True, help="positive decimal PR number")
     command.add_argument("--pass", dest="review_pass", required=True, help="positive decimal review pass")
     command.add_argument("--launch-attempt", required=True, help="positive decimal launch attempt")
+    command.add_argument("--allocation-purpose", required=True, choices=ALLOCATION_PURPOSES,
+                         help="initial/recovery/final allocation recorded in this pass's durable journal")
     command.add_argument("--worktree", required=True, help="absolute candidate worktree directory")
     command.add_argument("--base", required=True, help="base branch text carried as data; with --file it is "
                                                         "asserted against the row's effective base")
@@ -637,6 +898,19 @@ def build_parser() -> argparse.ArgumentParser:
                               "the run declares none) — the immutable scope this pass's verdict is measured "
                               "against at tally")
     command.add_argument("--intent-file", required=True, help="absolute path to the derived intent-<pr>.md")
+
+    result = sub.add_parser("result", help="durably record one completed launch allocation's outcome")
+    result.add_argument("--run-dir", required=True, help="absolute active run-artifact directory")
+    result.add_argument("--pr", required=True, help="positive decimal PR number")
+    result.add_argument("--pass", dest="review_pass", required=True, help="positive decimal review pass")
+    result.add_argument("--launch-attempt", required=True, help="the allocated launch attempt to settle")
+    result.add_argument("--result", required=True, choices=ALLOCATION_RESULTS,
+                        help="the transport or review result that determines whether final remains reserved")
+
+    status = sub.add_parser("allocation-status", help="render one pass's durable allocation purpose/result history")
+    status.add_argument("--run-dir", required=True, help="absolute active run-artifact directory")
+    status.add_argument("--pr", required=True, help="positive decimal PR number")
+    status.add_argument("--pass", dest="review_pass", required=True, help="positive decimal review pass")
     sub.add_parser("self-test", help="run every sibling fixture")
     return parser
 
@@ -645,6 +919,26 @@ def main(argv: "list[str] | None" = None) -> int:
     args = build_parser().parse_args(argv)
     if args.cmd == "self-test":
         return self_test()
+    if args.cmd == "allocation-status":
+        try:
+            rundir = Path(args.run_dir)
+            _absolute_directory(rundir, "run-dir")
+            _validate_id("pr", args.pr)
+            _validate_id("pass", args.review_pass)
+            journal, _, _, allocations, results = load_allocations(rundir, args.pr, args.review_pass)
+            print(json.dumps(allocation_summary(allocations, results, journal_present=journal.is_file()),
+                             separators=(",", ":")))
+        except Refusal as exc:
+            print(f"review-dispatch: REFUSED — {exc}", file=sys.stderr)
+            return 1
+        return 0
+    if args.cmd == "result":
+        try:
+            print(json.dumps(record_result(args), separators=(",", ":")))
+        except Refusal as exc:
+            print(f"review-dispatch: REFUSED — {exc}", file=sys.stderr)
+            return 1
+        return 0
     try:
         payload = prepare(args)
     except Refusal as exc:
@@ -667,6 +961,19 @@ def main(argv: "list[str] | None" = None) -> int:
             sys.stdout.write(record + "\n")
             sys.stdout.flush()
     except OSError as exc:
+        # The process had already installed its prompt/identity pair and allocation record, but the host
+        # received no transport record and therefore cannot launch it.  Settle that exact reservation here
+        # so the next fresh attempt cannot be blocked behind a delivery failure or consume a final review.
+        try:
+            record_result(type("DeliveryFailure", (), {
+                "run_dir": args.run_dir,
+                "pr": args.pr,
+                "review_pass": args.review_pass,
+                "launch_attempt": args.launch_attempt,
+                "result": TRANSPORT_FAILURE,
+            })())
+        except Refusal:
+            pass
         print(f"review-dispatch: REFUSED — could not deliver the prepared result: {exc}", file=sys.stderr)
         return 1
     return 0

@@ -113,6 +113,10 @@ PR's live head (an adopted PR may have no local branch/worktree at all). Every h
 due from those, then refreshes this file. So a stale or half-written ledger is self-healing — never
 act on it without reconciling against gh (and any existing worktree) first.
 
+Each pass also has `review-<pr>-<n>.allocation.jsonl`, the driver-owned purpose/result journal described
+by `runtime-adapter.md`, **Review allocation journal**. It is not review evidence and `review-pass.py`
+never reads it; it explains a spent or reserved final review allocation across fresh heartbeats.
+
 The store is **JSONL** — one JSON object per line, `cat`/`grep`/`jq`-able. The first line is the
 run-config header record (`{"type": "header", …}` — the run's config, **every field of it** re-read each
 heartbeat, never from memory; the fields are the ones `ledger.py`'s `HEADER_FIELDS` declares and "Header-record

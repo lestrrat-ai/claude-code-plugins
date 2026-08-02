@@ -389,7 +389,8 @@ def select_active_rounds(rundir: Path, pr: str,
             fail(f"pr {pr} has {len(actual)} artifact passes but the ledger counts only {expected_rounds} "
                  f"landed rounds, and pass {round_no}'s active report cannot arbitrate the surplus: {exc}; "
                  f"relaunch pass {round_no} as its next launch attempt so a parseable report can "
-                 f"arbitrate, or park the PR for the user if relaunch is exhausted")
+                 f"arbitrate. Record the result and inspect review-dispatch.py allocation-status before "
+                 f"parking: its final reservation, not this filename, decides whether a fresh review remains")
         if result["verdict"] == RP.DEFERRED:
             verdictless.append({"round": round_no, "launch_attempt": attempt_no,
                                 "deferred_reason": result["deferred_reason"]})
@@ -404,7 +405,7 @@ def select_active_rounds(rundir: Path, pr: str,
         fail(f"pr {pr}'s latest artifact pass {actual[-1]} is verdictless (DEFERRED) — a repair cap trips "
              f"only on a landed NOT SATISFIED, so the latest pass must be a landed round; relaunch pass "
              f"{actual[-1]} as its next launch attempt instead of bundling, or park the PR for the user "
-             f"if relaunch is exhausted")
+             f"only when review-dispatch.py allocation-status reports its final reservation consumed")
     return ([(round_no, *active[round_no]) for round_no in landed], verdictless)
 
 

@@ -461,7 +461,7 @@
   trusted state at run start and recorded in the ledger `reviewer` field before any candidate evidence is
   read (`reviewer.md`, "Selecting the reviewer").
   Apply the same-engine rule in `runtime-adapter.md`. See "The reviewer".
-- Apply `reviewer.md`'s external-review retry budget, then take `runtime-adapter.md`'s owned transition.
+- Apply `runtime-adapter.md`, **Review allocation journal**, then take its owned transition.
   The gate is unchanged; report reviewer routing and retry-profile use through
   `bailout-and-final-report.md`, "Final report". See "The reviewer".
 - **RUN `scripts/ci-status.py required-set --ledger <rundir>/state.jsonl` before CI derivation on every

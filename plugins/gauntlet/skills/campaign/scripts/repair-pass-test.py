@@ -728,10 +728,9 @@ def t_bundle_refuses_unreconcilable_pass_histories(tmp: Path) -> None:
     check("park the PR for the user" in err,
           f"the verdictless-latest refusal names no park fallback: {err!r}")
 
-    # A verdictless LATEST pass whose ACTIVE attempt is already 3 — the last launch attempt the runtime
-    # allocates (`runtime-adapter.md`: a dead or unusable attempt 3 parks as a machine blocker). The
-    # refusal must name the park fallback, because "relaunch as the next launch attempt" alone is
-    # unactionable once the budget is spent.
+    # A verdictless LATEST pass at attempt 3 can still use the separately reserved final allocation. The
+    # repair bundle cannot infer that from the filename, so its refusal must direct the driver to the
+    # durable allocation journal rather than claiming the old attempt cap exhausted the review.
     spent = bundle_setup(tmp / "spent", rounds=4)
     write_review_attempt(spent["rundir"], 4, 2, spent["head_sha"],
                          "SUPERSEDED ATTEMPT 2 MUST NOT BE READ\n")
@@ -742,8 +741,8 @@ def t_bundle_refuses_unreconcilable_pass_histories(tmp: Path) -> None:
     code, _, err = run_bundle(spent, spent["rundir"] / "bundle.txt")
     check(code == 1 and "latest artifact pass" in err,
           f"a verdictless latest pass at attempt 3 was not refused: {err!r}")
-    check("park the PR for the user" in err,
-          f"the exhausted-relaunch refusal names no park recovery: {err!r}")
+    check("allocation-status" in err,
+          f"the verdictless attempt-3 refusal does not name allocation recovery: {err!r}")
 
     # Artifact passes EQUAL to the ledger's landed rounds take the fast path past surplus arbitration,
     # so a DEFERRED active report on a round the ledger counts as landed is caught at collect time.

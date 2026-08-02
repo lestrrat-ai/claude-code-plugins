@@ -102,6 +102,7 @@ def _fixture(
     pr: str = "41",
     review_pass: str = "2",
     launch_attempt: str = "1",
+    allocation_purpose: str = "initial",
     route: str = "native",
     producer: str = "reviewer-tool-write",
     prompt_profile: str = "standard",
@@ -124,6 +125,7 @@ def _fixture(
         pr=pr,
         review_pass=review_pass,
         launch_attempt=launch_attempt,
+        allocation_purpose=allocation_purpose,
         worktree=os.fspath(worktree),
         base=base,
         route=route,
@@ -149,6 +151,42 @@ def _refused(args: SimpleNamespace, contains: str) -> None:
 def _default_launch_artifacts_absent(rundir: Path) -> bool:
     paths = D.attempt_paths(rundir, "41", "2", "1")
     return not paths["prompt"].exists() and not paths["progress"].exists()
+
+
+def _record_result(args: SimpleNamespace, result: str) -> dict:
+    return D.record_result(SimpleNamespace(
+        run_dir=args.run_dir,
+        pr=args.pr,
+        review_pass=args.review_pass,
+        launch_attempt=args.launch_attempt,
+        result=result,
+    ))
+
+
+def _prepare_predecessors(args: SimpleNamespace) -> None:
+    """Materialize and settle every earlier allocation before testing a later attempt."""
+    target_attempt = int(args.launch_attempt)
+    target_route = args.route
+    target_profile = args.prompt_profile
+    target_producer = args.report_producer
+    for number in range(1, target_attempt):
+        args.launch_attempt = str(number)
+        args.allocation_purpose = (
+            "initial" if number == 1 else "recovery" if number <= D.ORDINARY_ALLOCATION_LIMIT else "final"
+        )
+        args.route = "native"
+        args.prompt_profile = "standard"
+        args.report_producer = "reviewer-tool-write"
+        D.prepare(args)
+        _record_result(args, D.PROVIDER_FAILURE)
+    args.launch_attempt = str(target_attempt)
+    args.allocation_purpose = (
+        "initial" if target_attempt == 1 else "recovery"
+        if target_attempt <= D.ORDINARY_ALLOCATION_LIMIT else "final"
+    )
+    args.route = target_route
+    args.prompt_profile = target_profile
+    args.report_producer = target_producer
 
 
 def t_relaunch_paths_share_one_attempt_identity() -> None:
@@ -305,6 +343,7 @@ def t_later_attempt_keeps_the_reviewer_report_door() -> None:
             args = _fixture(
                 Path(raw), launch_attempt="7", route=route, producer="reviewer-tool-write"
             )
+            _prepare_predecessors(args)
             transport = D.prepare(args)["transport"]
             check(transport["attempt"]["launch_attempt"] == 7, f"{route} lost attempt 7")
             check(".a7." in transport["prompt_path"] and ".a7." in transport["progress_path"] and
@@ -356,6 +395,7 @@ def t_prompt_profiles_are_typed_and_route_scoped() -> None:
                 producer=producer,
                 prompt_profile=profile,
             )
+            _prepare_predecessors(args)
             transport = D.prepare(args)["transport"]
             prompt = Path(transport["prompt_path"]).read_bytes()
             check(transport["prompt_profile"] == profile, f"{route} attempt {launch_attempt} lost {profile}")
@@ -535,6 +575,7 @@ def t_overlapping_run_dir_and_worktree_create_nothing() -> None:
             pr="41",
             review_pass="2",
             launch_attempt="1",
+            allocation_purpose="initial",
             worktree=os.fspath(worktree),
             base="main",
             route="native",
@@ -827,14 +868,36 @@ def t_malformed_lone_identity_is_refused_not_reclaimed() -> None:
                   f"{label}: a prompt was materialized despite the malformed-identity conflict")
 
 
-def t_external_attempt_two_has_native_attempt_three_recovery() -> None:
+def t_allocation_reserves_final_review_after_nonterminal_outcomes() -> None:
     with tempfile.TemporaryDirectory() as raw:
         args = _fixture(
-            Path(raw), launch_attempt="2", route="external-codex",
-            producer="reviewer-tool-write", prompt_profile="codex-recovery",
+            Path(raw), launch_attempt="1", allocation_purpose="initial", route="external-codex",
+            producer="reviewer-tool-write", prompt_profile="standard",
         )
+        args.allocation_purpose = "recovery"
+        _refused(args, "requires the initial review allocation")
+        args.allocation_purpose = "initial"
+        args.launch_attempt = "2"
+        args.prompt_profile = "codex-recovery"
+        _refused(args, "next allocation 1")
+        args.launch_attempt = "1"
+        args.prompt_profile = "standard"
         D.prepare(args)
+        _record_result(args, D.PROVIDER_FAILURE)
+
         args.launch_attempt = "3"
+        args.allocation_purpose = "recovery"
+        args.route = "native"
+        args.prompt_profile = "standard"
+        _refused(args, "next allocation 2")
+        args.launch_attempt = "2"
+        args.route = "external-codex"
+        args.prompt_profile = "codex-recovery"
+        D.prepare(args)
+        _record_result(args, D.TRANSPORT_FAILURE)
+
+        args.launch_attempt = "3"
+        args.allocation_purpose = "recovery"
         args.route = "native"
         args.prompt_profile = "standard"
         args.report_producer = "reviewer-tool-write"
@@ -842,21 +905,57 @@ def t_external_attempt_two_has_native_attempt_three_recovery() -> None:
         check(transport["attempt"]["launch_attempt"] == 3 and
               transport["report"]["path"].endswith("review-41-2.a3" + D.RP.REPORT_SUFFIX),
               "native fallback did not receive fresh attempt-3 artifacts")
+        _record_result(args, D.AMENDED)
+
+        args.launch_attempt = "4"
+        args.allocation_purpose = "final"
+        D.prepare(args)
+        _record_result(args, D.MALFORMED_OUTPUT)
+
+        args.launch_attempt = "5"
+        D.prepare(args)
+        _record_result(args, D.INCOMPLETE_PLAN)
+
+        args.launch_attempt = "6"
+        D.prepare(args)
+        summary = _record_result(args, D.REVIEWED)
+        check(summary["final_state"] == "consumed", f"usable final review did not consume the reserve: {summary}")
+        check([(row["purpose"], row["result"]) for row in summary["attempts"]] == [
+            ("initial", D.PROVIDER_FAILURE),
+            ("recovery", D.TRANSPORT_FAILURE),
+            ("recovery", D.AMENDED),
+            ("final", D.MALFORMED_OUTPUT),
+            ("final", D.INCOMPLETE_PLAN),
+            ("final", D.REVIEWED),
+        ], f"allocation journal lost a purpose/result: {summary}")
+
+        args.launch_attempt = "7"
+        args.allocation_purpose = "recovery"
+        _refused(args, "usable binary review result")
+
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw))
+        D.prepare(args)
+        summary = _record_result(args, D.REVIEWED)
+        check(summary["final_state"] == "consumed",
+              f"an ordinary usable review did not consume the final allocation: {summary}")
+        args.launch_attempt = "2"
+        args.allocation_purpose = "recovery"
+        _refused(args, "usable binary review result")
 
     refs = OWNER.parent.parent / "references"
     runtime = (refs / "runtime-adapter.md").read_text(encoding="utf-8")
     stage = (refs / "stage-2-review-gate.md").read_text(encoding="utf-8")
     loop = (refs / "loop-control.md").read_text(encoding="utf-8")
-    check("attempt `2` fails → prepare fresh native fallback attempt `3`" in runtime,
-          "runtime owner does not allocate attempt 3 after failed attempt 2")
-    check("dead or unusable attempt `3` → `park-machine-blocker`" in runtime,
-          "runtime owner does not terminate failed native fallback attempt 3")
-    stale_attempt_two_terminal = "`2` → " + "fresh-worker fallback"
+    check("three ordinary allocations plus one reserved final allocation" in runtime,
+          "runtime owner does not reserve the final review allocation")
+    check("provider-failure`, `transport-failure`, `malformed-output`, `incomplete-plan`, or `amended`" in runtime,
+          "runtime owner does not name the outcomes that preserve the final allocation")
+    check("gap or out-of-order number" in runtime,
+          "runtime owner does not require a contiguous allocation sequence")
     for name, text in (("Stage 2", stage), ("killed-session", loop)):
-        check("Review preparation mapping" in text,
-              f"{name} recovery does not point to the attempt-3 owner")
-        check(stale_attempt_two_terminal not in text,
-              f"{name} recovery retains the stale attempt-2 terminal rule")
+        check("Review allocation journal" in text,
+              f"{name} recovery does not point to the allocation-policy owner")
 
 
 def t_transition_actions_map_directly_to_prepare_inputs() -> None:
@@ -891,7 +990,8 @@ def t_unicode_worktree_delivers_under_ascii_stdout() -> None:
         intent_path = _write_inputs(rundir)
         argv = [
             "prepare", "--run-dir", os.fspath(rundir), "--pr", "41", "--pass", "2",
-            "--launch-attempt", "1", "--worktree", os.fspath(worktree), "--base", "main",
+            "--launch-attempt", "1", "--allocation-purpose", "initial",
+            "--worktree", os.fspath(worktree), "--base", "main",
             "--route", "native", "--prompt-profile", "standard",
             "--report-producer", "reviewer-tool-write",
             "--head-sha", SHA, "--dispatched-at", STAMP, "--default-non-goals", "[]",
@@ -918,7 +1018,8 @@ def t_cli_emits_only_canonical_host_neutral_json() -> None:
         args = _fixture(Path(raw), route="external-codex", producer="reviewer-tool-write")
         argv = [
             "prepare", "--run-dir", args.run_dir, "--pr", args.pr, "--pass", args.review_pass,
-            "--launch-attempt", args.launch_attempt, "--worktree", args.worktree, "--base", args.base,
+            "--launch-attempt", args.launch_attempt, "--allocation-purpose", args.allocation_purpose,
+            "--worktree", args.worktree, "--base", args.base,
             "--route", args.route, "--prompt-profile", args.prompt_profile,
             "--report-producer", args.report_producer,
             "--head-sha", args.head_sha, "--dispatched-at", args.dispatched_at,
@@ -1110,7 +1211,8 @@ CASES = [
     ("interrupt-rollback", "an interrupt after the identity link rolls both files back", t_interrupt_after_identity_link_strands_no_residue),
     ("hard-stop-recovery", "both-files and identity-only hard-stop residue is recoverable", t_hard_stop_residue_is_recoverable),
     ("malformed-identity-refused", "a malformed lone identity is refused, not reclaimed", t_malformed_lone_identity_is_refused_not_reclaimed),
-    ("fallback-attempt-three", "external retry failure has a terminal native attempt-3 path", t_external_attempt_two_has_native_attempt_three_recovery),
+    ("allocation-final-reserve", "nonterminal outcomes preserve one fresh final review allocation",
+     t_allocation_reserves_final_review_after_nonterminal_outcomes),
     ("transition-mapping", "review actions map directly to route, producer, and prompt profile",
      t_transition_actions_map_directly_to_prepare_inputs),
     ("unicode-delivery", "a Unicode path is delivered as UTF-8 bytes under ASCII stdout", t_unicode_worktree_delivers_under_ascii_stdout),
