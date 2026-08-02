@@ -140,8 +140,9 @@ def require_contiguous_history(rundir: Path, pr: str, review_pass: str) -> None:
     """Refuse a later pass unless every prior pass has usable terminal evidence.
 
     A repair moves the PR head after an earlier review lands. Historical passes therefore validate against
-    their OWN immutable ``pass_identity.head_sha``, not the current launch's head. Only each pass's active
-    (highest-attempt) artifact is historical evidence; superseded retry attempts never landed a result.
+    their OWN immutable ``pass_identity.head_sha``, not the current launch's head or current intent. Only
+    each pass's active (highest-attempt) artifact is historical evidence; superseded retry attempts never
+    landed a result.
     """
     target = int(review_pass)
     if target == 1:
@@ -163,7 +164,7 @@ def require_contiguous_history(rundir: Path, pr: str, review_pass: str) -> None:
             )
         try:
             recorded_head, ruled_amendments = _recorded_history(progress)
-            outcome, reason, report = RP.evaluate_detail(progress, recorded_head, ruled_amendments)
+            outcome, reason, report = RP.evaluate_historical_detail(progress, recorded_head, ruled_amendments)
         except (OSError, RP.Defect) as exc:
             refuse(
                 f"review history for pr {pr} pass {number} is invalid: {exc} — recover or restart that "

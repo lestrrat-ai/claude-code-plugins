@@ -192,6 +192,63 @@ def t_contiguous_history_accepts_prior_heads_after_repair() -> None:
               "contiguous historical evidence on prior heads must allow the later pass")
 
 
+def t_contiguous_history_accepts_reauthored_intent() -> None:
+    """A REPAIR-INTENT must not invalidate a landed finding anchored to its former purpose."""
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw), seed_history=False)
+        rundir = Path(args.run_dir)
+        _write_landed_pass(rundir, "41", "1", HISTORICAL_SHA, verdict=D.RP.NOT_SATISFIED)
+        findings = D.attempt_paths(rundir, "41", "1", "1")["findings"]
+        findings.write_text(json.dumps({
+            "type": D.RP.FINDING,
+            "file": "src/review.py",
+            "line": "1",
+            "writer": "network",
+            "purpose": "- Preserve review dispatch",
+            "base": D.RP.INTRODUCED,
+            "base_repro": D.RP.NO_BASE_REPRO,
+            "repro": "A network response exposes the stale review state.",
+            "fix": "Preserve the review state.",
+        }, separators=(",", ":")) + "\n", encoding="utf-8")
+        Path(args.intent_file).write_text(
+            "## Purpose\n- Re-author the review scope\n\n"
+            "## Non-goals\n- Select a reviewer route\n\n"
+            "## Threat model\n- repo-content can change the candidate diff\n",
+            encoding="utf-8",
+        )
+        progress = D.attempt_paths(rundir, "41", "1", "1")["progress"]
+        live_outcome, live_reason, _ = D.RP.evaluate_detail(progress, HISTORICAL_SHA)
+        check(live_outcome == D.RP.UNUSABLE and "NOT a line" in live_reason,
+              "the fixture must demonstrate why the live reader cannot validate re-authored history")
+        payload = D.prepare(args)
+        check(payload["transport"]["attempt"]["pass"] == 2,
+              "a valid landed pass must remain usable after REPAIR-INTENT re-authors the current intent")
+
+
+def t_historical_findings_keep_non_anchor_schema_checks() -> None:
+    """History skips only the mutable-purpose anchor, not the finding schema."""
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw), seed_history=False)
+        rundir = Path(args.run_dir)
+        _write_landed_pass(rundir, "41", "1", HISTORICAL_SHA, verdict=D.RP.NOT_SATISFIED)
+        findings = D.attempt_paths(rundir, "41", "1", "1")["findings"]
+        findings.write_text(json.dumps({
+            "type": D.RP.FINDING,
+            "file": "src/review.py",
+            "line": "1",
+            "writer": "attacker",
+            "purpose": "- Preserve review dispatch",
+            "base": D.RP.INTRODUCED,
+            "base_repro": D.RP.NO_BASE_REPRO,
+            "repro": "A network response exposes the stale review state.",
+            "fix": "Preserve the review state.",
+        }, separators=(",", ":")) + "\n", encoding="utf-8")
+        progress = D.attempt_paths(rundir, "41", "1", "1")["progress"]
+        outcome, reason, report = D.RP.evaluate_historical_detail(progress, HISTORICAL_SHA)
+        check(outcome == D.RP.UNUSABLE and report is None and "CLOSED enum" in reason,
+              "historical validation must retain every non-anchor finding check")
+
+
 def t_contiguous_history_accepts_prior_ruled_amendments() -> None:
     """A terminal report proves every amendment in each historical active artifact was ruled."""
     with tempfile.TemporaryDirectory() as raw:
@@ -204,7 +261,7 @@ def t_contiguous_history_accepts_prior_ruled_amendments() -> None:
             events = D.RP.parse_lines(progress.read_text(encoding="utf-8"), progress.name)
             identity = D.RP.check_identity(events, "41", number, "1")
             ruled = sum(event["type"] == D.RP.AMENDMENT for event in events)
-            outcome, _, report = D.RP.evaluate_detail(progress, identity["head_sha"], ruled)
+            outcome, _, report = D.RP.evaluate_historical_detail(progress, identity["head_sha"], ruled)
             check(outcome == D.RP.OK and report is not None and report["verdict"] == D.RP.SATISFIED,
                   f"pass {number} must be valid after its amendment ruling")
         payload = D.prepare(args)

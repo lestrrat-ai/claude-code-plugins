@@ -309,27 +309,6 @@ def attempt_report_path(progress: Path) -> Path:
     return progress.parent / (progress.name[: -len(RP.PROGRESS_SUFFIX)] + RP.REPORT_SUFFIX)
 
 
-def load_historical_findings(progress: Path) -> list[dict]:
-    """Validate a landed round's finding schema without re-anchoring it to a later repaired intent.
-
-    `review-pass.py verify` proved each finding against the intent that governed that round before its
-    verdict landed. REPAIR-INTENT may later replace the PR's one current intent artifact; re-validating old
-    purpose strings against that new file would make the complete history unreadable at the next cap. Keep
-    the artifact owner's strict reader and every non-anchor finding rule, while treating its recorded
-    purpose strings as historical evidence rather than claims about the current intent.
-    """
-    path = RP.findings_path(progress)
-    if not path.exists():
-        return []
-    RP.findings_name(path)
-    records = RP.parse_lines(RP.read_text(path, "findings file"), path.name)
-    historical_purposes = [rec.get("purpose") for rec in records
-                           if isinstance(rec.get("purpose"), str) and rec.get("purpose") != RP.NO_PURPOSE]
-    for line_no, rec in enumerate(records, start=1):
-        RP.check_finding(rec, f"{path.name} line {line_no}", historical_purposes)
-    return records
-
-
 def select_active_rounds(rundir: Path, pr: str,
                          expected_rounds: int) -> "tuple[list[tuple[int, int, Path]], list[dict]]":
     """Select one highest numbered launch attempt per artifact pass, then map passes onto landed rounds.
@@ -485,7 +464,7 @@ def collect_rounds(rundir: Path, pr: str, expected_rounds: int) -> "tuple[list[d
                 fail(f"active attempt {attempt_no} of pr {pr} round {round_no} is incomplete "
                      f"({len(done)} of {len(units)} plan units done)")
             identity = RP.check_identity(events, pr, str(round_no), str(attempt_no))
-            findings = load_historical_findings(progress)
+            findings = RP.load_historical_findings(progress)
             report_result = RP.parse_report(progress)
         except RP.Defect as exc:
             fail(f"active attempt {attempt_no} of pr {pr} round {round_no} is unusable: {exc}")
@@ -543,12 +522,13 @@ def collect_rounds(rundir: Path, pr: str, expected_rounds: int) -> "tuple[list[d
             audit_text = read_utf8(audit_file, "finding audit")
             # A landed round's finding audit is HISTORICAL EVIDENCE embedded for the reassessment worker —
             # NOT re-judged against the current intent. Read it structurally symmetric with the findings read
-            # in `load_historical_findings` right above, through the SAME non-re-anchoring door: review-pass.py's
+            # in `review-pass.py load_historical_findings` right above, through the SAME non-re-anchoring rule:
+            # review-pass.py's
             # `parse_lines` proves the JSONL is well-formed and loads NO intent. NEVER read the audit through
             # finding-audit.py's own door (`verify` / `load_audit`), which re-reads the round's source findings
             # and re-anchors their `purpose` strings to the CURRENT `intent-<pr>.md`. After a REPAIR-INTENT
             # re-authors that intent and drops a purpose an earlier round anchored to, that door would reject
-            # the round's audit and WEDGE the bundle — the same break `load_historical_findings` and
+            # the round's audit and WEDGE the bundle — the same break `review-pass.py load_historical_findings` and
             # `t_bundle_exempts_every_prior_cap_round` exist to prevent, on the audit's side.
             #
             # Well-formedness alone is NOT soundness: a HEADER-ONLY audit (`finding-audit.py init` with zero

@@ -201,7 +201,9 @@ older pass to the head for the launch being prepared. A terminal binary report i
 orchestrator ruled every amendment in that active artifact, so history validation supplies its exact amendment
 count to `review-pass.py`; the live-read default of zero does not apply to settled history. Missing artifacts,
 malformed evidence, incomplete passes, and `deferred` reports block preparation before it writes the later
-pass's prompt or identity.
+pass's prompt or identity. `review-pass.py`'s history reader still validates each findings artifact's name,
+JSONL, and non-anchor fields, but it NEVER re-anchors a landed finding's `purpose` to the mutable current
+intent: a sanctioned REPAIR-INTENT may have dropped that old purpose after the earlier pass landed.
 
 #### Kill doomed passes — don't let them finish
 
@@ -755,7 +757,7 @@ shape and passes untouched.
 **AND THE INTENT IS CHECKED FOR EVERY PASS — whatever it found, and even when it found nothing.** A
 guard whose input can be absent never fires, and the pass with no findings is precisely the ordinary
 case — the one that **merges the PR**. `verify` derives the PR from the progress
-file's own name and loads `<rundir>/intent-<pr>.md` on **every** pass; anything short of a **usable** block
+file's own name and loads `<rundir>/intent-<pr>.md` on **every live** pass; anything short of a **usable** block
 makes the pass `unusable` and no verdict is tallied from it. **What "usable" means is NOT restated here** —
 `pr-adoption.md` step 3a states it for the human writing the file, and `review-pass.py`'s parser IS the
 definition (`review-pass.py intent-check --file <rundir>/intent-<pr>.md --ledger <rundir>/state.jsonl` is
