@@ -496,8 +496,9 @@ it), and the run's `default_non_goals` — the DISPATCH-TIME review scope this p
 against at tally. Four rules depend on it: a late verdict is ignored unless its attempt
 id still matches the active pass; `dispatched_at` is the clock the launch check below measures against;
 `launch_attempt` identifies the active artifact attempt for a *later heartbeat* — possibly a fresh
-agent. The heartbeat reads `review-dispatch.py allocation-status` and the
-`runtime-adapter.md`, **Review allocation journal**, to learn which allocation purpose remains due; and
+agent. After it settles any dead active attempt through `review-dispatch.py result`, the heartbeat reads
+`review-dispatch.py allocation-status` and the `runtime-adapter.md`, **Review allocation journal**, to learn
+which allocation purpose remains due; and
 `verify --ledger` compares the bound
 `default_non_goals` to the run's live defaults at tally (`check_scope`), voiding a verdict earned under a
 scope the operator has since moved. A progress file holding **only** this line is
@@ -569,7 +570,8 @@ rule is sized for a reviewer working slowly, not one that never woke up. Gate ev
 - **This deadline test applies ONLY to a pass whose process is still alive.** It asks "this thing is
   running — has it started?", and launch evidence is the answer. A pass whose task is **gone** (the
   session died with it) is a different question entirely, and launch evidence is **irrelevant** to it:
-  a dead process will never produce a verdict no matter what it wrote before dying. Dispatch on
+  a dead process will never produce a verdict no matter what it wrote before dying. Settle its observed
+  non-binary outcome through `review-dispatch.py result`, then dispatch on
   `review-dispatch.py allocation-status` and `runtime-adapter.md`, **Review allocation journal**, before
   taking **Review preparation mapping** (Loop control, "Resume after a killed session"). When the final
   allocation is reserved and due, prepare it with `--allocation-purpose final`. Every dead pass lands on

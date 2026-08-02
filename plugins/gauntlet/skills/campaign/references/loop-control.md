@@ -87,9 +87,10 @@ rules keep their own wording; these are illustrations of them, not a second copy
    ghost gives up), and a hand-run query must ask for `--json number,labels` and match locally, the way
    `run-identity-and-lease.md`'s no-arg **discover runs** step already does. Three cases:
 
-   - **This run has live work → resume.** Resolve a dead review pass — no verdict, no live task — through
-     `review-dispatch.py allocation-status` before selecting a route. Use its durable attempt purposes and
-     results with `runtime-adapter.md`, **Review allocation journal**, to choose the due allocation purpose:
+   - **This run has live work → resume.** Settle a dead review pass — no verdict, no live task — through
+     `review-dispatch.py result` with its observed non-binary outcome before running
+     `review-dispatch.py allocation-status`. Use its durable attempt purposes and results with
+     `runtime-adapter.md`, **Review allocation journal**, to choose the due allocation purpose:
      when the final allocation remains reserved and due, prepare its next attempt with
      `--allocation-purpose final`; otherwise choose the due `initial` or `recovery` allocation. Then take
      the route/profile branch in **Review preparation mapping**, never a blind re-launch. Why launch
@@ -302,8 +303,9 @@ rules keep their own wording; these are illustrations of them, not a second copy
    not a verdict, so it is never tallied — the tool routes on
    the progress file and returns `amended` (fold the amendment, re-run the pass) or `incomplete`
    (relaunch), and only a binary `satisfied`/`not-satisfied` ever reaches the ledger below.
-   **Record the observed route or artifact outcome through `runtime-adapter.md`, "Review allocation journal", before preparing that relaunch.** The journal preserves the reserved final review across a
-   fresh heartbeat; this completion step never infers a budget from attempt filenames.
+   **After a binary pass verifies `ok`, record `review-dispatch.py result --result reviewed` for its active
+   attempt before recording its verdict.** The journal preserves the reserved final review across a fresh
+   heartbeat; this completion step never infers a budget from attempt filenames.
    **Then record the verdict with `scripts/ledger.py verdict --pr <N> --head-sha <sha> --verdict …`** — the
    ONLY sanctioned path, and the only thing that bumps `review_rounds` (Stage 2a, "Recording a verdict");
    never set `reviews_ok` by hand. It refuses unless the base-preflight `proceed` above stamped `base_ok_sha`
@@ -775,7 +777,8 @@ in-flight tasks do.
 tasks die with the session, but nothing authoritative is lost. A new invocation reconciles against
 git/gh and continues — completed work is never redone (existing PRs, landed verdict files); a CI task
 whose output file is missing re-launches, and a **review** with no verdict and no live task goes through
-**Stage 2a active-attempt resolution** rather than a blind re-launch: first run
+**Stage 2a active-attempt resolution** rather than a blind re-launch: first settle the active attempt with
+`review-dispatch.py result` using its observed non-binary outcome, then run
 `review-dispatch.py allocation-status` for that pass. Read its durable purpose/result history through
 `runtime-adapter.md`, **Review allocation journal**, before selecting the route/profile branch in
 **Review preparation mapping**. When the final allocation remains reserved and is due, prepare the next

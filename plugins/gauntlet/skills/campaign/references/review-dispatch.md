@@ -91,10 +91,12 @@ python3 <skill-dir>/scripts/review-dispatch.py result \
 
 `runtime-adapter.md`, **Review allocation journal**, owns which allocation is due and which outcomes leave
 the final review reserved. The journal is driver state, not reviewer evidence: do not add allocation lines
-to a progress or report artifact. `result --result reviewed` derives that allocated attempt's artifacts
-and accepts only a `review-pass.py verify`-countable binary report. It refuses a missing, deferred,
-malformed, or otherwise unusable report, leaving the allocation unrecorded for the observed outcome.
-`allocation-status` renders its durable history for a held PR or final report.
+to a progress or report artifact. `result --result reviewed` derives that allocated attempt's artifacts and
+requires its same-run `<rundir>/state.jsonl` scope check to pass, like `review-pass.py verify --ledger`.
+It refuses a missing, deferred, malformed, or otherwise unusable report, leaving the allocation unrecorded
+for the observed outcome.
+`allocation-status` renders its durable history after a dead attempt settles, for a held PR, or for a final
+report.
 
 ### Prompt bytes have one owner
 

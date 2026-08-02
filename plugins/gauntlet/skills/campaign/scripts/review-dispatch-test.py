@@ -908,6 +908,7 @@ def t_allocation_reserves_final_review_after_nonterminal_outcomes() -> None:
             Path(raw), launch_attempt="1", allocation_purpose="initial", route="external-codex",
             producer="reviewer-tool-write", prompt_profile="standard",
         )
+        _build_ledger_scope(Path(args.run_dir), args.pr, "main", "[]")
         args.allocation_purpose = "recovery"
         _refused(args, "requires the initial review allocation")
         args.allocation_purpose = "initial"
@@ -970,6 +971,7 @@ def t_allocation_reserves_final_review_after_nonterminal_outcomes() -> None:
 
     with tempfile.TemporaryDirectory() as raw:
         args = _fixture(Path(raw))
+        _build_ledger_scope(Path(args.run_dir), args.pr, "main", "[]")
         D.prepare(args)
         _complete_usable_binary_review(args)
         summary = _record_result(args, D.REVIEWED)
@@ -1001,6 +1003,7 @@ def t_reviewed_result_requires_usable_binary_review() -> None:
     """`reviewed` cannot consume the reserve without a verify-countable active attempt."""
     with tempfile.TemporaryDirectory() as raw:
         args = _fixture(Path(raw))
+        _build_ledger_scope(Path(args.run_dir), args.pr, "main", "[]")
         D.prepare(args)
         _result_refused(args, D.REVIEWED, "review-pass verify returned unusable")
         paths = D.attempt_paths(Path(args.run_dir), args.pr, args.review_pass, args.launch_attempt)
@@ -1008,6 +1011,7 @@ def t_reviewed_result_requires_usable_binary_review() -> None:
 
     with tempfile.TemporaryDirectory() as raw:
         args = _fixture(Path(raw))
+        _build_ledger_scope(Path(args.run_dir), args.pr, "main", "[]")
         D.prepare(args)
         _write_report(args, D.RP.DEFERRED)
         paths = D.attempt_paths(Path(args.run_dir), args.pr, args.review_pass, args.launch_attempt)
@@ -1017,6 +1021,7 @@ def t_reviewed_result_requires_usable_binary_review() -> None:
 
     with tempfile.TemporaryDirectory() as raw:
         args = _fixture(Path(raw))
+        _build_ledger_scope(Path(args.run_dir), args.pr, "main", "[]")
         D.prepare(args)
         paths = D.attempt_paths(Path(args.run_dir), args.pr, args.review_pass, args.launch_attempt)
         paths["report"].write_text('{"type":"review_report"}\n', encoding="utf-8")
@@ -1024,16 +1029,107 @@ def t_reviewed_result_requires_usable_binary_review() -> None:
 
     with tempfile.TemporaryDirectory() as raw:
         args = _fixture(Path(raw))
+        _build_ledger_scope(Path(args.run_dir), args.pr, "main", "[]")
         D.prepare(args)
         _write_report(args, D.RP.SATISFIED)
         _result_refused(args, D.REVIEWED, "review-pass verify returned incomplete")
+
+
+def t_reviewed_result_refuses_scope_drift() -> None:
+    """A settled binary pass must still match the run's live scope."""
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw), default_non_goals='["old"]')
+        ledger = _build_ledger_scope(Path(args.run_dir), args.pr, "main", '["old"]')
+        args.file = os.fspath(ledger)
+        D.prepare(args)
+        _complete_usable_binary_review(args)
+        proc = subprocess.run(  # noqa: S603
+            [sys.executable, os.fspath(D.LEDGER), "--file", os.fspath(ledger),
+             "header", "set", "default_non_goals", '["old", "new"]'],
+            capture_output=True, text=True, check=False)
+        check(proc.returncode == 0, f"scope-drift fixture could not update the ledger: {proc.stderr.strip()}")
+        _result_refused(args, D.REVIEWED, "review scope")
+        _path, _text, _records, allocations, results = D.load_allocations(
+            Path(args.run_dir), args.pr, args.review_pass)
+        summary = D.allocation_summary(allocations, results)
+        check(summary["final_state"] == "reserved",
+              f"scope-drifted reviewed result consumed the final allocation: {summary}")
+        check(summary["attempts"] == [{"launch_attempt": 1, "purpose": "initial", "result": "in-flight"}],
+              f"scope-drifted reviewed result settled the allocation: {summary}")
+
+
+def t_binary_review_is_journaled_before_verdict_tally() -> None:
+    """A verified binary pass is durably settled before the tally instruction."""
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw))
+        _build_ledger_scope(Path(args.run_dir), args.pr, "main", "[]")
+        D.prepare(args)
+        _complete_usable_binary_review(args)
+        result_argv = [
+            "result", "--run-dir", args.run_dir, "--pr", args.pr, "--pass", args.review_pass,
+            "--launch-attempt", args.launch_attempt, "--result", D.REVIEWED,
+        ]
+        code, out, err = capture_cli(D.main, result_argv)
+        check(code == 0 and err == "", f"binary result command failed: code={code}, stderr={err!r}")
+        result = json.loads(out)
+        check(result["attempts"] == [{"launch_attempt": 1, "purpose": "initial", "result": D.REVIEWED}],
+              f"binary result did not journal the reviewed outcome: {result}")
+        status_argv = ["allocation-status", "--run-dir", args.run_dir, "--pr", args.pr,
+                       "--pass", args.review_pass]
+        code, out, err = capture_cli(D.main, status_argv)
+        check(code == 0 and err == "", f"allocation-status failed: code={code}, stderr={err!r}")
+        check(json.loads(out)["attempts"] == result["attempts"],
+              "allocation-status did not render the binary outcome that result journaled")
+
+    loop = (OWNER.parent.parent / "references" / "loop-control.md").read_text(encoding="utf-8")
+    completion = loop[loop.index("### Step 2 — Fold in completions"):loop.index("### Step 3 — Dispatch due work")]
+    verify = completion.index("review-pass.py verify")
+    result = completion.index("review-dispatch.py result")
+    verdict = completion.index("scripts/ledger.py verdict")
+    check(verify < result < verdict,
+          "Step 2 must journal the verified binary result before recording its ledger verdict")
+
+
+def t_killed_session_resume_settles_before_next_allocation() -> None:
+    """A dead initial attempt is settled before recovery selects launch attempt two."""
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw))
+        D.prepare(args)
+        _path, _text, _records, allocations, results = D.load_allocations(
+            Path(args.run_dir), args.pr, args.review_pass)
+        check(D.allocation_summary(allocations, results)["attempts"][0]["result"] == "in-flight",
+              "the prepared dead-attempt fixture was not initially in flight")
+        _record_result(args, D.PROVIDER_FAILURE)
+        _path, _text, _records, allocations, results = D.load_allocations(
+            Path(args.run_dir), args.pr, args.review_pass)
+        check(D.allocation_summary(allocations, results)["attempts"][0]["result"] == D.PROVIDER_FAILURE,
+              "the dead initial attempt was not settled before allocation selection")
+        args.launch_attempt = "2"
+        args.allocation_purpose = "recovery"
+        D.prepare(args)
+        _path, _text, _records, allocations, results = D.load_allocations(
+            Path(args.run_dir), args.pr, args.review_pass)
+        check(D.allocation_summary(allocations, results)["attempts"] == [
+            {"launch_attempt": 1, "purpose": "initial", "result": D.PROVIDER_FAILURE},
+            {"launch_attempt": 2, "purpose": "recovery", "result": "in-flight"},
+        ], "recovery allocation did not follow the settled dead attempt")
+
+    loop = (OWNER.parent.parent / "references" / "loop-control.md").read_text(encoding="utf-8")
+    for start, end in (
+        ("- **This run has live work → resume.", "**Reconcile against ground truth**"),
+        ("#### Resume after a killed session", "**Every dead pass must land on exactly one branch"),
+    ):
+        resume = loop[loop.index(start):loop.index(end)]
+        check(resume.index("review-dispatch.py result") < resume.index("allocation-status"),
+              "resume must settle a dead attempt before allocation-status selects another allocation")
 
 
 def t_killed_session_resume_uses_allocation_journal() -> None:
     refs = OWNER.parent.parent / "references"
     for name in ("loop-control.md", "stage-2-review-gate.md", "critical-rules.md"):
         text = (refs / name).read_text(encoding="utf-8")
-        check("allocation-status" in text and "Review allocation journal" in text,
+        check("review-dispatch.py result" in text and "allocation-status" in text and
+              "Review allocation journal" in text,
               f"{name} does not route a dead review through durable allocation state")
         check("--allocation-purpose final" in text,
               f"{name} does not prepare the reserved final allocation when it is due")
@@ -1302,6 +1398,12 @@ CASES = [
      t_allocation_reserves_final_review_after_nonterminal_outcomes),
     ("reviewed-needs-binary", "reviewed refuses a missing, deferred, malformed, or incomplete review",
      t_reviewed_result_requires_usable_binary_review),
+    ("reviewed-refuses-scope-drift", "reviewed preserves the final reservation when the run scope moves",
+     t_reviewed_result_refuses_scope_drift),
+    ("binary-result-before-verdict", "verified binary outcomes are journaled before the tally instruction",
+     t_binary_review_is_journaled_before_verdict_tally),
+    ("killed-session-settlement", "dead attempts settle before resumed recovery allocation",
+     t_killed_session_resume_settles_before_next_allocation),
     ("killed-session-allocation", "killed-session recovery selects the durable due allocation",
      t_killed_session_resume_uses_allocation_journal),
     ("transition-mapping", "review actions map directly to route, producer, and prompt profile",

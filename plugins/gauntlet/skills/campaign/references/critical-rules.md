@@ -336,9 +336,10 @@
   → the pass never started → kill + relaunch into attempt-scoped artifacts per the Stage 2a launch
   check. **Meaningful progress** is the stronger bar (`done`/accepted amendment) — stale for ~15 min →
   suspicious review → retry/fallback per Stage 2a. Both bars judge a **live** process. A pass whose
-  task is **dead** with no verdict (killed session) ignores launch evidence entirely and follows
-  `review-dispatch.py allocation-status` plus `runtime-adapter.md`, **Review allocation journal**, to
-  choose its due allocation purpose before taking **Review preparation mapping**. When the final
+  task is **dead** with no verdict (killed session) ignores launch evidence entirely. Settle its observed
+  non-binary outcome through `review-dispatch.py result`, then follow
+  `review-dispatch.py allocation-status` plus `runtime-adapter.md`, **Review allocation journal**, to choose
+  its due allocation purpose before taking **Review preparation mapping**. When the final
   allocation remains reserved and due, prepare it with `--allocation-purpose final`. Never invent another
   recovery branch.
 - Reviewers do not own the plan but must not treat it as presumptively complete: critically evaluate

@@ -207,9 +207,9 @@ plan; it may be the first allocation of a new post-repair pass.
 
 **Record every completed attempt through `review-dispatch.py result` before allocating another.** Its
 `provider-failure`, `transport-failure`, `malformed-output`, `incomplete-plan`, `amended`, and `reviewed`
-values name the outcome that the heartbeat observed. Run `allocation-status` when a row is held or a
-budget question reaches the final report; it renders every launch attempt's purpose and result from the
-journal rather than guessing from filenames or a lost context.
+values name the outcome that the heartbeat observed. Run `allocation-status` after settling a dead attempt,
+when a row is held, or when a budget question reaches the final report; it renders every launch attempt's
+purpose and result from the journal rather than guessing from filenames or a lost context.
 
 **Keep the final allocation reserved after `provider-failure`, `transport-failure`, `malformed-output`, `incomplete-plan`, or `amended`.** Prepare a new attempt-scoped artifact set with
 `--allocation-purpose final` after the routing or plan repair. Only `reviewed` — a usable binary review

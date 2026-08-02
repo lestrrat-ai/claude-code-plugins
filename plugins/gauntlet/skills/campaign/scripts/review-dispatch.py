@@ -408,12 +408,18 @@ def _require_usable_binary_review(rundir: Path, pr: str, review_pass: str, launc
     """Refuse ``reviewed`` until the allocated attempt verifies as a binary pass result.
 
     The allocation journal is driver state, not review evidence.  Its ``reviewed`` outcome consumes the
-    final reserve, so it must be backed by the same active attempt that ``review-pass.py verify`` can
-    count.  Deriving the progress/report paths here prevents a caller from settling one allocation with
-    another attempt's report.
+    final reserve, so it must be backed by the same active attempt and run ledger that
+    ``review-pass.py verify --ledger`` can count. Deriving the progress/report paths here prevents a caller
+    from settling one allocation with another attempt's report.
     """
     paths = attempt_paths(rundir, pr, review_pass, launch_attempt)
-    outcome, reason, report = RP.evaluate_detail(paths["progress"], allocation["head_sha"])
+    ledger = rundir / "state.jsonl"
+    if not ledger.is_file():
+        refuse(
+            f"launch attempt {launch_attempt} cannot record reviewed without the run ledger {ledger} — "
+            "a binary result must verify against this run's current review scope"
+        )
+    outcome, reason, report = RP.evaluate_detail(paths["progress"], allocation["head_sha"], ledger=ledger)
     if outcome != RP.OK:
         refuse(
             f"launch attempt {launch_attempt} cannot record reviewed: review-pass verify returned "
