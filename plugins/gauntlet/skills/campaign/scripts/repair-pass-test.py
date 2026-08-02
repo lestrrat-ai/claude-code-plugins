@@ -792,7 +792,7 @@ def t_readme_settles_dead_reviews_before_relaunch(tmp: Path) -> None:
     del tmp
     readme = OWNER.parent.parent / "README.md"
     text = readme.read_text(encoding="utf-8")
-    section = text[text.index("A reviewer that never gets going"):text.index("- It works through GitHub PRs")]
+    section = text[text.index("denial — is caught the same way:"):text.index("- It works through GitHub PRs")]
     for needle in ("transport-failure", "allocation-status", "--allocation-purpose", "relaunch"):
         check(needle in section, f"README recovery summary omits {needle!r}")
     check(section.index("transport-failure") < section.index("allocation-status") <
