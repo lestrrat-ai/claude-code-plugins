@@ -229,6 +229,20 @@ def _prepare_predecessors(args: SimpleNamespace) -> None:
     args.report_producer = target_producer
 
 
+def _write_prejournal_identity(args: SimpleNamespace, launch_attempt: str) -> None:
+    """Write valid legacy progress evidence without an allocation journal."""
+    paths = D.attempt_paths(Path(args.run_dir), args.pr, args.review_pass, launch_attempt)
+    paths["progress"].write_bytes(D.identity_bytes(
+        paths["progress"],
+        pr=args.pr,
+        review_pass=args.review_pass,
+        launch_attempt=launch_attempt,
+        head_sha=args.head_sha,
+        dispatched_at=args.dispatched_at,
+        default_non_goals=[],
+    ))
+
+
 def t_relaunch_paths_share_one_attempt_identity() -> None:
     """A relaunch cannot mix attempt-1 and attempt-2 output paths."""
     with tempfile.TemporaryDirectory() as raw:
@@ -1047,6 +1061,98 @@ def t_allocation_reserves_final_review_after_nonterminal_outcomes() -> None:
           "review-dispatch.md does not state the reviewed-result evidence requirement")
 
 
+def t_final_allocation_requires_durable_due_history() -> None:
+    """A route failure needs ordinary recovery unless an amendment or changed-head history makes final due."""
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw), review_pass="1")
+        D.prepare(args)
+        _record_result(args, D.PROVIDER_FAILURE)
+        args.launch_attempt = "2"
+        args.allocation_purpose = "final"
+        _refused(args, "durable amended plan or post-repair pass")
+        args.allocation_purpose = "recovery"
+        D.prepare(args)
+
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw), review_pass="1")
+        for attempt, purpose in (("1", "initial"), ("2", "recovery"), ("3", "recovery")):
+            args.launch_attempt = attempt
+            args.allocation_purpose = purpose
+            D.prepare(args)
+            _record_result(args, D.PROVIDER_FAILURE)
+        args.launch_attempt = "4"
+        args.allocation_purpose = "final"
+        _refused(args, "durable amended plan or post-repair pass")
+        args.allocation_purpose = "recovery"
+        _refused(args, "ordinary allocations are spent; the reserved final review is not due")
+
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw), allocation_purpose="final")
+        D.prepare(args)
+        _path, _text, _records, allocations, results = D.load_allocations(
+            Path(args.run_dir), args.pr, args.review_pass)
+        check(D.allocation_summary(allocations, results)["attempts"] == [{
+            "launch_attempt": 1, "purpose": "final", "result": "in-flight",
+        }], "a changed immutable predecessor head did not make the post-repair final review due")
+
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw), allocation_purpose="final", head_sha="b" * 40)
+        _refused(args, "durable amended plan or post-repair pass")
+
+    runtime = (OWNER.parent.parent / "references" / "runtime-adapter.md").read_text(encoding="utf-8")
+    check("becomes due only after the journal records" in runtime and
+          "provider, transport, or\nartifact failure alone" in runtime,
+          "runtime allocation owner does not distinguish reservation from final-review eligibility")
+
+
+def t_prejournal_active_attempt_migrates_before_settlement() -> None:
+    """A validated active legacy attempt gains a durable allocation and then settles normally."""
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw), launch_attempt="2")
+        _write_prejournal_identity(args, "2")
+        summary = _record_result(args, D.PROVIDER_FAILURE)
+        check(summary["attempts"] == [{
+            "launch_attempt": 2, "purpose": D.LEGACY_ALLOCATION, "result": D.PROVIDER_FAILURE,
+        }], f"pre-journal attempt did not migrate before settlement: {summary}")
+        journal = D.allocation_path(Path(args.run_dir), args.pr, args.review_pass)
+        records = [json.loads(line) for line in journal.read_text(encoding="utf-8").splitlines()]
+        check([(record["type"], record["launch_attempt"], record.get("purpose")) for record in records] == [
+            (D.ALLOCATION, "2", D.LEGACY_ALLOCATION),
+            (D.ALLOCATION_RESULT, "2", None),
+        ], f"legacy migration did not precede its settlement: {records}")
+
+        args.launch_attempt = "3"
+        args.allocation_purpose = "recovery"
+        D.prepare(args)
+        _path, _text, _records, allocations, results = D.load_allocations(
+            Path(args.run_dir), args.pr, args.review_pass)
+        check(D.allocation_summary(allocations, results)["attempts"] == [
+            {"launch_attempt": 2, "purpose": D.LEGACY_ALLOCATION, "result": D.PROVIDER_FAILURE},
+            {"launch_attempt": 3, "purpose": "recovery", "result": "in-flight"},
+        ], "the journal did not continue monotonically after legacy migration")
+
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw), launch_attempt="1")
+        _write_prejournal_identity(args, "1")
+        _write_prejournal_identity(args, "2")
+        try:
+            _record_result(args, D.PROVIDER_FAILURE)
+        except D.Refusal as exc:
+            check("not the active pre-journal attempt" in str(exc),
+                  f"a superseded pre-journal attempt had the wrong refusal: {exc}")
+        else:
+            check(False, "a superseded pre-journal attempt was migrated")
+        check(not D.allocation_path(Path(args.run_dir), args.pr, args.review_pass).exists(),
+              "a superseded pre-journal attempt created a migration journal")
+
+    refs = OWNER.parent.parent / "references"
+    runtime = (refs / "runtime-adapter.md").read_text(encoding="utf-8")
+    dispatch = (refs / "review-dispatch.md").read_text(encoding="utf-8")
+    check("Migrate a journal-less active legacy attempt" in runtime and
+          "journal-less run created before allocation journaling" in dispatch,
+          "the legacy settlement path is not documented at its allocation and invocation owners")
+
+
 def t_reviewed_result_requires_usable_binary_review() -> None:
     """`reviewed` cannot consume the reserve without a verify-countable active attempt."""
     with tempfile.TemporaryDirectory() as raw:
@@ -1544,6 +1650,10 @@ CASES = [
     ("malformed-identity-refused", "a malformed lone identity is refused, not reclaimed", t_malformed_lone_identity_is_refused_not_reclaimed),
     ("allocation-final-reserve", "nonterminal outcomes preserve one fresh final review allocation",
      t_allocation_reserves_final_review_after_nonterminal_outcomes),
+    ("allocation-final-due-history", "final allocation requires amended or post-repair history",
+     t_final_allocation_requires_durable_due_history),
+    ("allocation-legacy-migration", "an active pre-journal attempt migrates before settlement",
+     t_prejournal_active_attempt_migrates_before_settlement),
     ("reviewed-needs-binary", "reviewed refuses a missing, deferred, malformed, or incomplete review",
      t_reviewed_result_requires_usable_binary_review),
     ("reviewed-refuses-scope-drift", "reviewed preserves the final reservation when the run scope moves",

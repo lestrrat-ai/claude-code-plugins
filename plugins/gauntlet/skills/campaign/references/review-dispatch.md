@@ -104,6 +104,11 @@ otherwise unusable report. Settle a stale head as `head-invalidated` and a stale
 `allocation-status` renders its durable history after a dead attempt settles, for a held PR, or for a final
 report.
 
+For a journal-less run created before allocation journaling, `result` first validates the named active
+attempt against its derived plan and records its `legacy` allocation from immutable identity data. It then
+records the requested outcome. `runtime-adapter.md`, **Review allocation journal**, owns the migration
+conditions and the due-allocation rule; `legacy` is not accepted by `prepare`.
+
 ### Prompt bytes have one owner
 
 **Use only the prompt written at `transport.prompt_path`.** The exact reviewer contract lives in the

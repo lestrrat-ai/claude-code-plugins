@@ -731,9 +731,9 @@ def t_bundle_refuses_unreconcilable_pass_histories(tmp: Path) -> None:
           err.index("park the PR for the user"),
           f"the verdictless-latest recovery does not settle before choosing or relaunching: {err!r}")
 
-    # A verdictless LATEST pass at attempt 3 can still use the separately reserved final allocation. The
-    # repair bundle cannot infer that from the filename, so its refusal must direct the driver to the
-    # durable allocation journal rather than claiming the old attempt cap exhausted the review.
+    # A verdictless LATEST pass at attempt 3 may have a due final allocation, but the repair bundle cannot
+    # infer the durable due history from its filename. Its refusal must direct the driver to the journal
+    # rather than claim the old attempt cap exhausted the review.
     spent = bundle_setup(tmp / "spent", rounds=4)
     write_review_attempt(spent["rundir"], 4, 2, spent["head_sha"],
                          "SUPERSEDED ATTEMPT 2 MUST NOT BE READ\n")

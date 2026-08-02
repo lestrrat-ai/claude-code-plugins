@@ -64,11 +64,14 @@ INITIAL_ALLOCATION = "initial"
 RECOVERY_ALLOCATION = "recovery"
 FINAL_ALLOCATION = "final"
 ALLOCATION_PURPOSES = (INITIAL_ALLOCATION, RECOVERY_ALLOCATION, FINAL_ALLOCATION)
+LEGACY_ALLOCATION = "legacy"
+JOURNAL_ALLOCATION_PURPOSES = ALLOCATION_PURPOSES + (LEGACY_ALLOCATION,)
 
 # A review pass keeps three bounded launch allocations for the ordinary route-recovery sequence.  The
-# final allocation is separate: it is the independent review owed after a plan repair/amendment, and a
-# provider/transport/artifact failure must never silently spend it.  Its retries receive new attempt
-# artifacts but retain this one reservation until a usable binary review lands.
+# final allocation is separate: it is the independent review owed after a durable plan amendment or a
+# post-repair pass.  A provider/transport/artifact failure alone must neither spend it nor make it due.
+# Its retries receive new attempt artifacts but retain this one reservation until a usable binary review
+# lands.
 ORDINARY_ALLOCATION_LIMIT = 3
 ALLOCATION = "review_allocation"
 ALLOCATION_RESULT = "review_allocation_result"
@@ -288,8 +291,8 @@ def _check_allocation_record(record: dict, where: str, pr: str, review_pass: str
     _validate_id("launch_attempt", record["launch_attempt"])
     _validate_id("head_sha", record["head_sha"])
     _check_allocation_time(record["dispatched_at"], f"{where} dispatched_at")
-    if record["purpose"] not in ALLOCATION_PURPOSES:
-        refuse(f"{where} purpose must be one of {list(ALLOCATION_PURPOSES)}, got {record['purpose']!r}")
+    if record["purpose"] not in JOURNAL_ALLOCATION_PURPOSES:
+        refuse(f"{where} purpose must be one of {list(JOURNAL_ALLOCATION_PURPOSES)}, got {record['purpose']!r}")
 
 
 def _check_result_record(record: dict, where: str, pr: str, review_pass: str,
@@ -332,9 +335,16 @@ def load_allocations(rundir: Path, pr: str, review_pass: str) -> tuple[Path, str
             attempt = record["launch_attempt"]
             if attempt in allocations:
                 refuse(f"{where} allocates launch attempt {attempt} twice")
-            expected = str(len(allocations) + 1)
-            if attempt != expected:
-                refuse(f"{where} allocates launch attempt {attempt}, but the next allocation must be {expected}")
+            if not allocations and record["purpose"] == LEGACY_ALLOCATION:
+                # A pre-journal run may have retried before this journal existed.  Preserve its immutable
+                # active attempt number instead of inventing prior allocations that the journal cannot prove.
+                pass
+            else:
+                if record["purpose"] == LEGACY_ALLOCATION:
+                    refuse(f"{where} may use legacy allocation only as the first journal record")
+                expected = str(int(next(reversed(allocations))) + 1) if allocations else "1"
+                if attempt != expected:
+                    refuse(f"{where} allocates launch attempt {attempt}, but the next allocation must be {expected}")
             allocations[attempt] = record
             continue
         if record.get("type") == ALLOCATION_RESULT:
@@ -353,8 +363,8 @@ def _append_allocation_record(path: Path, text: str, record: dict) -> None:
         refuse(f"cannot durably record allocation state at {path}: {exc}")
 
 
-def _ensure_allocation_available(allocations: dict[str, dict], results: dict[str, dict],
-                                 purpose: str) -> None:
+def _ensure_allocation_available(allocations: dict[str, dict], results: dict[str, dict], purpose: str,
+                                 *, post_repair_pass: bool) -> None:
     if purpose not in ALLOCATION_PURPOSES:
         refuse(f"--allocation-purpose must be one of {list(ALLOCATION_PURPOSES)}, got {purpose!r}")
     outstanding = sorted(attempt for attempt in allocations if attempt not in results)
@@ -367,12 +377,24 @@ def _ensure_allocation_available(allocations: dict[str, dict], results: dict[str
     amended_attempts = [
         attempt for attempt, result in results.items() if result["result"] == AMENDED
     ]
+    ordinary = [record for record in allocations.values() if record["purpose"] != FINAL_ALLOCATION]
+    ordinary_used = max((int(record["launch_attempt"]) for record in ordinary), default=0)
     if amended_attempts and not final_attempts and purpose != FINAL_ALLOCATION:
         refuse(
             f"amended plan at allocation attempt {amended_attempts[-1]} requires the reserved final review; "
             "prepare that final allocation before ordinary recovery work"
         )
     if purpose == FINAL_ALLOCATION:
+        if not final_attempts and not (amended_attempts or post_repair_pass):
+            recovery = (
+                "use an ordinary recovery allocation"
+                if ordinary_used < ORDINARY_ALLOCATION_LIMIT
+                else "ordinary recovery capacity is exhausted"
+            )
+            refuse(
+                "the reserved final review is due only after a durable amended plan or post-repair pass; "
+                + recovery
+            )
         if final_attempts:
             last = final_attempts[-1]
             result = results.get(last["launch_attempt"])
@@ -384,22 +406,46 @@ def _ensure_allocation_available(allocations: dict[str, dict], results: dict[str
     if final_attempts:
         refuse("a final review allocation already began; continue or settle that reservation instead of "
                "allocating ordinary recovery work")
-    ordinary = [record for record in allocations.values() if record["purpose"] != FINAL_ALLOCATION]
     if purpose == RECOVERY_ALLOCATION and not ordinary:
         refuse("a recovery allocation requires the initial review allocation first")
     if purpose == INITIAL_ALLOCATION and ordinary:
-        refuse("an initial review allocation already exists; use recovery or the reserved final review")
-    if purpose == RECOVERY_ALLOCATION and len(ordinary) >= ORDINARY_ALLOCATION_LIMIT:
-        refuse(f"the {ORDINARY_ALLOCATION_LIMIT} ordinary allocations are spent; use the reserved final review")
-    if purpose == INITIAL_ALLOCATION and len(ordinary) >= ORDINARY_ALLOCATION_LIMIT:
-        refuse(f"the {ORDINARY_ALLOCATION_LIMIT} ordinary allocations are spent; use the reserved final review")
+        refuse("an initial review allocation already exists; use recovery while capacity remains, or final when due")
+    if purpose == RECOVERY_ALLOCATION and ordinary_used >= ORDINARY_ALLOCATION_LIMIT:
+        if amended_attempts or post_repair_pass:
+            refuse(f"the {ORDINARY_ALLOCATION_LIMIT} ordinary allocations are spent; use the reserved final review")
+        refuse(
+            f"the {ORDINARY_ALLOCATION_LIMIT} ordinary allocations are spent; the reserved final review is "
+            "not due without a durable amended plan or post-repair pass"
+        )
+    if purpose == INITIAL_ALLOCATION and ordinary_used >= ORDINARY_ALLOCATION_LIMIT:
+        if amended_attempts or post_repair_pass:
+            refuse(f"the {ORDINARY_ALLOCATION_LIMIT} ordinary allocations are spent; use the reserved final review")
+        refuse(
+            f"the {ORDINARY_ALLOCATION_LIMIT} ordinary allocations are spent; the reserved final review is "
+            "not due without a durable amended plan or post-repair pass"
+        )
 
 
 def _ensure_next_launch_attempt(allocations: dict[str, dict], launch_attempt: str) -> None:
     """Keep a pass's attempt identity contiguous and monotonically increasing."""
-    expected = str(len(allocations) + 1)
+    expected = str(int(next(reversed(allocations))) + 1) if allocations else "1"
     if launch_attempt != expected:
         refuse(f"--launch-attempt must be the next allocation {expected}, got {launch_attempt}")
+
+
+def _is_post_repair_pass(rundir: Path, pr: str, review_pass: str, head_sha: str) -> bool:
+    """True when the immediately preceding valid pass records a different immutable review head."""
+    previous = int(review_pass) - 1
+    if previous == 0:
+        return False
+    for progress in RP.active_attempts(rundir):
+        artifact_pr, artifact_pass, _ = RP.parse_name(progress)
+        if artifact_pr == pr and artifact_pass == str(previous):
+            try:
+                return _recorded_head(progress) != head_sha
+            except (OSError, RP.Defect) as exc:
+                refuse(f"cannot read post-repair history for pr {pr} pass {previous}: {exc}")
+    refuse(f"post-repair history for pr {pr} is missing pass {previous}")
 
 
 def allocation_summary(allocations: dict[str, dict], results: dict[str, dict], *, journal_present: bool = True) -> dict:
@@ -499,19 +545,56 @@ def _require_usable_binary_review(rundir: Path, pr: str, review_pass: str, launc
         refuse(f"launch attempt {launch_attempt} cannot record reviewed without a usable binary review")
 
 
+def _legacy_allocation(rundir: Path, pr: str, review_pass: str, launch_attempt: str) -> dict:
+    """Derive the one pre-journal active attempt that may be migrated into durable driver state."""
+    paths = attempt_paths(rundir, pr, review_pass, launch_attempt)
+    progress = paths["progress"]
+    if progress not in RP.active_attempts(rundir):
+        refuse(
+            f"launch attempt {launch_attempt} has no allocation journal and is not the active pre-journal "
+            "attempt; recover the active attempt instead"
+        )
+    try:
+        events, _ = RP.check_progress_file(
+            RP.read_text(progress, "pre-journal active progress file"),
+            progress,
+            lambda: RP.load_plan(paths["plan"]),
+        )
+        identity = RP.check_identity(events, pr, review_pass, launch_attempt)
+    except (OSError, RP.Defect) as exc:
+        refuse(
+            f"launch attempt {launch_attempt} has no allocation journal and cannot be migrated from "
+            f"invalid active evidence: {exc}"
+        )
+    return {
+        "type": ALLOCATION,
+        "pr": pr,
+        "pass": review_pass,
+        "launch_attempt": launch_attempt,
+        "head_sha": identity["head_sha"],
+        "dispatched_at": identity["dispatched_at"],
+        "purpose": LEGACY_ALLOCATION,
+    }
+
+
 def record_result(args) -> dict:
     rundir = Path(args.run_dir)
     _absolute_directory(rundir, "run-dir")
     _validate_id("pr", args.pr)
     _validate_id("pass", args.review_pass)
     _validate_id("launch_attempt", args.launch_attempt)
-    path, text, _, allocations, results = load_allocations(rundir, args.pr, args.review_pass)
+    if args.result not in ALLOCATION_RESULTS:
+        refuse(f"--result must be one of {list(ALLOCATION_RESULTS)}, got {args.result!r}")
+    path, text, records, allocations, results = load_allocations(rundir, args.pr, args.review_pass)
+    if not records and args.launch_attempt not in allocations:
+        allocation = _legacy_allocation(rundir, args.pr, args.review_pass, args.launch_attempt)
+        _append_allocation_record(path, text, allocation)
+        text += json.dumps(allocation, separators=(",", ":")) + "\n"
+        allocations = {args.launch_attempt: allocation}
     if args.launch_attempt not in allocations:
         refuse(f"launch attempt {args.launch_attempt} has no allocation record in {path}")
     if args.launch_attempt in results:
         refuse(f"launch attempt {args.launch_attempt} already recorded result {results[args.launch_attempt]['result']!r}")
-    if args.result not in ALLOCATION_RESULTS:
-        refuse(f"--result must be one of {list(ALLOCATION_RESULTS)}, got {args.result!r}")
     if args.result == REVIEWED:
         _require_usable_binary_review(
             rundir,
@@ -894,10 +977,20 @@ def prepare(args) -> dict:
         )
 
     paths = attempt_paths(rundir, args.pr, args.review_pass, args.launch_attempt)
+    require_contiguous_history(rundir, args.pr, args.review_pass)
+    post_repair_pass = (
+        _is_post_repair_pass(rundir, args.pr, args.review_pass, args.head_sha)
+        if args.allocation_purpose == FINAL_ALLOCATION else False
+    )
     allocation_journal, allocation_text, _, allocations, allocation_results = load_allocations(
         rundir, args.pr, args.review_pass
     )
-    _ensure_allocation_available(allocations, allocation_results, args.allocation_purpose)
+    _ensure_allocation_available(
+        allocations,
+        allocation_results,
+        args.allocation_purpose,
+        post_repair_pass=post_repair_pass,
+    )
     _ensure_next_launch_attempt(allocations, args.launch_attempt)
     if not intent_path.is_absolute():
         refuse(f"--intent-file must be an absolute path, got {intent_path}")
@@ -912,7 +1005,6 @@ def prepare(args) -> dict:
         intent = intent_path.read_bytes()
     except (RP.Defect, OSError) as exc:
         refuse(str(exc))
-    require_contiguous_history(rundir, args.pr, args.review_pass)
 
     try:
         template = TEMPLATE.read_bytes()
