@@ -48,7 +48,10 @@ Inputs have these owners:
   neither nested inside the other; the command refuses an identical or either-way-nested pair before staging
   any artifact, so preparation never writes launch files into the candidate worktree. This is a fail-closed
   input check, not an OS boundary.
-- `pr`, `review_pass`, `head_sha`, and `dispatched_at` name this launch attempt.
+- `pr`, `review_pass`, `head_sha`, and `dispatched_at` name this launch attempt. With `--file`,
+  `head_sha` is an assertion against the selected row's live `head_sha`; a mismatch refuses before
+  preparation writes an allocation or reviewer artifact. Refresh the PR state and preconditions, then
+  retry with the live head. The ledger row is the source of truth; `--head-sha` is not a review-head source.
 - `ledger_default_non_goals` is the run header's `default_non_goals` value (its canonical JSON array, `[]`
   when the run declares none), read from `<review_root>/state.jsonl`. `prepare` BINDS it into the
   `pass_identity` as the immutable dispatch-time review scope this pass's verdict is measured against — the

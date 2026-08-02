@@ -777,6 +777,14 @@ def check_document_contract() -> None:
         "### Record allocation outcomes",
     ):
         require(needle in dispatch, f"review-dispatch.md lost preparation handoff: {needle}")
+    dispatch_flat = " ".join(dispatch.split())
+    loop_control_flat = " ".join(loop_control.split())
+    require("`head_sha` is an assertion against the selected row's live `head_sha`" in dispatch_flat and
+            "mismatch refuses before preparation writes an allocation or reviewer artifact" in dispatch_flat,
+            "review-dispatch.md lost the pre-artifact live-head assertion")
+    require("pass the freshly read ledger-row `head_sha` to `review-dispatch.py prepare`" in loop_control_flat and
+            "`--file` head assertion refuses before writing an allocation or reviewer artifact" in loop_control_flat,
+            "loop-control.md lost the stale-head dispatch recovery")
 
     for needle in (
         "TRANSPORT is this JSON-decoded ReviewTransport record:",

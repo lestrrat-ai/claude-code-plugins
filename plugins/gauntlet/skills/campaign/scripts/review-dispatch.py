@@ -3,10 +3,10 @@
 
 This command is the executable boundary between campaign policy and host dispatch. The host first chooses
 an available route through ``runtime-adapter.md``. ``prepare`` then validates that route's report owner,
-the complete earlier review history, and the existing plan and intent through ``review-pass.py``. It derives
-every attempt-scoped path from one identity, creates the progress identity and bound prompt, and prints the
-canonical JSON record the host launches. It does not select a route, test route availability, or launch a
-reviewer.
+the complete earlier review history, the existing plan and intent through ``review-pass.py``, and, with a
+ledger, the selected row's live head. It derives every attempt-scoped path from one identity, creates the
+progress identity and bound prompt, and prints the canonical JSON record the host launches. It does not
+select a route, test route availability, or launch a reviewer.
 """
 
 from __future__ import annotations
@@ -952,6 +952,11 @@ def prepare(args) -> dict:
         row = L.find_row(rows, str(args.pr))
         if row is None:
             refuse(f"no ledger row for pr {args.pr} — its base cannot be resolved")
+        if args.head_sha != row["head_sha"]:
+            refuse(
+                f"--head-sha {args.head_sha} disagrees with pr {args.pr}'s live ledger head "
+                f"{row['head_sha']} — --head-sha is an assertion, not a review-head source"
+            )
         effective_base, base_problem = L.require_effective_base(header, row, str(args.pr))
         if base_problem is not None:
             refuse(base_problem)
@@ -1118,7 +1123,8 @@ def build_parser() -> argparse.ArgumentParser:
                          help="typed prompt framing selected by the review preparation mapping")
     command.add_argument("--report-producer", required=True, choices=REPORT_PRODUCERS,
                          help="sole report producer; must match the selected route")
-    command.add_argument("--head-sha", required=True, help="40-character lowercase review head SHA")
+    command.add_argument("--head-sha", required=True, help="40-character lowercase review head SHA; with "
+                                                        "--file it must equal the selected row's live head")
     command.add_argument("--dispatched-at", required=True, help="UTC timestamp YYYY-MM-DDThh:mm:ssZ")
     command.add_argument("--default-non-goals", required=True,
                          help="the run header's `default_non_goals` value (a canonical JSON array, `[]` when "

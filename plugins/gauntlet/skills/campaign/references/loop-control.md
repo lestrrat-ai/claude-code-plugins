@@ -520,7 +520,10 @@ rules keep their own wording; these are illustrations of them, not a second copy
      `proceed` it records `base_ok_sha` for the head, without which `ledger.py verdict` refuses the verdict
      it later records (Stage 2a, "Recording a verdict"). Rebase on `rebase-first`, re-poll on `recheck`, or
      leave the ledger-held candidate alone on `park` per Stage 2a, then restart this precondition sequence.
-     With `proceed`, evaluate the verdict transport through
+     With `proceed`, pass the freshly read ledger-row `head_sha` to `review-dispatch.py prepare`. Its
+     `--file` head assertion refuses before writing an allocation or reviewer artifact if the PR moved;
+     refresh the PR state and restart this precondition sequence instead of spending a stale retry
+     (`review-dispatch.md`, "Prepare the active attempt", owns the assertion). Then evaluate the verdict transport through
      `runtime-adapter.md`'s capability/transition owner before
      building its record and take only the action it returns;
      missing native cwd/mount/sandbox controls alone are not a machine blocker. Then **ensure the pass's
