@@ -240,7 +240,8 @@ never the place to look them up.
   gets going at all — hung on input, a bad path, a sandbox
   denial — is caught the same way: every review pass has to write *something* to its progress file
   within about five minutes of being dispatched, and one that writes nothing at all is killed and
-  settled as `transport-failure`. Its `review-dispatch.py allocation-status` then selects the due
+  settled as `transport-failure`. Its `review-dispatch.py allocation-status` renders durable allocation
+  history. The driver uses `runtime-adapter.md`, **Review allocation journal**, to select the due
   `--allocation-purpose`, including `final`, before a fresh relaunch. The bar there is just "is it alive",
   so anything the reviewer writes clears it; a review that is merely slow is judged by a separate, longer
   timer.

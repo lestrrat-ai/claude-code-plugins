@@ -1066,14 +1066,14 @@ def t_allocation_reserves_final_review_after_nonterminal_outcomes() -> None:
 
 
 def t_final_allocation_requires_durable_due_history() -> None:
-    """A route failure needs ordinary recovery unless an amendment or changed-head history makes final due."""
+    """A route failure needs ordinary recovery unless an amendment, invalidated head, or repair makes final due."""
     with tempfile.TemporaryDirectory() as raw:
         args = _fixture(Path(raw), review_pass="1")
         D.prepare(args)
         _record_result(args, D.PROVIDER_FAILURE)
         args.launch_attempt = "2"
         args.allocation_purpose = "final"
-        _refused(args, "durable amended plan or post-repair pass")
+        _refused(args, "durable amended plan, head-invalidated review, or post-repair pass")
         args.allocation_purpose = "recovery"
         D.prepare(args)
 
@@ -1086,7 +1086,7 @@ def t_final_allocation_requires_durable_due_history() -> None:
             _record_result(args, D.PROVIDER_FAILURE)
         args.launch_attempt = "4"
         args.allocation_purpose = "final"
-        _refused(args, "durable amended plan or post-repair pass")
+        _refused(args, "durable amended plan, head-invalidated review, or post-repair pass")
         args.allocation_purpose = "recovery"
         _refused(args, "ordinary allocations are spent; the reserved final review is not due")
 
@@ -1101,11 +1101,12 @@ def t_final_allocation_requires_durable_due_history() -> None:
 
     with tempfile.TemporaryDirectory() as raw:
         args = _fixture(Path(raw), allocation_purpose="final", head_sha="b" * 40)
-        _refused(args, "durable amended plan or post-repair pass")
+        _refused(args, "durable amended plan, head-invalidated review, or post-repair pass")
 
     runtime = (OWNER.parent.parent / "references" / "runtime-adapter.md").read_text(encoding="utf-8")
     check("becomes due only after the journal records" in runtime and
-          "provider, transport, or\nartifact failure alone" in runtime,
+          "`head-invalidated` for an attempt in the same pass" in runtime and
+          "provider, transport, or artifact failure alone" in runtime,
           "runtime allocation owner does not distinguish reservation from final-review eligibility")
 
 
@@ -1227,10 +1228,11 @@ def t_reviewed_result_refuses_scope_drift() -> None:
 
 
 def t_reviewed_result_refuses_live_head_drift() -> None:
-    """A changed selected-ledger head settles as head-invalidated and permits final retry."""
+    """A pass-one changed selected-ledger head settles and retries on its current head."""
     with tempfile.TemporaryDirectory() as raw:
         args = _fixture(
-            Path(raw), head_sha="a" * 40, route="external-codex", review_action="launch-external",
+            Path(raw), review_pass="1", seed_history=False, head_sha="a" * 40,
+            route="external-codex", review_action="launch-external",
         )
         ledger = _build_ledger_scope(Path(args.run_dir), args.pr, "main", "[]", head_sha=args.head_sha)
         args.file = os.fspath(ledger)
@@ -1249,11 +1251,17 @@ def t_reviewed_result_refuses_live_head_drift() -> None:
         }], f"head invalidation did not settle the stale allocation: {summary}")
         args.launch_attempt = "2"
         args.allocation_purpose = "final"
+        args.head_sha = "b" * 40
         args.review_action = "launch-external"
         args.prompt_profile = "standard"
         transport = D.prepare(args)["transport"]
         check(transport["prompt_profile"] == "standard",
               "a final external-Codex launch must use the launch-external standard profile")
+        paths = D.attempt_paths(Path(args.run_dir), args.pr, args.review_pass, args.launch_attempt)
+        events = D.RP.parse_lines(paths["progress"].read_text(encoding="utf-8"), paths["progress"].name)
+        identity = D.RP.check_identity(events, args.pr, args.review_pass, args.launch_attempt)
+        check(identity["head_sha"] == "b" * 40,
+              "a head-invalidated final retry did not bind the current ledger head")
 
 
 def t_binary_review_is_journaled_before_verdict_tally() -> None:
@@ -1654,7 +1662,7 @@ CASES = [
     ("malformed-identity-refused", "a malformed lone identity is refused, not reclaimed", t_malformed_lone_identity_is_refused_not_reclaimed),
     ("allocation-final-reserve", "nonterminal outcomes preserve one fresh final review allocation",
      t_allocation_reserves_final_review_after_nonterminal_outcomes),
-    ("allocation-final-due-history", "final allocation requires amended or post-repair history",
+    ("allocation-final-due-history", "final allocation requires amended, invalidated-head, or post-repair history",
      t_final_allocation_requires_durable_due_history),
     ("allocation-legacy-migration", "an active pre-journal attempt migrates before settlement",
      t_prejournal_active_attempt_migrates_before_settlement),

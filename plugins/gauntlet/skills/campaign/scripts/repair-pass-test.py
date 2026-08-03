@@ -723,12 +723,12 @@ def t_bundle_refuses_unreconcilable_pass_histories(tmp: Path) -> None:
     code, _, err = run_bundle(last, last["rundir"] / "bundle.txt")
     check(code == 1 and "latest artifact pass" in err,
           f"a verdictless latest pass was not refused: {err!r}")
-    for needle in ("review-dispatch.py result", "allocation-status", "--allocation-purpose", "relaunch pass 4",
-                   "park the PR for the user"):
+    for needle in ("review-dispatch.py result", "allocation-status", "--allocation-purpose", "no legal allocation",
+                   "park the PR for the user", "machine blocker", "relaunch pass 4"):
         check(needle in err, f"the verdictless-latest refusal omits {needle!r}: {err!r}")
     check(err.index("review-dispatch.py result") < err.index("allocation-status") <
-          err.index("--allocation-purpose") < err.index("relaunch pass 4") <
-          err.index("park the PR for the user"),
+          err.index("--allocation-purpose") < err.index("no legal allocation") <
+          err.index("park the PR for the user") < err.index("relaunch pass 4"),
           f"the verdictless-latest recovery does not settle before choosing or relaunching: {err!r}")
 
     # A verdictless LATEST pass at attempt 3 may have a due final allocation, but the repair bundle cannot
@@ -778,12 +778,12 @@ def t_bundle_refuses_unreconcilable_pass_histories(tmp: Path) -> None:
     reledger(torn, "3")
     code, _, err = run_bundle(torn, torn["rundir"] / "bundle.txt")
     check(code == 1 and "cannot arbitrate" in err, f"a torn surplus report was not refused: {err!r}")
-    for needle in ("review-dispatch.py result", "allocation-status", "--allocation-purpose", "relaunch pass 2",
-                   "park only when the final reservation is consumed"):
+    for needle in ("review-dispatch.py result", "allocation-status", "--allocation-purpose", "no legal allocation",
+                   "park the PR for the user", "machine blocker", "relaunch pass 2"):
         check(needle in err, f"the unparseable-surplus refusal omits {needle!r}: {err!r}")
     check(err.index("review-dispatch.py result") < err.index("allocation-status") <
-          err.index("--allocation-purpose") < err.index("relaunch pass 2") <
-          err.index("park only when the final reservation is consumed"),
+          err.index("--allocation-purpose") < err.index("no legal allocation") <
+          err.index("park the PR for the user") < err.index("relaunch pass 2"),
           f"the unparseable-surplus recovery does not settle before choosing or relaunching: {err!r}")
 
 
@@ -793,11 +793,15 @@ def t_readme_settles_dead_reviews_before_relaunch(tmp: Path) -> None:
     readme = OWNER.parent.parent / "README.md"
     text = readme.read_text(encoding="utf-8")
     section = text[text.index("denial — is caught the same way:"):text.index("- It works through GitHub PRs")]
-    for needle in ("transport-failure", "allocation-status", "--allocation-purpose", "relaunch"):
+    for needle in ("transport-failure", "allocation-status", "durable allocation\n  history",
+                   "runtime-adapter.md", "--allocation-purpose", "relaunch"):
         check(needle in section, f"README recovery summary omits {needle!r}")
     check(section.index("transport-failure") < section.index("allocation-status") <
-          section.index("--allocation-purpose") < section.index("relaunch"),
-          "README relaunches a dead reviewer before settlement selects its due allocation")
+          section.index("runtime-adapter.md") < section.index("--allocation-purpose") <
+          section.index("relaunch"),
+          "README relaunches a dead reviewer before the runtime owner selects its due allocation")
+    check("allocation-status` then selects" not in section,
+          "README assigns due-purpose selection to allocation-status instead of the runtime owner")
 
 
 def t_unreconcilable_history_park_is_documented_at_each_boundary(tmp: Path) -> None:

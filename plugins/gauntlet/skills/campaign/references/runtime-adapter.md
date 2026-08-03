@@ -205,10 +205,11 @@ route, and prompt-profile mapping before writing launch artifacts.
 append-only `<rundir>/review-<pr>-<pass>.allocation.jsonl` record only after it has materialized the
 attempt's fresh prompt and identity. `initial` starts ordinary review work. At most two later `recovery`
 allocations follow it. `final` is separately reserved and becomes due only after the journal records
-`amended`, or for a post-repair pass whose immediately preceding valid active artifact records a different
-immutable `head_sha`. It may be the first allocation of that post-repair pass. A provider, transport, or
-artifact failure alone leaves the final allocation reserved but does not make it due; take ordinary recovery
-while its capacity remains. Exhausted ordinary capacity without due history refuses rather than spending final.
+`amended`, after it records `head-invalidated` for an attempt in the same pass, or for a post-repair pass
+whose immediately preceding valid active artifact records a different immutable `head_sha`. It may be the
+first allocation of that post-repair pass. A provider, transport, or artifact failure alone leaves the final
+allocation reserved but does not make it due; take ordinary recovery while its capacity remains. Exhausted
+ordinary capacity without due history refuses rather than spending final.
 
 **Record every completed attempt through `review-dispatch.py result` before allocating another.** Its
 `provider-failure`, `transport-failure`, `malformed-output`, `incomplete-plan`, `amended`, `reviewed`,
@@ -226,10 +227,11 @@ that attempt's immutable identity, then appends the outcome. It never invents mi
 
 **Keep the final allocation reserved after `provider-failure`, `transport-failure`, `malformed-output`,
 `incomplete-plan`, `amended`, `head-invalidated`, or `scope-invalidated`.** Prepare a new attempt-scoped
-artifact set with `--allocation-purpose final` only when the due-history rule above holds; otherwise prepare
-the due ordinary recovery allocation while capacity remains. Only `reviewed` — a usable binary review whose
-allocated head and dispatch-time scope still match the live ledger — consumes the final allocation. A final
-retry is still a fresh reviewer and a new `launch_attempt`; it never reuses a failed attempt's files.
+artifact set with `--allocation-purpose final` only when the due-history rule above holds; a settled
+`head-invalidated` attempt makes that final allocation due in the same pass. Otherwise prepare the due
+ordinary recovery allocation while capacity remains. Only `reviewed` — a usable binary review whose allocated
+head and dispatch-time scope still match the live ledger — consumes the final allocation. A final retry is
+still a fresh reviewer and a new `launch_attempt`; it never reuses a failed attempt's files.
 
 **Allocate `launch_attempt` monotonically for every reviewer launch passed to `prepare`.** An unavailable
 external route is never prepared and consumes no number, so its immediate native fallback takes the

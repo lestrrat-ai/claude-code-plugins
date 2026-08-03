@@ -390,8 +390,9 @@ def select_active_rounds(rundir: Path, pr: str,
                  f"landed rounds, and pass {round_no}'s active report cannot arbitrate the surplus: {exc}; "
                  f"record pass {round_no}'s observed non-binary result through review-dispatch.py result, then "
                  f"inspect review-dispatch.py allocation-status and runtime-adapter.md, Review allocation "
-                 f"journal, to choose its due --allocation-purpose (including final). Only then relaunch pass "
-                 f"{round_no} as its next launch attempt, or park only when the final reservation is consumed")
+                 f"journal, to determine whether a due --allocation-purpose (including final) exists. If they "
+                 f"leave no legal allocation, park the PR for the user with this reason (machine blocker); "
+                 f"otherwise relaunch pass {round_no} as its next launch attempt")
         if result["verdict"] == RP.DEFERRED:
             verdictless.append({"round": round_no, "launch_attempt": attempt_no,
                                 "deferred_reason": result["deferred_reason"]})
@@ -406,9 +407,10 @@ def select_active_rounds(rundir: Path, pr: str,
         fail(f"pr {pr}'s latest artifact pass {actual[-1]} is verdictless (DEFERRED) — a repair cap trips "
              f"only on a landed NOT SATISFIED, so the latest pass must be a landed round; record its observed "
              f"non-binary result through review-dispatch.py result, then inspect review-dispatch.py "
-             f"allocation-status and runtime-adapter.md, Review allocation journal, to choose its due "
-             f"--allocation-purpose (including final). Only then relaunch pass {actual[-1]} as its next launch "
-             f"attempt, or park the PR for the user only when the final reservation is consumed")
+             f"allocation-status and runtime-adapter.md, Review allocation journal, to determine whether a due "
+             f"--allocation-purpose (including final) exists. If they leave no legal allocation, park the PR for "
+             f"the user with this reason (machine blocker); otherwise relaunch pass {actual[-1]} as its next launch "
+             f"attempt")
     return ([(round_no, *active[round_no]) for round_no in landed], verdictless)
 
 

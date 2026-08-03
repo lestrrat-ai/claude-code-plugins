@@ -68,10 +68,10 @@ LEGACY_ALLOCATION = "legacy"
 JOURNAL_ALLOCATION_PURPOSES = ALLOCATION_PURPOSES + (LEGACY_ALLOCATION,)
 
 # A review pass keeps three bounded launch allocations for the ordinary route-recovery sequence.  The
-# final allocation is separate: it is the independent review owed after a durable plan amendment or a
-# post-repair pass.  A provider/transport/artifact failure alone must neither spend it nor make it due.
-# Its retries receive new attempt artifacts but retain this one reservation until a usable binary review
-# lands.
+# final allocation is separate: it is the independent review owed after a durable plan amendment, a
+# head-invalidated review, or a post-repair pass. A provider/transport/artifact failure alone must neither
+# spend it nor make it due. Its retries receive new attempt artifacts but retain this one reservation until
+# a usable binary review lands.
 ORDINARY_ALLOCATION_LIMIT = 3
 ALLOCATION = "review_allocation"
 ALLOCATION_RESULT = "review_allocation_result"
@@ -377,22 +377,32 @@ def _ensure_allocation_available(allocations: dict[str, dict], results: dict[str
     amended_attempts = [
         attempt for attempt, result in results.items() if result["result"] == AMENDED
     ]
+    head_invalidated_attempts = [
+        attempt for attempt, result in results.items() if result["result"] == HEAD_INVALIDATED
+    ]
+    final_due = bool(amended_attempts or head_invalidated_attempts or post_repair_pass)
     ordinary = [record for record in allocations.values() if record["purpose"] != FINAL_ALLOCATION]
     ordinary_used = max((int(record["launch_attempt"]) for record in ordinary), default=0)
-    if amended_attempts and not final_attempts and purpose != FINAL_ALLOCATION:
+    if (amended_attempts or head_invalidated_attempts) and not final_attempts and purpose != FINAL_ALLOCATION:
+        reason = (
+            f"amended plan at allocation attempt {amended_attempts[-1]}"
+            if amended_attempts
+            else f"head-invalidated review at allocation attempt {head_invalidated_attempts[-1]}"
+        )
         refuse(
-            f"amended plan at allocation attempt {amended_attempts[-1]} requires the reserved final review; "
+            f"{reason} requires the reserved final review; "
             "prepare that final allocation before ordinary recovery work"
         )
     if purpose == FINAL_ALLOCATION:
-        if not final_attempts and not (amended_attempts or post_repair_pass):
+        if not final_attempts and not final_due:
             recovery = (
                 "use an ordinary recovery allocation"
                 if ordinary_used < ORDINARY_ALLOCATION_LIMIT
                 else "ordinary recovery capacity is exhausted"
             )
             refuse(
-                "the reserved final review is due only after a durable amended plan or post-repair pass; "
+                "the reserved final review is due only after a durable amended plan, head-invalidated review, "
+                "or post-repair pass; "
                 + recovery
             )
         if final_attempts:
@@ -414,18 +424,18 @@ def _ensure_allocation_available(allocations: dict[str, dict], results: dict[str
     if purpose == INITIAL_ALLOCATION and ordinary:
         refuse("an initial review allocation already exists; use recovery while capacity remains, or final when due")
     if purpose == RECOVERY_ALLOCATION and ordinary_used >= ORDINARY_ALLOCATION_LIMIT:
-        if amended_attempts or post_repair_pass:
+        if final_due:
             refuse(f"the {ORDINARY_ALLOCATION_LIMIT} ordinary allocations are spent; use the reserved final review")
         refuse(
             f"the {ORDINARY_ALLOCATION_LIMIT} ordinary allocations are spent; the reserved final review is "
-            "not due without a durable amended plan or post-repair pass"
+            "not due without a durable amended plan, head-invalidated review, or post-repair pass"
         )
     if purpose == INITIAL_ALLOCATION and ordinary_used >= ORDINARY_ALLOCATION_LIMIT:
-        if amended_attempts or post_repair_pass:
+        if final_due:
             refuse(f"the {ORDINARY_ALLOCATION_LIMIT} ordinary allocations are spent; use the reserved final review")
         refuse(
             f"the {ORDINARY_ALLOCATION_LIMIT} ordinary allocations are spent; the reserved final review is "
-            "not due without a durable amended plan or post-repair pass"
+            "not due without a durable amended plan, head-invalidated review, or post-repair pass"
         )
 
 
