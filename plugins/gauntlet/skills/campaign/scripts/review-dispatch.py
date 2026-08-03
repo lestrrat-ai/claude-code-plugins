@@ -397,6 +397,9 @@ def _ensure_allocation_available(allocations: dict[str, dict], results: dict[str
             )
         if final_attempts:
             last = final_attempts[-1]
+            # The `allocation-final-reserve` fixture proves attempts 4–6 are fresh retries within one final
+            # reservation. Attempts 4–5 remain retryable; only attempt 6's usable binary `reviewed` result
+            # consumes that reservation.
             result = results.get(last["launch_attempt"])
             if result is None:
                 refuse(f"final allocation attempt {last['launch_attempt']} is still in flight")

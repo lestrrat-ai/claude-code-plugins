@@ -303,6 +303,10 @@ rules keep their own wording; these are illustrations of them, not a second copy
    not a verdict, so it is never tallied — the tool routes on
    the progress file and returns `amended` (fold the amendment, re-run the pass) or `incomplete`
    (relaunch), and only a binary `satisfied`/`not-satisfied` ever reaches the ledger below.
+   **Every non-binary verification result must settle its active attempt through `review-dispatch.py result`
+   before allocating its relaunch.** Record `amended` as `--result amended` and `incomplete` as
+   `--result incomplete-plan`; identify every other observed outcome through `runtime-adapter.md`,
+   **Review allocation journal**, then run `allocation-status` and choose the next allocation.
    **After a binary pass verifies `ok`, record `review-dispatch.py result --result reviewed` for its active
    attempt before recording its verdict.** If the allocation's head or dispatch-time scope is stale, this
    refuses; settle it as `head-invalidated` or `scope-invalidated` before selecting the final retry. The

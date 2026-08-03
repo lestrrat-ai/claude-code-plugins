@@ -1057,6 +1057,10 @@ def t_allocation_reserves_final_review_after_nonterminal_outcomes() -> None:
     for name, text in (("Stage 2", stage), ("killed-session", loop)):
         check("Review allocation journal" in text,
               f"{name} recovery does not point to the allocation-policy owner")
+    check("Every non-binary verification result must settle its active attempt" in loop and
+          "before allocating its relaunch" in loop and
+          "`--result amended`" in loop and "`--result incomplete-plan`" in loop,
+          "loop control does not settle amended and incomplete verification results before relaunch")
     check("result --result reviewed" in dispatch and "missing, deferred" in dispatch,
           "review-dispatch.md does not state the reviewed-result evidence requirement")
 
