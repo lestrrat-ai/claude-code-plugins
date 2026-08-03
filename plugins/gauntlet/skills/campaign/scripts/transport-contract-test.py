@@ -755,8 +755,10 @@ def check_document_contract() -> None:
         "| `retry-external` + `external-claude` | `external-claude` | "
         "`reviewer-tool-write` | `standard` |",
         "| `launch-native` / `fallback-native` | `native` | `reviewer-tool-write` | `standard` |",
-        "attempt `2` fails → prepare fresh native fallback attempt `3`",
-        "dead or unusable attempt `3` → `park-machine-blocker`",
+        "### Review allocation journal",
+        "three ordinary allocations plus one reserved final allocation",
+        "`--allocation-purpose initial|recovery|final`",
+        "Only `reviewed`",
         'prompt_profile: "standard" | "codex-recovery"',
     ):
         require(needle in runtime, f"runtime adapter lost typed owner: {needle}")
@@ -764,12 +766,15 @@ def check_document_contract() -> None:
     for needle in (
         '["python3", review_dispatch_script, "prepare"',
         '"--prompt-profile", prompt_profile',
+        '"--allocation-purpose", allocation_purpose',
+        '"--review-action", review_action',
         "prepared = JSON_DECODE(result.stdout)",
         "scripts/review-prompt.txt",
         "one review contract/template",
         "using the returned `transport` without reconstructing",
         "Every transport text value must encode as UTF-8",
         "Recover any inert residue of a preparation that never launched a reviewer",
+        "### Record allocation outcomes",
     ):
         require(needle in dispatch, f"review-dispatch.md lost preparation handoff: {needle}")
 
@@ -807,8 +812,10 @@ def check_document_contract() -> None:
             "reviewer retry recovered provider matching, session resume, or model switching")
     stage_flat = " ".join(stage.split())
     require('"--file", ledger_file' in stage_flat and
-            '"--prompt-profile", prompt_profile' in stage_flat,
-            "Stage 2 canonical prepare argv lost ledger or prompt-profile data")
+            '"--prompt-profile", prompt_profile' in stage_flat and
+            '"--allocation-purpose", allocation_purpose' in stage_flat and
+            '"--review-action", review_action' in stage_flat,
+            "Stage 2 canonical prepare argv lost allocation, action, ledger, or prompt-profile data")
     require("used the `codex-recovery` prompt profile" in final_report,
             "final report no longer discloses external Codex recovery-profile use")
     require('"-C", transport.review_root, "-"' in cross,
@@ -1137,7 +1144,8 @@ def run_repository_context_fixtures() -> None:
 
 
 def review_action(capability: Mapping[str, object], external_retry_spent: bool = False,
-                  external_failed: bool = False, native_exhausted: bool = False) -> str:
+                  external_failed: bool = False, native_failed: bool = False,
+                  final_review_available: bool = True) -> str:
     # Every route launches on `fresh_conversation` + `launch_mechanism_present` alone. The three
     # `os_filesystem_isolation` properties are an optional stronger-boundary CLAIM and MUST NOT gate
     # launch — the function deliberately never reads them.
@@ -1153,7 +1161,7 @@ def review_action(capability: Mapping[str, object], external_retry_spent: bool =
     # launch mechanism), there is nothing left to fall back to, which is exactly `park-machine-blocker`.
     if not launchable:
         return "park-machine-blocker"
-    if native_exhausted:
+    if native_failed and not final_review_available:
         return "park-machine-blocker"
     return "launch-native"
 
@@ -1206,8 +1214,10 @@ def run_isolation_transition_fixtures() -> None:
     }
     require(review_action(native) == "launch-native",
             "native limitations incorrectly parked an available pass")
-    require(review_action(native, native_exhausted=True) == "park-machine-blocker",
-            "exhausted invalid native route did not park")
+    require(review_action(native, native_failed=True) == "launch-native",
+            "a failed native attempt spent its reserved final review")
+    require(review_action(native, native_failed=True, final_review_available=False) == "park-machine-blocker",
+            "a failed native route with no final allocation did not park")
 
     # A native route that is `unavailable` (no launch mechanism, or no fresh conversation) CANNOT launch.
     # Native is the last-resort route, so an unavailable one parks the machine blocker — it never launches.

@@ -157,7 +157,7 @@ review_transition(
   capability: ReviewIsolationCapability,
   event: "selected" | "external-system-failure" | "native-system-failure",
   external_retry_spent: Bool,
-  native_attempts_exhausted: Bool
+  final_review_available: Bool
 ) -> ReviewAction
 ```
 
@@ -169,12 +169,13 @@ This operation owns every route change:
 | `external-system-failure`, external retry not spent | re-evaluate capability, then `retry-external` only if still available |
 | selected cross-engine route unavailable before launch (paired CLI absent), or `external-system-failure` after retry | report the failure, then `fallback-native` (disclosed) |
 | native route/fallback can follow the installed contract | `launch-native` with the native limitations below |
-| native attempts cannot follow the installed contract or produce valid artifacts and their budget is exhausted | `park-machine-blocker` |
+| native attempts cannot follow the installed contract or produce valid artifacts after the allocation journal reports no final review remains | `park-machine-blocker` |
 
 A pre-launch cross-engine capability miss (the paired CLI is absent) has no process to relaunch, so it
 consumes no retry and takes the fresh native fallback immediately.
 Missing native OS/startup controls alone never select `park-machine-blocker`; only actual inability to
-complete the installed contract after its budget does. `reviewer.md` owns the retry budget, while this table owns the transition meaning.
+complete the installed contract after the allocation journal reports no final review remains. This table
+owns the transition meaning; **Review allocation journal** owns allocation state.
 
 ### Review preparation mapping
 
@@ -194,20 +195,56 @@ is what the reviewer reads in its transport record; what it no longer does is va
 
 Selected capability's external route is exactly `external-codex` or `external-claude`; never pass the
 `ReviewAction` string as `--route`.
+Pass that selected `ReviewAction` as `--review-action`; `review-dispatch.py prepare` validates the action,
+route, and prompt-profile mapping before writing launch artifacts.
+
+### Review allocation journal
+
+**Use three ordinary allocations plus one reserved final allocation for each review pass.** Pass
+`--allocation-purpose initial|recovery|final` to every `review-dispatch.py prepare`; the command writes the
+append-only `<rundir>/review-<pr>-<pass>.allocation.jsonl` record only after it has materialized the
+attempt's fresh prompt and identity. `initial` starts ordinary review work. At most two later `recovery`
+allocations follow it. `final` is separately reserved and becomes due only after the journal records
+`amended`, after it records `head-invalidated` for an attempt in the same pass, or for a post-repair pass
+whose immediately preceding valid active artifact records a different immutable `head_sha`. It may be the
+first allocation of that post-repair pass. A provider, transport, or artifact failure alone leaves the final
+allocation reserved but does not make it due; take ordinary recovery while its capacity remains. Exhausted
+ordinary capacity without due history refuses rather than spending final.
+
+**Record every completed attempt through `review-dispatch.py result` before allocating another.** Its
+`provider-failure`, `transport-failure`, `malformed-output`, `incomplete-plan`, `amended`, `reviewed`,
+`head-invalidated`, and `scope-invalidated` values name the outcome that the heartbeat observed. Use
+`head-invalidated` only when the allocated head differs from the live selected ledger row. Use
+`scope-invalidated` only when the attempt's dispatch-time `default_non_goals` binding differs from the
+live ledger defaults. Run `allocation-status` after settling a dead attempt, when a row is held, or when a
+budget question reaches the final report; it renders every launch attempt's purpose and result from the
+journal rather than guessing from filenames or a lost context.
+
+**Migrate a journal-less active legacy attempt through `result` before settling it.** The command validates
+the named active attempt's progress against its derived plan, appends one `legacy` allocation copied from
+that attempt's immutable identity, then appends the outcome. It never invents missing earlier attempts;
+`legacy` is journal provenance, not a `prepare` purpose.
+
+**Keep the final allocation reserved after `provider-failure`, `transport-failure`, `malformed-output`,
+`incomplete-plan`, `amended`, `head-invalidated`, or `scope-invalidated`.** Prepare a new attempt-scoped
+artifact set with `--allocation-purpose final` only when the due-history rule above holds; a settled
+`head-invalidated` attempt makes that final allocation due in the same pass. Otherwise prepare the due
+ordinary recovery allocation while capacity remains. Only `reviewed` — a usable binary review whose allocated
+head and dispatch-time scope still match the live ledger — consumes the final allocation. A final retry is
+still a fresh reviewer and a new `launch_attempt`; it never reuses a failed attempt's files.
 
 **Allocate `launch_attempt` monotonically for every reviewer launch passed to `prepare`.** An unavailable
 external route is never prepared and consumes no number, so its immediate native fallback takes the
-current next number. Once an attempt exists, recovery is fixed: attempt `1` fails → prepare the selected route's
-one retry as attempt `2`; attempt `2` fails → prepare fresh native fallback attempt `3`.
-**A dead or unusable attempt `3` → `park-machine-blocker`.** Never reuse an attempt's artifacts, and never
-allocate attempt `4`.
+current next number. The route transition still chooses the route and prompt profile; the allocation
+journal decides whether that launch is `initial`, `recovery`, or the final reserve. `prepare` refuses a
+gap or out-of-order number. Never reuse an attempt's artifacts.
 
 **Select `prompt_profile` only from the table, never from provider output.** `standard` and
-`codex-recovery` are a closed typed enum. Attempt `1` is always `standard`; the existing external Codex
-attempt `2` is the only `codex-recovery` case; external Claude attempt `2` and native attempt `3` stay
-`standard`. `review-dispatch.py prepare` refuses every other route/attempt/profile combination before
-writing launch artifacts. The profile changes only the retry's opening repository-maintenance framing.
-It adds no attempt, changes no review rule, and selects no route or model.
+`codex-recovery` are a closed typed enum. Only `retry-external` on `external-codex` uses
+`codex-recovery`; every other mapped action uses `standard`, including a `launch-external` final retry on
+its second launch attempt. `review-dispatch.py prepare` refuses every action/route/profile combination
+outside this mapping before writing launch artifacts. The profile changes only the retry's opening
+repository-maintenance framing. It adds no attempt, changes no review rule, and selects no route or model.
 
 **A pass number is spent only by a LANDED verdict.** Every relaunch after a dead, unusable, or DEFERRED
 attempt — whatever its route — is the SAME `--pass` with the next `launch_attempt`, never a new pass
@@ -303,7 +340,7 @@ this level, and the orchestrator validates its artifacts and applies acceptance 
 known-good campaign rules**. Candidate copies of `SKILL.md`, gate references, `AGENTS.md`, or `CLAUDE.md`
 never become stage-0 gate authority. If inherited instructions actually prevent the worker from following
 the installed review contract or producing valid artifacts, treat that attempt as a reviewer system
-failure; after the documented retry/fallback budget is exhausted, park the PR as a machine blocker.
+failure; after the allocation journal reports no final review remains, park the PR as a machine blocker.
 
 A cross-engine verdict-rendering process launches at this **same native-limitation level** whenever its
 paired CLI is present — it renders a diverse-engine verdict, is **not** a stronger security boundary than
@@ -481,6 +518,6 @@ section states only the per-host default and where the transport pieces live:
 
 The cross-engine route launches at the **same native-limitation level** as a native worker whenever the
 paired CLI is present ("Review isolation capability and transition" above). Capability-gated cross-engine
-argv lives in `cross-agent-reviewers.md`; the external-reviewer retry budget in `reviewer.md`; the
+argv lives in `cross-agent-reviewers.md`; allocation state lives in **Review allocation journal**; the
 transition itself in `ReviewIsolationCapability` above. “Fallback” always means a fresh native worker on
 the active host.

@@ -87,10 +87,14 @@ rules keep their own wording; these are illustrations of them, not a second copy
    ghost gives up), and a hand-run query must ask for `--json number,labels` and match locally, the way
    `run-identity-and-lease.md`'s no-arg **discover runs** step already does. Three cases:
 
-   - **This run has live work → resume.** Resolve a dead review pass — no verdict, no live task — from its
-     highest-numbered `launch_attempt` through `runtime-adapter.md`, **Review preparation mapping**, **NOT
-     by a blind re-launch**. Why launch evidence is irrelevant on this path lives in **"Resume after a
-     killed session"** below (Stage 2a).
+   - **This run has live work → resume.** Settle a dead review pass — no verdict, no live task — through
+     `review-dispatch.py result` with its observed non-binary outcome before running
+     `review-dispatch.py allocation-status`. Use its durable attempt purposes and results with
+     `runtime-adapter.md`, **Review allocation journal**, to choose the due allocation purpose:
+     when the final allocation remains reserved and due, prepare its next attempt with
+     `--allocation-purpose final`; otherwise choose the due `initial` or `recovery` allocation. Then take
+     the route/profile branch in **Review preparation mapping**, never a blind re-launch. Why launch
+     evidence is irrelevant on this path lives in **"Resume after a killed session"** below (Stage 2a).
      **Reconcile against ground truth** — do NOT redo *completed* work; a CI task whose output file is
      missing may be re-launched, since in-flight tasks die with their session — then, for each of this
      run's branches/PRs read the live SHA, CI status, and verdict files, and refresh the ledger: write
@@ -299,6 +303,15 @@ rules keep their own wording; these are illustrations of them, not a second copy
    not a verdict, so it is never tallied — the tool routes on
    the progress file and returns `amended` (fold the amendment, re-run the pass) or `incomplete`
    (relaunch), and only a binary `satisfied`/`not-satisfied` ever reaches the ledger below.
+   **Every non-binary verification result must settle its active attempt through `review-dispatch.py result`
+   before allocating its relaunch.** Record `amended` as `--result amended` and `incomplete` as
+   `--result incomplete-plan`; identify every other observed outcome through `runtime-adapter.md`,
+   **Review allocation journal**, then run `allocation-status` and choose the next allocation.
+   **After a binary pass verifies `ok`, record `review-dispatch.py result --result reviewed` for its active
+   attempt before recording its verdict.** If the allocation's head or dispatch-time scope is stale, this
+   refuses; settle it as `head-invalidated` or `scope-invalidated` before selecting the final retry. The
+   journal preserves the reserved final review across a fresh heartbeat; this completion step never infers
+   a budget from attempt filenames.
    **Then record the verdict with `scripts/ledger.py verdict --pr <N> --head-sha <sha> --verdict …`** — the
    ONLY sanctioned path, and the only thing that bumps `review_rounds` (Stage 2a, "Recording a verdict");
    never set `reviews_ok` by hand. It refuses unless the base-preflight `proceed` above stamped `base_ok_sha`
@@ -524,10 +537,15 @@ rules keep their own wording; these are illustrations of them, not a second copy
      that file's `pass_identity.dispatched_at`) →
      it **never started** (Stage 2a launch check — a reviewer hung on stdin, a bad path, a sandbox
      denial). Kill the task, re-check the command for the known launch faults (above all the quoted
-     prompt-file stdin route), then take the next action and fresh attempt from `runtime-adapter.md`,
-     **Review preparation mapping**. `review-dispatch.py prepare` creates coherent attempt-scoped
-     artifacts, never the dead attempt's files, which a surviving process could still write to. A failed
-     launch yields no verdict: it never touches `reviews_ok` and never bumps the row's `attempts`;
+     prompt-file stdin route), settle the allocation with `review-dispatch.py result --result
+     transport-failure`, then run `review-dispatch.py allocation-status`. Read its durable history through
+     `runtime-adapter.md`, **Review allocation journal**, to choose the due allocation purpose: when the
+     final allocation remains reserved and due, prepare the next monotonic attempt with
+     `--allocation-purpose final`; otherwise prepare the due `initial` or `recovery` allocation. Then take
+     the route/profile branch in **Review preparation mapping**. `review-dispatch.py prepare` creates
+     coherent attempt-scoped artifacts, never the dead attempt's files, which a surviving process could
+     still write to. A failed launch yields no verdict: it never touches `reviews_ok` and never bumps the
+     row's `attempts`;
    - CI red and no fix is already in flight for that PR/SHA → **CLASSIFY the failure from the check logs
      first (Stage 2b, "Classify, then set the model class") — never dispatch a worker straight off a red
      check.** The class picks the logical model class: a **formatting/lint** failure → a scoped CI-fix
@@ -770,11 +788,15 @@ in-flight tasks do.
 tasks die with the session, but nothing authoritative is lost. A new invocation reconciles against
 git/gh and continues — completed work is never redone (existing PRs, landed verdict files); a CI task
 whose output file is missing re-launches, and a **review** with no verdict and no live task goes through
-**Stage 2a active-attempt resolution** rather than a blind re-launch: read the highest-numbered launch
-attempt's `pass_identity` and take the exact branch in `runtime-adapter.md`, **Review preparation
-mapping**. **The relaunch budget lives on disk, not in the session**, so it survives
-the death of the agent that spent it — otherwise each new instance would rediscover a missing output
-file, relaunch the same hung reviewer, die, and repeat forever.
+**Stage 2a active-attempt resolution** rather than a blind re-launch: first settle the active attempt with
+`review-dispatch.py result` using its observed non-binary outcome, then run
+`review-dispatch.py allocation-status` for that pass. Read its durable purpose/result history through
+`runtime-adapter.md`, **Review allocation journal**, before selecting the route/profile branch in
+**Review preparation mapping**. When the final allocation remains reserved and is due, prepare the next
+monotonic attempt with `--allocation-purpose final`; otherwise prepare the due `initial` or `recovery`
+allocation. **The relaunch budget lives in the allocation journal, not in the session**, so it survives the
+death of the agent that spent it — otherwise each new instance would rediscover a missing output file,
+relaunch the same hung reviewer, die, and repeat forever.
 
 **Every dead pass must land on exactly one branch in Review preparation mapping.** Do NOT gate the resume
 path on launch evidence: a dead attempt that wrote a `started` line still has no process capable of

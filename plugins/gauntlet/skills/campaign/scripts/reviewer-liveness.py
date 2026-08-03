@@ -19,7 +19,7 @@ growing stream proves the process is ALIVE, so the driver need not declare a
 false stall while the progress file is merely coarse-stale; a `quiet` (or
 `absent`) stream CORROBORATES a hang ONLY AFTER launch evidence exists — the
 reviewer wrote at least one line after `pass_identity` and then went quiet — in
-which case the driver can apply `reviewer.md`'s retry budget without waiting the
+which case the driver can apply `runtime-adapter.md`'s review allocation journal without waiting the
 full meaningful-progress cap. Before launch evidence the Stage 2a launch-evidence
 deadline owns that window, so a `quiet`/`absent` stream there is NOT a hang signal
 (`stage-2-review-gate.md`). Crucially, stream growth

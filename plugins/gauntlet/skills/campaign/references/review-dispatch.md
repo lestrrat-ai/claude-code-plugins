@@ -14,7 +14,9 @@ result = run_argv(
   argv: ["python3", review_dispatch_script, "prepare",
          "--run-dir", review_root,
          "--pr", pr, "--pass", review_pass, "--launch-attempt", launch_attempt,
+         "--allocation-purpose", allocation_purpose,
          "--worktree", worktree, "--base", base, "--file", ledger,
+         "--review-action", review_action,
          "--route", route, "--prompt-profile", prompt_profile,
          "--report-producer", report_producer,
          "--head-sha", head_sha, "--dispatched-at", dispatched_at,
@@ -30,9 +32,13 @@ transport = prepared.transport
 
 Inputs have these owners:
 
-- `route`, `prompt_profile`, `report_producer`, and `launch_attempt` come from `runtime-adapter.md`,
+- `review_action`, `route`, `prompt_profile`, and `report_producer` come from `runtime-adapter.md`,
   **Review preparation mapping**. `prepare` never selects, probes, or changes them. It refuses an unknown
-  profile and every route/attempt/profile combination outside that mapping before writing launch artifacts.
+  profile and every action/route/profile combination outside that mapping before writing launch artifacts.
+- `launch_attempt` and `allocation_purpose` come only from `runtime-adapter.md`, **Review allocation
+  journal**, read through `review-dispatch.py allocation-status` after the prior attempt settles. The
+  journal supplies the next monotonic attempt and due allocation; **Review preparation mapping** selects
+  neither.
 - `review_root`, `worktree`, and `base` come from the invocation's typed `RepositoryContext` and ledger.
   `base` is **this PR row's effective base** — its explicit `base_branch`, else the legacy header fallback
   (`ledger.py`'s `effective_base`), never the one header base. It rides the typed transport as data (the
@@ -77,6 +83,32 @@ never delete it. A non-zero exit prepares nothing usable; do not launch.
 `review-<pr>-<n>.a<k>.*`. The command derives the complete set once, so a relaunch cannot mix a dead
 attempt's progress/findings/report paths with the active prompt.
 
+### Record allocation outcomes
+
+**Settle the prepared launch through `review-dispatch.py result` before preparing another.** Pass the same
+`--run-dir`, `--pr`, `--pass`, and `--launch-attempt`, plus the result the heartbeat observed:
+
+```text
+python3 <skill-dir>/scripts/review-dispatch.py result \
+  --run-dir <review_root> --pr <pr> --pass <review_pass> --launch-attempt <launch_attempt> \
+  --result provider-failure|transport-failure|malformed-output|incomplete-plan|amended|reviewed|head-invalidated|scope-invalidated
+```
+
+`runtime-adapter.md`, **Review allocation journal**, owns which allocation is due and which outcomes leave
+the final review reserved. The journal is driver state, not reviewer evidence: do not add allocation lines
+to a progress or report artifact. `result --result reviewed` derives that allocated attempt's artifacts and
+requires its allocated head and same-run `<rundir>/state.jsonl` scope check to pass, like
+`review-pass.py verify --ledger`. It refuses a missing, deferred, malformed, stale-head, stale-scope, or
+otherwise unusable report. Settle a stale head as `head-invalidated` and a stale scope as
+`scope-invalidated`; both require the matching live-ledger difference and preserve the final reserve.
+`allocation-status` renders its durable history after a dead attempt settles, for a held PR, or for a final
+report.
+
+For a journal-less run created before allocation journaling, `result` first validates the named active
+attempt against its derived plan and records its `legacy` allocation from immutable identity data. It then
+records the requested outcome. `runtime-adapter.md`, **Review allocation journal**, owns the migration
+conditions and the due-allocation rule; `legacy` is not accepted by `prepare`.
+
 ### Prompt bytes have one owner
 
 **Use only the prompt written at `transport.prompt_path`.** The exact reviewer contract lives in the
@@ -87,8 +119,9 @@ or substitute record fields into shell source.
 
 **Keep one review contract/template for both prompt profiles.** `standard` binds the template directly.
 `codex-recovery` adds the binder-owned repository-maintenance preamble before the same complete template;
-it is valid only for external Codex attempt `2`. The preamble states the concrete local goal through the
-bound Intent and asks for proof from the local diff, repository tests, and fixtures. It never changes,
+it is valid only for `retry-external` on `external-codex`; every other `ReviewAction` uses `standard`.
+The preamble states the concrete local goal through the bound Intent and asks for proof from the local diff,
+repository tests, and fixtures. It never changes,
 shortens, or duplicates the template, and it never asks the reviewer to contact a third-party system.
 
 The shared prompt tells every route to review the whole `origin/<base>...HEAD` diff against the intent and plan,

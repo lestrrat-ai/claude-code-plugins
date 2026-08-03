@@ -333,12 +333,16 @@
   progress = planned unit `done` or accepted plan amendment, not vague "still working" output. Two
   distinct bars, never collapsed: **launch evidence** = ANY reviewer-written line after `pass_identity`
   (a `started`/`done` `progress` event *or* a `plan_amendment_request`) — none within ~5 min of dispatch
-  → the pass never started → kill + relaunch into attempt-scoped artifacts per the Stage 2a launch
-  check. **Meaningful progress** is the stronger bar (`done`/accepted amendment) — stale for ~15 min →
+  → the pass never started → kill + `review-dispatch.py result --result transport-failure` +
+  `review-dispatch.py allocation-status`-driven relaunch into attempt-scoped artifacts per the Stage 2a
+  launch check. **Meaningful progress** is the stronger bar (`done`/accepted amendment) — stale for ~15 min →
   suspicious review → retry/fallback per Stage 2a. Both bars judge a **live** process. A pass whose
-  task is **dead** with no verdict (killed session) ignores launch evidence entirely and follows
-  `runtime-adapter.md`, **Review preparation mapping**, from the highest `launch_attempt`. Never invent
-  another recovery branch.
+  task is **dead** with no verdict (killed session) ignores launch evidence entirely. Settle its observed
+  non-binary outcome through `review-dispatch.py result`, then follow
+  `review-dispatch.py allocation-status` plus `runtime-adapter.md`, **Review allocation journal**, to choose
+  its due allocation purpose before taking **Review preparation mapping**. When the final
+  allocation remains reserved and due, prepare it with `--allocation-purpose final`. Never invent another
+  recovery branch.
 - Reviewers do not own the plan but must not treat it as presumptively complete: critically evaluate
   its coverage first — its waiver rows included — and raise any plan gap via a
   `plan_amendment_request` event rather than silently reviewing only the listed units. Never rewrite
@@ -461,7 +465,7 @@
   trusted state at run start and recorded in the ledger `reviewer` field before any candidate evidence is
   read (`reviewer.md`, "Selecting the reviewer").
   Apply the same-engine rule in `runtime-adapter.md`. See "The reviewer".
-- Apply `reviewer.md`'s external-review retry budget, then take `runtime-adapter.md`'s owned transition.
+- Apply `runtime-adapter.md`, **Review allocation journal**, then take its owned transition.
   The gate is unchanged; report reviewer routing and retry-profile use through
   `bailout-and-final-report.md`, "Final report". See "The reviewer".
 - **RUN `scripts/ci-status.py required-set --ledger <rundir>/state.jsonl` before CI derivation on every

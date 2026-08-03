@@ -102,6 +102,8 @@ def _fixture(
     pr: str = "41",
     review_pass: str = "2",
     launch_attempt: str = "1",
+    allocation_purpose: str = "initial",
+    review_action: str = "launch-native",
     route: str = "native",
     producer: str = "reviewer-tool-write",
     prompt_profile: str = "standard",
@@ -110,6 +112,7 @@ def _fixture(
     file: str | None = None,
     default_non_goals: str = "[]",
     seed_history: bool = True,
+    head_sha: str = SHA,
 ) -> SimpleNamespace:
     rundir = root / "run artifacts"
     worktree = root / "candidate worktree"
@@ -124,12 +127,14 @@ def _fixture(
         pr=pr,
         review_pass=review_pass,
         launch_attempt=launch_attempt,
+        allocation_purpose=allocation_purpose,
+        review_action=review_action,
         worktree=os.fspath(worktree),
         base=base,
         route=route,
         prompt_profile=prompt_profile,
         report_producer=producer,
-        head_sha=SHA,
+        head_sha=head_sha,
         dispatched_at=STAMP,
         default_non_goals=default_non_goals,
         intent_file=os.fspath(intent_path),
@@ -149,6 +154,93 @@ def _refused(args: SimpleNamespace, contains: str) -> None:
 def _default_launch_artifacts_absent(rundir: Path) -> bool:
     paths = D.attempt_paths(rundir, "41", "2", "1")
     return not paths["prompt"].exists() and not paths["progress"].exists()
+
+
+def _record_result(args: SimpleNamespace, result: str) -> dict:
+    return D.record_result(SimpleNamespace(
+        run_dir=args.run_dir,
+        pr=args.pr,
+        review_pass=args.review_pass,
+        launch_attempt=args.launch_attempt,
+        result=result,
+    ))
+
+
+def _result_refused(args: SimpleNamespace, result: str, contains: str) -> None:
+    journal = D.allocation_path(Path(args.run_dir), args.pr, args.review_pass)
+    before = journal.read_bytes()
+    try:
+        _record_result(args, result)
+    except D.Refusal as exc:
+        check(contains in str(exc), f"refusal must mention {contains!r}, got {exc!r}")
+    else:
+        check(False, f"result {result!r} should have refused: {contains}")
+    check(journal.read_bytes() == before, "a refused result must not append an allocation outcome")
+
+
+def _write_report(args: SimpleNamespace, verdict: str) -> None:
+    paths = D.attempt_paths(Path(args.run_dir), args.pr, args.review_pass, args.launch_attempt)
+    reason = "-" if verdict != D.RP.DEFERRED else "fixture deferred the review"
+    code, _out, err = capture_cli(D.RP.main, [
+        "report-write", "--file", os.fspath(paths["report"]), "--verdict", verdict,
+        "--deferred-reason", reason, "--summary", "Fixture report.",
+    ])
+    check(code == 0 and err == "", f"fixture report-write failed: code={code}, stderr={err!r}")
+
+
+def _complete_usable_binary_review(args: SimpleNamespace) -> None:
+    paths = D.attempt_paths(Path(args.run_dir), args.pr, args.review_pass, args.launch_attempt)
+    for argv in (
+        ["emit", "--file", os.fspath(paths["progress"]), "--unit", "u01", "--status", "started"],
+        ["emit", "--file", os.fspath(paths["progress"]), "--unit", "u01", "--status", "done",
+         "--evidence", "review-dispatch-test.py:1"],
+    ):
+        code, _out, err = capture_cli(D.RP.main, argv)
+        check(code == 0 and err == "", f"fixture emit failed: code={code}, stderr={err!r}")
+    _write_report(args, D.RP.SATISFIED)
+
+
+def _prepare_predecessors(args: SimpleNamespace) -> None:
+    """Materialize and settle every earlier allocation before testing a later attempt."""
+    target_attempt = int(args.launch_attempt)
+    target_route = args.route
+    target_action = args.review_action
+    target_profile = args.prompt_profile
+    target_producer = args.report_producer
+    for number in range(1, target_attempt):
+        args.launch_attempt = str(number)
+        args.allocation_purpose = (
+            "initial" if number == 1 else "recovery" if number <= D.ORDINARY_ALLOCATION_LIMIT else "final"
+        )
+        args.route = "native"
+        args.review_action = "launch-native"
+        args.prompt_profile = "standard"
+        args.report_producer = "reviewer-tool-write"
+        D.prepare(args)
+        _record_result(args, D.PROVIDER_FAILURE)
+    args.launch_attempt = str(target_attempt)
+    args.allocation_purpose = (
+        "initial" if target_attempt == 1 else "recovery"
+        if target_attempt <= D.ORDINARY_ALLOCATION_LIMIT else "final"
+    )
+    args.route = target_route
+    args.review_action = target_action
+    args.prompt_profile = target_profile
+    args.report_producer = target_producer
+
+
+def _write_prejournal_identity(args: SimpleNamespace, launch_attempt: str) -> None:
+    """Write valid legacy progress evidence without an allocation journal."""
+    paths = D.attempt_paths(Path(args.run_dir), args.pr, args.review_pass, launch_attempt)
+    paths["progress"].write_bytes(D.identity_bytes(
+        paths["progress"],
+        pr=args.pr,
+        review_pass=args.review_pass,
+        launch_attempt=launch_attempt,
+        head_sha=args.head_sha,
+        dispatched_at=args.dispatched_at,
+        default_non_goals=[],
+    ))
 
 
 def t_relaunch_paths_share_one_attempt_identity() -> None:
@@ -303,8 +395,10 @@ def t_later_attempt_keeps_the_reviewer_report_door() -> None:
     for route in ("external-codex", "external-claude"):
         with tempfile.TemporaryDirectory() as raw:
             args = _fixture(
-                Path(raw), launch_attempt="7", route=route, producer="reviewer-tool-write"
+                Path(raw), launch_attempt="7", review_action="launch-external", route=route,
+                producer="reviewer-tool-write"
             )
+            _prepare_predecessors(args)
             transport = D.prepare(args)["transport"]
             check(transport["attempt"]["launch_attempt"] == 7, f"{route} lost attempt 7")
             check(".a7." in transport["prompt_path"] and ".a7." in transport["progress_path"] and
@@ -331,31 +425,37 @@ def t_route_and_report_owner_must_agree() -> None:
               f"{route} must map to the one report producer")
         for producer in retired:
             with tempfile.TemporaryDirectory() as raw:
-                args = _fixture(Path(raw), route=route, producer=producer)
+                action = "launch-native" if route == "native" else "launch-external"
+                args = _fixture(Path(raw), review_action=action, route=route, producer=producer)
                 _refused(args, f"unknown report producer {producer!r}")
                 paths = D.attempt_paths(Path(args.run_dir), "41", "2", "1")
                 check(not paths["prompt"].exists() and not paths["progress"].exists(),
                       "a retired producer must create no launch artifacts")
 
 
-def t_prompt_profiles_are_typed_and_route_scoped() -> None:
-    """Only external Codex attempt 2 receives recovery framing; every other route stays standard."""
+def t_prompt_profiles_are_typed_and_action_scoped() -> None:
+    """Only the external-Codex retry action receives recovery framing."""
     recovery = D.CODEX_RECOVERY_PREAMBLE
     allowed = (
-        ("external-codex", "1", "standard", "reviewer-tool-write", False),
-        ("external-codex", "2", "codex-recovery", "reviewer-tool-write", True),
-        ("external-claude", "2", "standard", "reviewer-tool-write", False),
-        ("native", "3", "standard", "reviewer-tool-write", False),
+        ("launch-external", "external-codex", "1", "initial", "standard", "reviewer-tool-write", False),
+        ("retry-external", "external-codex", "2", "recovery", "codex-recovery", "reviewer-tool-write", True),
+        ("retry-external", "external-claude", "2", "recovery", "standard", "reviewer-tool-write", False),
+        ("fallback-native", "native", "3", "recovery", "standard", "reviewer-tool-write", False),
+        ("launch-external", "external-codex", "2", "final", "standard", "reviewer-tool-write", False),
     )
-    for route, launch_attempt, profile, producer, has_recovery in allowed:
+    for action, route, launch_attempt, purpose, profile, producer, has_recovery in allowed:
         with tempfile.TemporaryDirectory() as raw:
             args = _fixture(
                 Path(raw),
                 launch_attempt=launch_attempt,
+                allocation_purpose=purpose,
+                review_action=action,
                 route=route,
                 producer=producer,
                 prompt_profile=profile,
             )
+            _prepare_predecessors(args)
+            args.allocation_purpose = purpose
             transport = D.prepare(args)["transport"]
             prompt = Path(transport["prompt_path"]).read_bytes()
             check(transport["prompt_profile"] == profile, f"{route} attempt {launch_attempt} lost {profile}")
@@ -387,25 +487,31 @@ def t_prompt_profiles_are_typed_and_route_scoped() -> None:
                       f"{route} attempt {launch_attempt} recovery framing drifted at {needle!r}")
 
     refused = (
-        ("external-codex", "1", "codex-recovery", "standard"),
-        ("external-codex", "2", "standard", "codex-recovery"),
-        ("external-claude", "2", "codex-recovery", "standard"),
-        ("native", "3", "codex-recovery", "standard"),
-        ("native", "1", "invented", "unknown prompt profile"),
+        ("launch-external", "external-codex", "1", "initial", "codex-recovery", "standard"),
+        ("launch-external", "external-codex", "2", "final", "codex-recovery", "standard"),
+        ("retry-external", "external-codex", "2", "recovery", "standard", "codex-recovery"),
+        ("retry-external", "external-claude", "2", "recovery", "codex-recovery", "standard"),
+        ("launch-native", "native", "3", "recovery", "codex-recovery", "standard"),
+        ("launch-native", "native", "1", "initial", "invented", "unknown prompt profile"),
+        ("launch-native", "external-codex", "1", "initial", "standard", "requires route"),
     )
-    for route, launch_attempt, profile, expected in refused:
+    for action, route, launch_attempt, purpose, profile, expected in refused:
         with tempfile.TemporaryDirectory() as raw:
             producer = "reviewer-tool-write"
             args = _fixture(
                 Path(raw),
                 launch_attempt=launch_attempt,
+                allocation_purpose=purpose,
+                review_action=action,
                 route=route,
                 producer=producer,
                 prompt_profile=profile,
             )
+            _prepare_predecessors(args)
+            args.allocation_purpose = purpose
             _refused(args, expected)
-            rundir = Path(args.run_dir)
-            check(_default_launch_artifacts_absent(rundir),
+            paths = D.attempt_paths(Path(args.run_dir), args.pr, args.review_pass, args.launch_attempt)
+            check(not paths["prompt"].exists() and not paths["progress"].exists(),
                   f"{route} attempt {launch_attempt} invalid profile created launch artifacts")
 
 
@@ -535,6 +641,7 @@ def t_overlapping_run_dir_and_worktree_create_nothing() -> None:
             pr="41",
             review_pass="2",
             launch_attempt="1",
+            allocation_purpose="initial",
             worktree=os.fspath(worktree),
             base="main",
             route="native",
@@ -827,36 +934,471 @@ def t_malformed_lone_identity_is_refused_not_reclaimed() -> None:
                   f"{label}: a prompt was materialized despite the malformed-identity conflict")
 
 
-def t_external_attempt_two_has_native_attempt_three_recovery() -> None:
+def t_allocation_reserves_final_review_after_nonterminal_outcomes() -> None:
     with tempfile.TemporaryDirectory() as raw:
         args = _fixture(
-            Path(raw), launch_attempt="2", route="external-codex",
-            producer="reviewer-tool-write", prompt_profile="codex-recovery",
+            Path(raw), launch_attempt="1", allocation_purpose="initial", route="external-codex",
+            review_action="launch-external", producer="reviewer-tool-write", prompt_profile="standard",
         )
+        _build_ledger_scope(Path(args.run_dir), args.pr, "main", "[]")
+        args.allocation_purpose = "recovery"
+        _refused(args, "requires the initial review allocation")
+        args.allocation_purpose = "initial"
+        args.launch_attempt = "2"
+        args.review_action = "retry-external"
+        args.prompt_profile = "codex-recovery"
+        _refused(args, "next allocation 1")
+        args.launch_attempt = "1"
+        args.review_action = "launch-external"
+        args.prompt_profile = "standard"
         D.prepare(args)
+        _record_result(args, D.PROVIDER_FAILURE)
+
         args.launch_attempt = "3"
+        args.allocation_purpose = "recovery"
         args.route = "native"
+        args.review_action = "fallback-native"
+        args.prompt_profile = "standard"
+        _refused(args, "next allocation 2")
+        args.launch_attempt = "2"
+        args.route = "external-codex"
+        args.review_action = "retry-external"
+        args.prompt_profile = "codex-recovery"
+        D.prepare(args)
+        _record_result(args, D.TRANSPORT_FAILURE)
+
+        args.launch_attempt = "3"
+        args.allocation_purpose = "recovery"
+        args.route = "native"
+        args.review_action = "fallback-native"
         args.prompt_profile = "standard"
         args.report_producer = "reviewer-tool-write"
         transport = D.prepare(args)["transport"]
         check(transport["attempt"]["launch_attempt"] == 3 and
               transport["report"]["path"].endswith("review-41-2.a3" + D.RP.REPORT_SUFFIX),
               "native fallback did not receive fresh attempt-3 artifacts")
+        _record_result(args, D.AMENDED)
+
+        _path, _text, _records, allocations, results = D.load_allocations(
+            Path(args.run_dir), args.pr, args.review_pass)
+        check(D.allocation_summary(allocations, results)["final_state"] == "reserved",
+              "an amended plan did not retain the final review reservation")
+        args.launch_attempt = "4"
+        args.allocation_purpose = "recovery"
+        _refused(args, "amended plan at allocation attempt 3 requires the reserved final review")
+
+        args.allocation_purpose = "final"
+        args.route = "external-codex"
+        args.review_action = "launch-external"
+        args.prompt_profile = "standard"
+        transport = D.prepare(args)["transport"]
+        check(transport["prompt_profile"] == "standard",
+              "a final external-Codex launch must use the launch-external standard profile")
+        _record_result(args, D.PROVIDER_FAILURE)
+
+        args.launch_attempt = "5"
+        args.review_action = "retry-external"
+        args.prompt_profile = "codex-recovery"
+        transport = D.prepare(args)["transport"]
+        check(transport["prompt_profile"] == "codex-recovery",
+              "a final external-Codex retry must use the retry-external recovery profile")
+        check(Path(transport["prompt_path"]).read_bytes().startswith(D.CODEX_RECOVERY_PREAMBLE),
+              "a final external-Codex retry lost its recovery framing")
+        _record_result(args, D.INCOMPLETE_PLAN)
+
+        args.launch_attempt = "6"
+        args.route = "native"
+        args.review_action = "fallback-native"
+        args.prompt_profile = "standard"
+        D.prepare(args)
+        _complete_usable_binary_review(args)
+        summary = _record_result(args, D.REVIEWED)
+        check(summary["final_state"] == "consumed", f"usable final review did not consume the reserve: {summary}")
+        check([(row["purpose"], row["result"]) for row in summary["attempts"]] == [
+            ("initial", D.PROVIDER_FAILURE),
+            ("recovery", D.TRANSPORT_FAILURE),
+            ("recovery", D.AMENDED),
+            ("final", D.PROVIDER_FAILURE),
+            ("final", D.INCOMPLETE_PLAN),
+            ("final", D.REVIEWED),
+        ], f"allocation journal lost a purpose/result: {summary}")
+
+        args.launch_attempt = "7"
+        args.allocation_purpose = "recovery"
+        _refused(args, "usable binary review result")
+
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw))
+        _build_ledger_scope(Path(args.run_dir), args.pr, "main", "[]")
+        D.prepare(args)
+        _complete_usable_binary_review(args)
+        summary = _record_result(args, D.REVIEWED)
+        check(summary["final_state"] == "consumed",
+              f"an ordinary usable review did not consume the final allocation: {summary}")
+        args.launch_attempt = "2"
+        args.allocation_purpose = "recovery"
+        _refused(args, "usable binary review result")
 
     refs = OWNER.parent.parent / "references"
     runtime = (refs / "runtime-adapter.md").read_text(encoding="utf-8")
     stage = (refs / "stage-2-review-gate.md").read_text(encoding="utf-8")
     loop = (refs / "loop-control.md").read_text(encoding="utf-8")
-    check("attempt `2` fails → prepare fresh native fallback attempt `3`" in runtime,
-          "runtime owner does not allocate attempt 3 after failed attempt 2")
-    check("dead or unusable attempt `3` → `park-machine-blocker`" in runtime,
-          "runtime owner does not terminate failed native fallback attempt 3")
-    stale_attempt_two_terminal = "`2` → " + "fresh-worker fallback"
+    dispatch = (refs / "review-dispatch.md").read_text(encoding="utf-8")
+    check("three ordinary allocations plus one reserved final allocation" in runtime,
+          "runtime owner does not reserve the final review allocation")
+    for outcome in (
+        "provider-failure", "transport-failure", "malformed-output", "incomplete-plan", "amended",
+        "head-invalidated", "scope-invalidated",
+    ):
+        check(f"`{outcome}`" in runtime,
+              f"runtime owner does not name {outcome!r} as preserving the final allocation")
+    check("gap or out-of-order number" in runtime,
+          "runtime owner does not require a contiguous allocation sequence")
     for name, text in (("Stage 2", stage), ("killed-session", loop)):
-        check("Review preparation mapping" in text,
-              f"{name} recovery does not point to the attempt-3 owner")
-        check(stale_attempt_two_terminal not in text,
-              f"{name} recovery retains the stale attempt-2 terminal rule")
+        check("Review allocation journal" in text,
+              f"{name} recovery does not point to the allocation-policy owner")
+    check("Every non-binary verification result must settle its active attempt" in loop and
+          "before allocating its relaunch" in loop and
+          "`--result amended`" in loop and "`--result incomplete-plan`" in loop,
+          "loop control does not settle amended and incomplete verification results before relaunch")
+    check("result --result reviewed" in dispatch and "missing, deferred" in dispatch,
+          "review-dispatch.md does not state the reviewed-result evidence requirement")
+
+
+def t_final_allocation_requires_durable_due_history() -> None:
+    """A route failure needs ordinary recovery unless an amendment, invalidated head, or repair makes final due."""
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw), review_pass="1")
+        D.prepare(args)
+        _record_result(args, D.PROVIDER_FAILURE)
+        args.launch_attempt = "2"
+        args.allocation_purpose = "final"
+        _refused(args, "durable amended plan, head-invalidated review, or post-repair pass")
+        args.allocation_purpose = "recovery"
+        D.prepare(args)
+
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw), review_pass="1")
+        for attempt, purpose in (("1", "initial"), ("2", "recovery"), ("3", "recovery")):
+            args.launch_attempt = attempt
+            args.allocation_purpose = purpose
+            D.prepare(args)
+            _record_result(args, D.PROVIDER_FAILURE)
+        args.launch_attempt = "4"
+        args.allocation_purpose = "final"
+        _refused(args, "durable amended plan, head-invalidated review, or post-repair pass")
+        args.allocation_purpose = "recovery"
+        _refused(args, "ordinary allocations are spent; the reserved final review is not due")
+
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw), allocation_purpose="final")
+        D.prepare(args)
+        _path, _text, _records, allocations, results = D.load_allocations(
+            Path(args.run_dir), args.pr, args.review_pass)
+        check(D.allocation_summary(allocations, results)["attempts"] == [{
+            "launch_attempt": 1, "purpose": "final", "result": "in-flight",
+        }], "a changed immutable predecessor head did not make the post-repair final review due")
+
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw), allocation_purpose="final", head_sha="b" * 40)
+        _refused(args, "durable amended plan, head-invalidated review, or post-repair pass")
+
+    runtime = (OWNER.parent.parent / "references" / "runtime-adapter.md").read_text(encoding="utf-8")
+    check("becomes due only after the journal records" in runtime and
+          "`head-invalidated` for an attempt in the same pass" in runtime and
+          "provider, transport, or artifact failure alone" in runtime,
+          "runtime allocation owner does not distinguish reservation from final-review eligibility")
+
+
+def t_prejournal_active_attempt_migrates_before_settlement() -> None:
+    """A validated active legacy attempt gains a durable allocation and then settles normally."""
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw), launch_attempt="2")
+        _write_prejournal_identity(args, "2")
+        summary = _record_result(args, D.PROVIDER_FAILURE)
+        check(summary["attempts"] == [{
+            "launch_attempt": 2, "purpose": D.LEGACY_ALLOCATION, "result": D.PROVIDER_FAILURE,
+        }], f"pre-journal attempt did not migrate before settlement: {summary}")
+        journal = D.allocation_path(Path(args.run_dir), args.pr, args.review_pass)
+        records = [json.loads(line) for line in journal.read_text(encoding="utf-8").splitlines()]
+        check([(record["type"], record["launch_attempt"], record.get("purpose")) for record in records] == [
+            (D.ALLOCATION, "2", D.LEGACY_ALLOCATION),
+            (D.ALLOCATION_RESULT, "2", None),
+        ], f"legacy migration did not precede its settlement: {records}")
+
+        args.launch_attempt = "3"
+        args.allocation_purpose = "recovery"
+        D.prepare(args)
+        _path, _text, _records, allocations, results = D.load_allocations(
+            Path(args.run_dir), args.pr, args.review_pass)
+        check(D.allocation_summary(allocations, results)["attempts"] == [
+            {"launch_attempt": 2, "purpose": D.LEGACY_ALLOCATION, "result": D.PROVIDER_FAILURE},
+            {"launch_attempt": 3, "purpose": "recovery", "result": "in-flight"},
+        ], "the journal did not continue monotonically after legacy migration")
+
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw), launch_attempt="1")
+        _write_prejournal_identity(args, "1")
+        _write_prejournal_identity(args, "2")
+        try:
+            _record_result(args, D.PROVIDER_FAILURE)
+        except D.Refusal as exc:
+            check("not the active pre-journal attempt" in str(exc),
+                  f"a superseded pre-journal attempt had the wrong refusal: {exc}")
+        else:
+            check(False, "a superseded pre-journal attempt was migrated")
+        check(not D.allocation_path(Path(args.run_dir), args.pr, args.review_pass).exists(),
+              "a superseded pre-journal attempt created a migration journal")
+
+    refs = OWNER.parent.parent / "references"
+    runtime = (refs / "runtime-adapter.md").read_text(encoding="utf-8")
+    dispatch = (refs / "review-dispatch.md").read_text(encoding="utf-8")
+    check("Migrate a journal-less active legacy attempt" in runtime and
+          "journal-less run created before allocation journaling" in dispatch,
+          "the legacy settlement path is not documented at its allocation and invocation owners")
+
+
+def t_reviewed_result_requires_usable_binary_review() -> None:
+    """`reviewed` cannot consume the reserve without a verify-countable active attempt."""
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw))
+        _build_ledger_scope(Path(args.run_dir), args.pr, "main", "[]")
+        D.prepare(args)
+        _result_refused(args, D.REVIEWED, "review-pass verify returned unusable")
+        paths = D.attempt_paths(Path(args.run_dir), args.pr, args.review_pass, args.launch_attempt)
+        check(not paths["report"].exists(), "missing-report fixture accidentally wrote review evidence")
+
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw))
+        _build_ledger_scope(Path(args.run_dir), args.pr, "main", "[]")
+        D.prepare(args)
+        _write_report(args, D.RP.DEFERRED)
+        paths = D.attempt_paths(Path(args.run_dir), args.pr, args.review_pass, args.launch_attempt)
+        check(D.RP.parse_report(paths["progress"])["verdict"] == D.RP.DEFERRED,
+              "deferred fixture did not reach review-pass's report reader")
+        _result_refused(args, D.REVIEWED, "review-pass verify returned incomplete")
+
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw))
+        _build_ledger_scope(Path(args.run_dir), args.pr, "main", "[]")
+        D.prepare(args)
+        paths = D.attempt_paths(Path(args.run_dir), args.pr, args.review_pass, args.launch_attempt)
+        paths["report"].write_text('{"type":"review_report"}\n', encoding="utf-8")
+        _result_refused(args, D.REVIEWED, "review-pass verify returned unusable")
+
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw))
+        _build_ledger_scope(Path(args.run_dir), args.pr, "main", "[]")
+        D.prepare(args)
+        _write_report(args, D.RP.SATISFIED)
+        _result_refused(args, D.REVIEWED, "review-pass verify returned incomplete")
+
+
+def t_reviewed_result_refuses_scope_drift() -> None:
+    """A scope-invalidated pass settles without consuming the final reserve."""
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw), default_non_goals='["old"]')
+        ledger = _build_ledger_scope(Path(args.run_dir), args.pr, "main", '["old"]')
+        args.file = os.fspath(ledger)
+        D.prepare(args)
+        _complete_usable_binary_review(args)
+        _result_refused(args, D.SCOPE_INVALIDATED, "still match")
+        proc = subprocess.run(  # noqa: S603
+            [sys.executable, os.fspath(D.LEDGER), "--file", os.fspath(ledger),
+             "header", "set", "default_non_goals", '["old", "new"]'],
+            capture_output=True, text=True, check=False)
+        check(proc.returncode == 0, f"scope-drift fixture could not update the ledger: {proc.stderr.strip()}")
+        _result_refused(args, D.REVIEWED, "review scope")
+        _path, _text, _records, allocations, results = D.load_allocations(
+            Path(args.run_dir), args.pr, args.review_pass)
+        summary = D.allocation_summary(allocations, results)
+        check(summary["final_state"] == "reserved",
+              f"scope-drifted reviewed result consumed the final allocation: {summary}")
+        check(summary["attempts"] == [{"launch_attempt": 1, "purpose": "initial", "result": "in-flight"}],
+              f"scope-drifted reviewed result settled the allocation: {summary}")
+        summary = _record_result(args, D.SCOPE_INVALIDATED)
+        check(summary["final_state"] == "reserved", f"scope invalidation spent the final reserve: {summary}")
+        check(summary["attempts"] == [{
+            "launch_attempt": 1, "purpose": "initial", "result": D.SCOPE_INVALIDATED,
+        }], f"scope invalidation did not settle the stale allocation: {summary}")
+        args.launch_attempt = "2"
+        args.allocation_purpose = "final"
+        args.default_non_goals = '["old", "new"]'
+        D.prepare(args)
+
+
+def t_reviewed_result_refuses_live_head_drift() -> None:
+    """A pass-one changed selected-ledger head settles and retries on its current head."""
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(
+            Path(raw), review_pass="1", seed_history=False, head_sha="a" * 40,
+            route="external-codex", review_action="launch-external",
+        )
+        ledger = _build_ledger_scope(Path(args.run_dir), args.pr, "main", "[]", head_sha=args.head_sha)
+        args.file = os.fspath(ledger)
+        D.prepare(args)
+        _complete_usable_binary_review(args)
+        _result_refused(args, D.HEAD_INVALIDATED, "is still the live ledger head")
+        code, _out, err = capture_cli(D.L.main, [
+            "--file", os.fspath(ledger), "set", "--pr", args.pr, "--head-sha", "b" * 40,
+        ])
+        check(code == 0 and err == "", f"head-drift fixture could not update the ledger: {err!r}")
+        _result_refused(args, D.REVIEWED, "live ledger head")
+        summary = _record_result(args, D.HEAD_INVALIDATED)
+        check(summary["final_state"] == "reserved", f"head invalidation spent the final reserve: {summary}")
+        check(summary["attempts"] == [{
+            "launch_attempt": 1, "purpose": "initial", "result": D.HEAD_INVALIDATED,
+        }], f"head invalidation did not settle the stale allocation: {summary}")
+        args.launch_attempt = "2"
+        args.allocation_purpose = "final"
+        args.head_sha = "b" * 40
+        args.review_action = "launch-external"
+        args.prompt_profile = "standard"
+        transport = D.prepare(args)["transport"]
+        check(transport["prompt_profile"] == "standard",
+              "a final external-Codex launch must use the launch-external standard profile")
+        paths = D.attempt_paths(Path(args.run_dir), args.pr, args.review_pass, args.launch_attempt)
+        events = D.RP.parse_lines(paths["progress"].read_text(encoding="utf-8"), paths["progress"].name)
+        identity = D.RP.check_identity(events, args.pr, args.review_pass, args.launch_attempt)
+        check(identity["head_sha"] == "b" * 40,
+              "a head-invalidated final retry did not bind the current ledger head")
+
+
+def t_binary_review_is_journaled_before_verdict_tally() -> None:
+    """A verified binary pass is durably settled before the tally instruction."""
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw))
+        _build_ledger_scope(Path(args.run_dir), args.pr, "main", "[]")
+        D.prepare(args)
+        _complete_usable_binary_review(args)
+        result_argv = [
+            "result", "--run-dir", args.run_dir, "--pr", args.pr, "--pass", args.review_pass,
+            "--launch-attempt", args.launch_attempt, "--result", D.REVIEWED,
+        ]
+        code, out, err = capture_cli(D.main, result_argv)
+        check(code == 0 and err == "", f"binary result command failed: code={code}, stderr={err!r}")
+        result = json.loads(out)
+        check(result["attempts"] == [{"launch_attempt": 1, "purpose": "initial", "result": D.REVIEWED}],
+              f"binary result did not journal the reviewed outcome: {result}")
+        status_argv = ["allocation-status", "--run-dir", args.run_dir, "--pr", args.pr,
+                       "--pass", args.review_pass]
+        code, out, err = capture_cli(D.main, status_argv)
+        check(code == 0 and err == "", f"allocation-status failed: code={code}, stderr={err!r}")
+        check(json.loads(out)["attempts"] == result["attempts"],
+              "allocation-status did not render the binary outcome that result journaled")
+
+    loop = (OWNER.parent.parent / "references" / "loop-control.md").read_text(encoding="utf-8")
+    completion = loop[loop.index("### Step 2 — Fold in completions"):loop.index("### Step 3 — Dispatch due work")]
+    verify = completion.index("review-pass.py verify")
+    result = completion.index("review-dispatch.py result")
+    verdict = completion.index("scripts/ledger.py verdict")
+    check(verify < result < verdict,
+          "Step 2 must journal the verified binary result before recording its ledger verdict")
+
+
+def t_killed_session_resume_settles_before_next_allocation() -> None:
+    """A dead initial attempt is settled before recovery selects launch attempt two."""
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw))
+        D.prepare(args)
+        _path, _text, _records, allocations, results = D.load_allocations(
+            Path(args.run_dir), args.pr, args.review_pass)
+        check(D.allocation_summary(allocations, results)["attempts"][0]["result"] == "in-flight",
+              "the prepared dead-attempt fixture was not initially in flight")
+        _record_result(args, D.PROVIDER_FAILURE)
+        _path, _text, _records, allocations, results = D.load_allocations(
+            Path(args.run_dir), args.pr, args.review_pass)
+        check(D.allocation_summary(allocations, results)["attempts"][0]["result"] == D.PROVIDER_FAILURE,
+              "the dead initial attempt was not settled before allocation selection")
+        args.launch_attempt = "2"
+        args.allocation_purpose = "recovery"
+        D.prepare(args)
+        _path, _text, _records, allocations, results = D.load_allocations(
+            Path(args.run_dir), args.pr, args.review_pass)
+        check(D.allocation_summary(allocations, results)["attempts"] == [
+            {"launch_attempt": 1, "purpose": "initial", "result": D.PROVIDER_FAILURE},
+            {"launch_attempt": 2, "purpose": "recovery", "result": "in-flight"},
+        ], "recovery allocation did not follow the settled dead attempt")
+
+    loop = (OWNER.parent.parent / "references" / "loop-control.md").read_text(encoding="utf-8")
+    for start, end in (
+        ("- **This run has live work → resume.", "**Reconcile against ground truth**"),
+        ("#### Resume after a killed session", "**Every dead pass must land on exactly one branch"),
+    ):
+        resume = loop[loop.index(start):loop.index(end)]
+        check(resume.index("review-dispatch.py result") < resume.index("allocation-status"),
+              "resume must settle a dead attempt before allocation-status selects another allocation")
+
+
+def t_zero_launch_evidence_settles_transport_failure_before_retry() -> None:
+    """A killed zero-evidence attempt settles as transport-failure before recovery allocates."""
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw))
+        D.prepare(args)
+        _record_result(args, D.TRANSPORT_FAILURE)
+        args.launch_attempt = "2"
+        args.allocation_purpose = "recovery"
+        D.prepare(args)
+        _path, _text, _records, allocations, results = D.load_allocations(
+            Path(args.run_dir), args.pr, args.review_pass)
+        check(D.allocation_summary(allocations, results)["attempts"] == [
+            {"launch_attempt": 1, "purpose": "initial", "result": D.TRANSPORT_FAILURE},
+            {"launch_attempt": 2, "purpose": "recovery", "result": "in-flight"},
+        ], "zero-launch recovery did not follow a settled transport failure")
+
+    refs = OWNER.parent.parent / "references"
+    stage = (refs / "stage-2-review-gate.md").read_text(encoding="utf-8")
+    zero_launch = stage[stage.index("- **Zero launch evidence"):stage.index("- **This deadline test")]
+    check(zero_launch.index("result --result transport-failure") <
+          zero_launch.index("allocation-status") <
+          zero_launch.index("Review preparation mapping"),
+          "zero-launch recovery does not settle transport failure before allocation-status selects a retry")
+    check("--allocation-purpose final" in zero_launch,
+          "zero-launch recovery does not select the reserved final allocation when it is due")
+    loop = (refs / "loop-control.md").read_text(encoding="utf-8")
+    loop_launch = loop[loop.index("- a review pass is in flight"):loop.index("- CI red")]
+    check(loop_launch.index("result --result\n     transport-failure") <
+          loop_launch.index("allocation-status") <
+          loop_launch.index("Review preparation mapping"),
+          "loop-control selects a zero-launch retry before recording allocation status")
+    check("--allocation-purpose final" in loop_launch,
+          "loop-control omits the reserved final allocation from zero-launch recovery")
+    critical = (refs / "critical-rules.md").read_text(encoding="utf-8")
+    critical_launch = critical[critical.index("distinct bars, never collapsed"):critical.index("- Reviewers do not own the plan")]
+    check("review-dispatch.py result --result transport-failure" in critical_launch and
+          "review-dispatch.py allocation-status" in critical_launch,
+          "critical rules omit allocation-status-driven zero-launch recovery")
+    reviewer = (refs / "reviewer.md").read_text(encoding="utf-8")
+    never_started = reviewer[reviewer.index("A reviewer that **never starts**"):]
+    check("Settle it as `transport-failure`" in never_started and
+          "`review-dispatch.py allocation-status`" in never_started,
+          "reviewer guidance omits allocation-status-driven zero-launch recovery")
+
+    dispatch = (refs / "review-dispatch.md").read_text(encoding="utf-8")
+    owners = dispatch[dispatch.index("Inputs have these owners:"):dispatch.index("- `review_root`")]
+    check("`review_action`, `route`, `prompt_profile`, and `report_producer` come from" in owners,
+          "review preparation mapping owns fields beyond its action, route, producer, and profile")
+    check("`launch_attempt` and `allocation_purpose` come only from" in owners and
+          "`review-dispatch.py allocation-status`" in owners and
+          "**Review preparation mapping** selects\n  neither" in owners,
+          "review-dispatch.md does not make the allocation journal the sole allocation-purpose owner")
+
+
+def t_killed_session_resume_uses_allocation_journal() -> None:
+    refs = OWNER.parent.parent / "references"
+    for name in ("loop-control.md", "stage-2-review-gate.md", "critical-rules.md"):
+        text = (refs / name).read_text(encoding="utf-8")
+        check("review-dispatch.py result" in text and "allocation-status" in text and
+              "Review allocation journal" in text,
+              f"{name} does not route a dead review through durable allocation state")
+        check("--allocation-purpose final" in text,
+              f"{name} does not prepare the reserved final allocation when it is due")
+    loop = (refs / "loop-control.md").read_text(encoding="utf-8")
+    stage = (refs / "stage-2-review-gate.md").read_text(encoding="utf-8")
+    check("highest-numbered launch\nattempt's `pass_identity`" not in loop,
+          "killed-session recovery still budgets from the highest attempt identity")
+    check("`launch_attempt` **alone** through" not in stage,
+          "Stage 2 still selects a killed-session recovery from attempt number alone")
 
 
 def t_transition_actions_map_directly_to_prepare_inputs() -> None:
@@ -891,7 +1433,9 @@ def t_unicode_worktree_delivers_under_ascii_stdout() -> None:
         intent_path = _write_inputs(rundir)
         argv = [
             "prepare", "--run-dir", os.fspath(rundir), "--pr", "41", "--pass", "2",
-            "--launch-attempt", "1", "--worktree", os.fspath(worktree), "--base", "main",
+            "--launch-attempt", "1", "--allocation-purpose", "initial",
+            "--worktree", os.fspath(worktree), "--base", "main",
+            "--review-action", "launch-native",
             "--route", "native", "--prompt-profile", "standard",
             "--report-producer", "reviewer-tool-write",
             "--head-sha", SHA, "--dispatched-at", STAMP, "--default-non-goals", "[]",
@@ -915,10 +1459,15 @@ def t_unicode_worktree_delivers_under_ascii_stdout() -> None:
 
 def t_cli_emits_only_canonical_host_neutral_json() -> None:
     with tempfile.TemporaryDirectory() as raw:
-        args = _fixture(Path(raw), route="external-codex", producer="reviewer-tool-write")
+        args = _fixture(
+            Path(raw), review_action="launch-external", route="external-codex",
+            producer="reviewer-tool-write",
+        )
         argv = [
             "prepare", "--run-dir", args.run_dir, "--pr", args.pr, "--pass", args.review_pass,
-            "--launch-attempt", args.launch_attempt, "--worktree", args.worktree, "--base", args.base,
+            "--launch-attempt", args.launch_attempt, "--allocation-purpose", args.allocation_purpose,
+            "--worktree", args.worktree, "--base", args.base,
+            "--review-action", args.review_action,
             "--route", args.route, "--prompt-profile", args.prompt_profile,
             "--report-producer", args.report_producer,
             "--head-sha", args.head_sha, "--dispatched-at", args.dispatched_at,
@@ -934,11 +1483,11 @@ def t_cli_emits_only_canonical_host_neutral_json() -> None:
               "materializer must not select or launch a host process")
 
 
-def _build_ledger(directory: Path, pr: str, base_branch: str) -> Path:
+def _build_ledger(directory: Path, pr: str, base_branch: str, head_sha: str = SHA) -> Path:
     """A real ledger (through ledger.py) with one row for `pr` carrying an EXPLICIT `base_branch`."""
     ledger = directory / "state.jsonl"
     for argv in (["header", "set", "run_id", "t"],
-                 ["add-row", "--pr", pr, "--head-sha", "a" * 40, "--base-branch", base_branch]):
+                 ["add-row", "--pr", pr, "--head-sha", head_sha, "--base-branch", base_branch]):
         proc = subprocess.run([sys.executable, os.fspath(D.LEDGER), "--file", os.fspath(ledger), *argv],  # noqa: S603
                               capture_output=True, text=True, check=False)
         check(proc.returncode == 0, f"ledger {' '.join(argv)} failed: {proc.stderr.strip()}")
@@ -1041,10 +1590,11 @@ def t_ledger_missing_row_refuses() -> None:
         _refused(args, "no ledger row for pr 41")
 
 
-def _build_ledger_scope(directory: Path, pr: str, base_branch: str, default_non_goals: str) -> Path:
+def _build_ledger_scope(directory: Path, pr: str, base_branch: str, default_non_goals: str,
+                        head_sha: str = SHA) -> Path:
     """A real ledger (through ledger.py) with one row for `pr` and a header `default_non_goals` set — the
     LIVE run scope `prepare`'s `--default-non-goals` assertion (F3) is checked against."""
-    ledger = _build_ledger(directory, pr, base_branch)
+    ledger = _build_ledger(directory, pr, base_branch, head_sha)
     proc = subprocess.run(  # noqa: S603
         [sys.executable, os.fspath(D.LEDGER), "--file", os.fspath(ledger),
          "header", "set", "default_non_goals", default_non_goals],
@@ -1096,8 +1646,8 @@ CASES = [
     ("attempt-one", "prepare materializes one coherent attempt-1 record", t_prepare_attempt_one_materializes_one_record),
     ("later-external-attempt", "later attempts preserve suffix and the reviewer's report door", t_later_attempt_keeps_the_reviewer_report_door),
     ("producer-pairing", "route and sole report producer must agree", t_route_and_report_owner_must_agree),
-    ("prompt-profile", "prompt profiles are typed and scoped to external Codex attempt 2",
-     t_prompt_profiles_are_typed_and_route_scoped),
+    ("prompt-profile", "prompt profiles are typed and scoped to the review action",
+     t_prompt_profiles_are_typed_and_action_scoped),
     ("hostile-data", "hostile paths and intent remain inert exact data", t_hostile_paths_and_intent_remain_exact_data),
     ("closed-template", "template slots close before payload binding", t_template_slots_are_closed_before_payload_binding),
     ("invalid-identifiers", "invalid identity fields create no artifacts", t_invalid_identifiers_create_nothing),
@@ -1110,7 +1660,26 @@ CASES = [
     ("interrupt-rollback", "an interrupt after the identity link rolls both files back", t_interrupt_after_identity_link_strands_no_residue),
     ("hard-stop-recovery", "both-files and identity-only hard-stop residue is recoverable", t_hard_stop_residue_is_recoverable),
     ("malformed-identity-refused", "a malformed lone identity is refused, not reclaimed", t_malformed_lone_identity_is_refused_not_reclaimed),
-    ("fallback-attempt-three", "external retry failure has a terminal native attempt-3 path", t_external_attempt_two_has_native_attempt_three_recovery),
+    ("allocation-final-reserve", "nonterminal outcomes preserve one fresh final review allocation",
+     t_allocation_reserves_final_review_after_nonterminal_outcomes),
+    ("allocation-final-due-history", "final allocation requires amended, invalidated-head, or post-repair history",
+     t_final_allocation_requires_durable_due_history),
+    ("allocation-legacy-migration", "an active pre-journal attempt migrates before settlement",
+     t_prejournal_active_attempt_migrates_before_settlement),
+    ("reviewed-needs-binary", "reviewed refuses a missing, deferred, malformed, or incomplete review",
+     t_reviewed_result_requires_usable_binary_review),
+    ("reviewed-refuses-scope-drift", "reviewed preserves the final reservation when the run scope moves",
+     t_reviewed_result_refuses_scope_drift),
+    ("reviewed-refuses-head-drift", "reviewed settles a changed ledger head without consuming the final reserve",
+     t_reviewed_result_refuses_live_head_drift),
+    ("binary-result-before-verdict", "verified binary outcomes are journaled before the tally instruction",
+     t_binary_review_is_journaled_before_verdict_tally),
+    ("killed-session-settlement", "dead attempts settle before resumed recovery allocation",
+     t_killed_session_resume_settles_before_next_allocation),
+    ("zero-launch-settlement", "zero launch evidence settles transport failure before recovery allocation",
+     t_zero_launch_evidence_settles_transport_failure_before_retry),
+    ("killed-session-allocation", "killed-session recovery selects the durable due allocation",
+     t_killed_session_resume_uses_allocation_journal),
     ("transition-mapping", "review actions map directly to route, producer, and prompt profile",
      t_transition_actions_map_directly_to_prepare_inputs),
     ("unicode-delivery", "a Unicode path is delivered as UTF-8 bytes under ASCII stdout", t_unicode_worktree_delivers_under_ascii_stdout),

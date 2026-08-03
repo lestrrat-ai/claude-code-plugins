@@ -218,8 +218,8 @@ a late SATISFIED verdict — planned at the now-too-shallow depth — would refi
 against the deeper tier; stop that pass too (`loop-control.md` re-triage step). The freed slot
 immediately refills with the next due review (Loop control step 3).
 
-Route every selected reviewer through `runtime-adapter.md`'s capability/transition owner and
-`reviewer.md`'s retry budget. Any resulting native-worker pass receives this same complete review
+Route every selected reviewer through `runtime-adapter.md`'s capability/transition owner and **Review
+allocation journal**. Any resulting native-worker pass receives this same complete review
 contract and counts toward the gate exactly like an external pass; when native workers are already the
 selected reviewer, that is the normal path rather than a fallback. Do not restate transport properties
 or park conditions here.
@@ -270,7 +270,9 @@ enforced: the progress file is a plaintext file in a directory the reviewer can 
     # It does NOT gate the tally — the tally reads the dispatch-time pass_identity binding, not this intent
 ["python3", review_dispatch_script, "prepare", "--run-dir", review_root,
  "--pr", pr, "--pass", review_pass, "--launch-attempt", launch_attempt,
+ "--allocation-purpose", allocation_purpose,
  "--worktree", worktree, "--base", base, "--file", ledger_file,
+ "--review-action", review_action,
  "--route", route, "--prompt-profile", prompt_profile,
  "--report-producer", report_producer, "--head-sha", head_sha,
  "--dispatched-at", utc_timestamp, "--default-non-goals", ledger_default_non_goals,
@@ -495,9 +497,11 @@ timestamp **that PARSES as a real moment**: `2026-99-99T99:99:99Z` has the exact
 it), and the run's `default_non_goals` — the DISPATCH-TIME review scope this pass's verdict is measured
 against at tally. Four rules depend on it: a late verdict is ignored unless its attempt
 id still matches the active pass; `dispatched_at` is the clock the launch check below measures against;
-`launch_attempt` is how a *later heartbeat* — possibly a fresh agent — knows which recovery branch
-this pass has already consumed: the highest `launch_attempt` records how far it has walked the
-`runtime-adapter.md`, **Review preparation mapping** budget; and `verify --ledger` compares the bound
+`launch_attempt` identifies the active artifact attempt for a *later heartbeat* — possibly a fresh
+agent. After it settles any dead active attempt through `review-dispatch.py result`, the heartbeat reads
+`review-dispatch.py allocation-status` and the `runtime-adapter.md`, **Review allocation journal**, to learn
+which allocation purpose remains due; and
+`verify --ledger` compares the bound
 `default_non_goals` to the run's live defaults at tally (`check_scope`), voiding a verdict earned under a
 scope the operator has since moved. A progress file holding **only** this line is
 therefore evidence that the reviewer has produced nothing — not evidence of a missing file.
@@ -561,17 +565,23 @@ rule is sized for a reviewer working slowly, not one that never woke up. Gate ev
   stronger one (a planned unit `done` or an accepted amendment, ~15 min, "is it getting anywhere?").
   A `started` event is launch evidence but is **not** meaningful progress. Never collapse the two.
 - **Zero launch evidence past the deadline → the pass never started.** Do NOT wait out the 15-min stale
-  path. Kill the task, then take the exact next action and fresh attempt from `runtime-adapter.md`,
-  **Review preparation mapping**. `review-dispatch.py prepare` creates fresh attempt-scoped artifacts;
-  anything a killed attempt later writes stays inert. The highest-numbered `pass_identity` keeps the
-  recovery budget on disk, so a new agent cannot restart it from memory.
+  path. Kill the task, settle its allocation with `review-dispatch.py result --result transport-failure`,
+  then run `review-dispatch.py allocation-status`. Read its durable history through
+  `runtime-adapter.md`, **Review allocation journal**, to choose the due allocation purpose: when the
+  final allocation remains reserved and due, prepare the next monotonic attempt with
+  `--allocation-purpose final`; otherwise prepare the due `initial` or `recovery` allocation. Then take
+  the route/profile branch in **Review preparation mapping**. `review-dispatch.py prepare` creates fresh
+  attempt-scoped artifacts; anything a killed attempt later writes stays inert. The allocation journal
+  keeps the recovery budget on disk, so a new agent cannot restart it from memory.
 - **This deadline test applies ONLY to a pass whose process is still alive.** It asks "this thing is
   running — has it started?", and launch evidence is the answer. A pass whose task is **gone** (the
   session died with it) is a different question entirely, and launch evidence is **irrelevant** to it:
-  a dead process will never produce a verdict no matter what it wrote before dying. Dispatch on
-  `launch_attempt` **alone** through `runtime-adapter.md`, **Review preparation mapping** (Loop control,
-  "Resume after a killed session"). Every dead pass lands on exactly one mapping branch; launch evidence
-  never suppresses it.
+  a dead process will never produce a verdict no matter what it wrote before dying. Settle its observed
+  non-binary outcome through `review-dispatch.py result`, then dispatch on
+  `review-dispatch.py allocation-status` and `runtime-adapter.md`, **Review allocation journal**, before
+  taking **Review preparation mapping** (Loop control, "Resume after a killed session"). When the final
+  allocation is reserved and due, prepare it with `--allocation-purpose final`. Every dead pass lands on
+  exactly one mapping branch; launch evidence never suppresses it.
 - Before re-dispatching, **re-check the command** for the known launch faults — most of all the quoted
   prompt-file stdin redirect on every external reviewer (`review-dispatch.md`), and the external reviewer's
   `-C` target, which must be the run-artifact root (a `-C` off that root makes the run directory read-only
@@ -591,7 +601,7 @@ events and vague "still working" lines prove only process liveness and MUST NOT 
 progress timer. The reviewer MUST append progress events immediately as units complete, not batch them
 at final output. If no meaningful progress lands for ~15 min while the review process is still alive,
 mark the review suspicious; if it remains stale on the next heartbeat, treat it as a reviewer system
-failure: apply `reviewer.md`'s retry budget and `runtime-adapter.md`'s owned transition. Ignore any
+failure: apply `runtime-adapter.md`, **Review allocation journal**, and its owned transition. Ignore any
 late verdict from a stale/superseded attempt unless its attempt id still matches the active review pass.
 
 #### A finer liveness signal — the reviewer's OUTPUT STREAM
@@ -618,9 +628,9 @@ stream written within the quiet window (`alive`) means the process is emitting, 
 false stall while the progress file is merely coarse-stale; a stream unwritten past the window (`quiet`),
 **and an `absent` stream, corroborate a hang ONLY AFTER launch evidence exists** — the reviewer wrote at
 least one line after `pass_identity` (a `started` event or an amendment) and then went quiet —
-in which case apply `reviewer.md`'s retry budget without waiting the full meaningful-progress cap.
+in which case apply `runtime-adapter.md`, **Review allocation journal**, without waiting the full meaningful-progress cap.
 **BEFORE launch evidence, a `quiet`/`absent` stream is NOT a hang signal:** the launch-evidence gate (the
-Stage 2a launch deadline, above) still owns that window, and triggering the retry budget there would kill a
+Stage 2a launch deadline, above) still owns that window, and triggering allocation recovery there would kill a
 healthy warming-up reviewer or pre-empt the launch-evidence recovery. **This is process liveness, NOT
 meaningful progress** — exactly like the `started`/"still working"
 lines above, a growing stream **MUST NOT reset the meaningful-progress timer**: a reviewer that streams
@@ -866,6 +876,9 @@ nothing left for the read side to be lenient about. Every rule that DOES gate �
 nothing outstanding returns `unusable` because the deferral points at nothing. None of these routes opens
 a NEW pass: a deferral spends no pass number, so any relaunch keeps the same pass and takes its next
 launch attempt (`runtime-adapter.md`, "Review preparation mapping").
+
+**Record this attempt before selecting its relaunch through `runtime-adapter.md`, "Review allocation journal".** The journal owns which outcome preserves the final review reserve; this gate owns only the
+artifact result that names the outcome.
 
 **AN UNWRITABLE RUN DIRECTORY PRODUCES NO REPORT AT ALL, SO THERE IS NO DEFERRAL TO ROUTE.** The report is
 written through a door under the SAME root every other artifact is, so a reviewer whose emits fail cannot

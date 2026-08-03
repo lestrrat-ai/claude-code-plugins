@@ -127,25 +127,26 @@ exhaustion, auth failures, timeouts, or other system errors. Distinguish this fr
 run that produced its report record — or reported a finding — is a *result*, act on it. A *failure*
 is the absence of a report.
 
-**On a capable external process failure, retry once. If it still can't deliver a verdict, take
-`runtime-adapter.md`'s fresh native fallback transition** rather than stalling, looping, or skipping the
-gate. A pre-launch capability miss (the paired CLI is absent) has no process to retry and takes that
-fallback immediately. Note in the final report which cross-engine routes were unavailable and which passes
-used the recovery profile or ran on the native-worker fallback. The gate is unchanged: a worker pass is a fresh, context-isolated re-roll that counts toward
-the review gate exactly like an external pass. The runtime owner defines the native limitations and the
-only machine-blocker transition; do not restate them here.
+**On a capable external process failure, follow `runtime-adapter.md`, "Review allocation journal", then
+take its fresh native fallback transition when it selects one.** A pre-launch capability miss (the paired
+CLI is absent) takes that fallback immediately. Note in the final report which cross-engine routes were
+unavailable and which passes used the recovery profile or ran on the native-worker fallback. The gate is
+unchanged: a worker pass is a fresh, context-isolated re-roll that counts toward the review gate exactly
+like an external pass. The runtime owner defines allocation, native limitations, and the only
+machine-blocker transition; do not restate them here.
 
 **Prepare every retry from `runtime-adapter.md`, "Review preparation mapping".** The transition does not
-inspect provider error text: it assigns `codex-recovery` to the existing external Codex attempt `2` and
-`standard` to every other route. The retry always starts a fresh process and never resumes the failed
-external session. The profile changes only the opening framing, does not require a model switch, and
-keeps the complete shared prompt contract, attempt budget, producer, and canonical argv. The shipped
-adapter has no trusted alternate-model mapping, so it passes no model-selection argument.
+inspect provider error text: it assigns `codex-recovery` only to `retry-external` on `external-codex`, at
+every launch attempt, and assigns `standard` to every other `ReviewAction`. The retry always starts a
+fresh process and never resumes the failed external session. The profile changes only the opening framing,
+does not require a model switch, and keeps the complete shared prompt contract, allocation journal,
+producer, and canonical argv. The shipped adapter has no trusted alternate-model mapping, so it passes no
+model-selection argument.
 
 A reviewer that **never starts** is a distinct failure — it produces not even a partial result — and
 has its own guard: the Stage 2a **launch check** kills any pass that has written **no launch evidence**
 within ~5 min of dispatch (launch evidence = any reviewer-written line after `pass_identity`, including
-a `plan_amendment_request`, not just a `progress` event), re-dispatches it once into attempt-scoped
-artifacts, and falls back to a fresh native worker if the relaunch is also dead on arrival. A missing or
-wrong prompt-file stdin redirect is a common cause, so re-check the command before relaunching: an
-identical relaunch hangs identically.
+a `plan_amendment_request`, not just a `progress` event). Settle it as `transport-failure`, then use
+`review-dispatch.py allocation-status` and `runtime-adapter.md`, **Review allocation journal**, to select
+the due fresh allocation into attempt-scoped artifacts. A missing or wrong prompt-file stdin redirect is a
+common cause, so re-check the command before relaunching: an identical relaunch hangs identically.

@@ -723,15 +723,17 @@ def t_bundle_refuses_unreconcilable_pass_histories(tmp: Path) -> None:
     code, _, err = run_bundle(last, last["rundir"] / "bundle.txt")
     check(code == 1 and "latest artifact pass" in err,
           f"a verdictless latest pass was not refused: {err!r}")
-    check("relaunch pass 4" in err,
-          f"the verdictless-latest refusal names no recovery action: {err!r}")
-    check("park the PR for the user" in err,
-          f"the verdictless-latest refusal names no park fallback: {err!r}")
+    for needle in ("review-dispatch.py result", "allocation-status", "--allocation-purpose", "no legal allocation",
+                   "park the PR for the user", "machine blocker", "relaunch pass 4"):
+        check(needle in err, f"the verdictless-latest refusal omits {needle!r}: {err!r}")
+    check(err.index("review-dispatch.py result") < err.index("allocation-status") <
+          err.index("--allocation-purpose") < err.index("no legal allocation") <
+          err.index("park the PR for the user") < err.index("relaunch pass 4"),
+          f"the verdictless-latest recovery does not settle before choosing or relaunching: {err!r}")
 
-    # A verdictless LATEST pass whose ACTIVE attempt is already 3 — the last launch attempt the runtime
-    # allocates (`runtime-adapter.md`: a dead or unusable attempt 3 parks as a machine blocker). The
-    # refusal must name the park fallback, because "relaunch as the next launch attempt" alone is
-    # unactionable once the budget is spent.
+    # A verdictless LATEST pass at attempt 3 may have a due final allocation, but the repair bundle cannot
+    # infer the durable due history from its filename. Its refusal must direct the driver to the journal
+    # rather than claim the old attempt cap exhausted the review.
     spent = bundle_setup(tmp / "spent", rounds=4)
     write_review_attempt(spent["rundir"], 4, 2, spent["head_sha"],
                          "SUPERSEDED ATTEMPT 2 MUST NOT BE READ\n")
@@ -742,8 +744,8 @@ def t_bundle_refuses_unreconcilable_pass_histories(tmp: Path) -> None:
     code, _, err = run_bundle(spent, spent["rundir"] / "bundle.txt")
     check(code == 1 and "latest artifact pass" in err,
           f"a verdictless latest pass at attempt 3 was not refused: {err!r}")
-    check("park the PR for the user" in err,
-          f"the exhausted-relaunch refusal names no park recovery: {err!r}")
+    check("allocation-status" in err,
+          f"the verdictless attempt-3 refusal does not name allocation recovery: {err!r}")
 
     # Artifact passes EQUAL to the ledger's landed rounds take the fast path past surplus arbitration,
     # so a DEFERRED active report on a round the ledger counts as landed is caught at collect time.
@@ -776,8 +778,30 @@ def t_bundle_refuses_unreconcilable_pass_histories(tmp: Path) -> None:
     reledger(torn, "3")
     code, _, err = run_bundle(torn, torn["rundir"] / "bundle.txt")
     check(code == 1 and "cannot arbitrate" in err, f"a torn surplus report was not refused: {err!r}")
-    check("relaunch pass 2" in err,
-          f"the unparseable-surplus refusal names no recovery action: {err!r}")
+    for needle in ("review-dispatch.py result", "allocation-status", "--allocation-purpose", "no legal allocation",
+                   "park the PR for the user", "machine blocker", "relaunch pass 2"):
+        check(needle in err, f"the unparseable-surplus refusal omits {needle!r}: {err!r}")
+    check(err.index("review-dispatch.py result") < err.index("allocation-status") <
+          err.index("--allocation-purpose") < err.index("no legal allocation") <
+          err.index("park the PR for the user") < err.index("relaunch pass 2"),
+          f"the unparseable-surplus recovery does not settle before choosing or relaunching: {err!r}")
+
+
+def t_readme_settles_dead_reviews_before_relaunch(tmp: Path) -> None:
+    """The README summary keeps the allocation-journal recovery sequence intact."""
+    del tmp
+    readme = OWNER.parent.parent / "README.md"
+    text = readme.read_text(encoding="utf-8")
+    section = text[text.index("denial — is caught the same way:"):text.index("- It works through GitHub PRs")]
+    for needle in ("transport-failure", "allocation-status", "durable allocation\n  history",
+                   "runtime-adapter.md", "--allocation-purpose", "relaunch"):
+        check(needle in section, f"README recovery summary omits {needle!r}")
+    check(section.index("transport-failure") < section.index("allocation-status") <
+          section.index("runtime-adapter.md") < section.index("--allocation-purpose") <
+          section.index("relaunch"),
+          "README relaunches a dead reviewer before the runtime owner selects its due allocation")
+    check("allocation-status` then selects" not in section,
+          "README assigns due-purpose selection to allocation-status instead of the runtime owner")
 
 
 def t_unreconcilable_history_park_is_documented_at_each_boundary(tmp: Path) -> None:
@@ -1713,6 +1737,7 @@ CASES = [
     ("bundle-order-active", "bundle orders rounds numerically and selects only the active relaunch", t_bundle_orders_rounds_and_selects_active_attempt),
     ("bundle-skips-deferred-pass", "a verdictless (DEFERRED) surplus pass is excluded, listed, and never wedges", t_bundle_skips_an_explicitly_deferred_pass),
     ("bundle-pass-history-refusals", "every other pass-numbering drift is refused with the mismatch and recovery named", t_bundle_refuses_unreconcilable_pass_histories),
+    ("readme-dead-review-recovery", "README settles a dead review before choosing its relaunch", t_readme_settles_dead_reviews_before_relaunch),
     ("unreconcilable-history-park-docs", "the cap, ledger, and bailout guidance retain the machine-blocker park", t_unreconcilable_history_park_is_documented_at_each_boundary),
     ("bundle-deterministic", "bundle bytes/hash are deterministic and hostile payloads stay data", t_bundle_is_deterministic_and_payloads_are_data),
     ("bundle-refusals", "missing, stale, and duplicate active inputs fail before output", t_bundle_refuses_missing_stale_and_duplicate_inputs),
