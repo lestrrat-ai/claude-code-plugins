@@ -309,9 +309,9 @@ rules keep their own wording; these are illustrations of them, not a second copy
    **Review allocation journal**, then run `allocation-status` and choose the next allocation.
    **After a binary pass verifies `ok`, record `review-dispatch.py result --result reviewed` for its active
    attempt before recording its verdict.** If the allocation's head or dispatch-time scope is stale, this
-   refuses; settle it as `head-invalidated` or `scope-invalidated` before selecting the final retry. The
-   journal preserves the reserved final review across a fresh heartbeat; this completion step never infers
-   a budget from attempt filenames.
+   refuses; settle it as `head-invalidated` or `scope-invalidated` before selecting the due allocation under
+   `runtime-adapter.md`, **Review allocation journal**. The journal preserves the reserved final review
+   across a fresh heartbeat; this completion step never infers a budget from attempt filenames.
    **Then record the verdict with `scripts/ledger.py verdict --pr <N> --head-sha <sha> --verdict …`** — the
    ONLY sanctioned path, and the only thing that bumps `review_rounds` (Stage 2a, "Recording a verdict");
    never set `reviews_ok` by hand. It refuses unless the base-preflight `proceed` above stamped `base_ok_sha`
@@ -520,7 +520,10 @@ rules keep their own wording; these are illustrations of them, not a second copy
      `proceed` it records `base_ok_sha` for the head, without which `ledger.py verdict` refuses the verdict
      it later records (Stage 2a, "Recording a verdict"). Rebase on `rebase-first`, re-poll on `recheck`, or
      leave the ledger-held candidate alone on `park` per Stage 2a, then restart this precondition sequence.
-     With `proceed`, evaluate the verdict transport through
+     With `proceed`, pass the freshly read ledger-row `head_sha` to `review-dispatch.py prepare`. Its
+     `--file` head assertion refuses before writing an allocation or reviewer artifact if the PR moved;
+     refresh the PR state and restart this precondition sequence instead of spending a stale retry
+     (`review-dispatch.md`, "Prepare the active attempt", owns the assertion). Then evaluate the verdict transport through
      `runtime-adapter.md`'s capability/transition owner before
      building its record and take only the action it returns;
      missing native cwd/mount/sandbox controls alone are not a machine blocker. Then **ensure the pass's

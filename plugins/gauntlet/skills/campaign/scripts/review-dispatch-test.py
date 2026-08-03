@@ -1254,6 +1254,7 @@ def t_reviewed_result_refuses_live_head_drift() -> None:
         args.head_sha = "b" * 40
         args.review_action = "launch-external"
         args.prompt_profile = "standard"
+        args.head_sha = "b" * 40
         transport = D.prepare(args)["transport"]
         check(transport["prompt_profile"] == "standard",
               "a final external-Codex launch must use the launch-external standard profile")
@@ -1262,6 +1263,59 @@ def t_reviewed_result_refuses_live_head_drift() -> None:
         identity = D.RP.check_identity(events, args.pr, args.review_pass, args.launch_attempt)
         check(identity["head_sha"] == "b" * 40,
               "a head-invalidated final retry did not bind the current ledger head")
+
+
+def _head_invalidated_final_retry(root: Path) -> tuple[SimpleNamespace, str]:
+    """Prepare a settled stale attempt and return its still-stale final retry inputs."""
+    args = _fixture(
+        root, head_sha="a" * 40, route="external-codex", review_action="launch-external",
+    )
+    live_head = "b" * 40
+    ledger = _build_ledger_scope(Path(args.run_dir), args.pr, "main", "[]", head_sha=args.head_sha)
+    args.file = os.fspath(ledger)
+    D.prepare(args)
+    code, _out, err = capture_cli(D.L.main, [
+        "--file", os.fspath(ledger), "set", "--pr", args.pr, "--head-sha", live_head,
+    ])
+    check(code == 0 and err == "", f"head-drift fixture could not update the ledger: {err!r}")
+    _record_result(args, D.HEAD_INVALIDATED)
+    args.launch_attempt = "2"
+    args.allocation_purpose = "final"
+    args.review_action = "launch-external"
+    args.prompt_profile = "standard"
+    return args, live_head
+
+
+def t_stale_head_final_retry_refuses_before_writing_attempt_artifacts() -> None:
+    """A rebase-invalidated retry must not consume its final allocation on the old head."""
+    with tempfile.TemporaryDirectory() as raw:
+        args, _live_head = _head_invalidated_final_retry(Path(raw))
+        rundir = Path(args.run_dir)
+        paths = D.attempt_paths(rundir, args.pr, args.review_pass, args.launch_attempt)
+        journal = D.allocation_path(rundir, args.pr, args.review_pass)
+        before = journal.read_bytes()
+        _refused(args, "live ledger head")
+        check(not any(paths[name].exists() for name in ("prompt", "progress", "findings", "report")),
+              "a stale final retry wrote attempt-2 reviewer artifacts")
+        check(journal.read_bytes() == before,
+              "a stale final retry recorded an allocation after the ledger-head refusal")
+
+
+def t_live_head_final_retry_records_current_identity() -> None:
+    """The same final retry launches after its supplied head catches up with the ledger."""
+    with tempfile.TemporaryDirectory() as raw:
+        args, live_head = _head_invalidated_final_retry(Path(raw))
+        args.head_sha = live_head
+        D.prepare(args)
+        paths = D.attempt_paths(Path(args.run_dir), args.pr, args.review_pass, args.launch_attempt)
+        events = D.RP.parse_lines(paths["progress"].read_text(encoding="utf-8"), paths["progress"].name)
+        identity = D.RP.check_identity(events, args.pr, args.review_pass, args.launch_attempt)
+        check(identity["head_sha"] == live_head,
+              "the final retry did not bind its pass identity to the live ledger head")
+        _path, _text, _records, allocations, _results = D.load_allocations(
+            Path(args.run_dir), args.pr, args.review_pass)
+        check(allocations["2"]["head_sha"] == live_head,
+              "the final retry allocation did not record the same live head as its identity")
 
 
 def t_binary_review_is_journaled_before_verdict_tally() -> None:
@@ -1578,7 +1632,7 @@ def t_ledger_unresolved_base_refuses() -> None:
             proc = subprocess.run([sys.executable, os.fspath(D.LEDGER), "--file", os.fspath(ledger), *argv],  # noqa: S603
                                   capture_output=True, text=True, check=False)
             check(proc.returncode == 0, f"ledger {' '.join(argv)} failed: {proc.stderr.strip()}")
-        args = _fixture(root, base="v3", file=os.fspath(ledger))
+        args = _fixture(root, base="v3", file=os.fspath(ledger), head_sha="a" * 40)
         _refused(args, "no usable effective base")
 
 
@@ -1672,6 +1726,10 @@ CASES = [
      t_reviewed_result_refuses_scope_drift),
     ("reviewed-refuses-head-drift", "reviewed settles a changed ledger head without consuming the final reserve",
      t_reviewed_result_refuses_live_head_drift),
+    ("stale-final-retry-refused", "a stale final retry writes no reviewer artifacts or allocation",
+     t_stale_head_final_retry_refuses_before_writing_attempt_artifacts),
+    ("live-final-retry-identity", "a final retry binds its identity and allocation to the live ledger head",
+     t_live_head_final_retry_records_current_identity),
     ("binary-result-before-verdict", "verified binary outcomes are journaled before the tally instruction",
      t_binary_review_is_journaled_before_verdict_tally),
     ("killed-session-settlement", "dead attempts settle before resumed recovery allocation",
