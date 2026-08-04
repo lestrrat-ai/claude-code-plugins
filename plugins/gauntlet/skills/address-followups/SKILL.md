@@ -29,6 +29,13 @@ what happens to the PRs at the end. Everything else is a pointer, deliberately.
 
 ## Runtime adapter
 
+- **`<checkout>` is an input this skill receives, never a constant it knows.** It is the checkout the
+  user named with the invocation, and the repository the session is already running in when they named
+  none — the same convention the sibling skills state (`../followups/SKILL.md` and `../ledger/SKILL.md`,
+  step 1 of each). Neither host supplies it in an environment variable, so NEVER read one for it. Step 0
+  resolves it to an absolute repository root **once**, and that one absolute result is what every later
+  `<repo-root>`, every path derived from it, and every subagent prompt carries. No worker re-resolves it,
+  and none is handed a relative path or left to infer one from its own working directory.
 - Resolve `<skill-dir>` from the actual path of this active `SKILL.md`. NEVER depend on
   `CLAUDE_PLUGIN_ROOT`, `PLUGIN_ROOT`, the current working directory, or a repository-relative path.
 - Campaign's bundled scripts are `<skill-dir>/../campaign/scripts/`; its references are
@@ -56,10 +63,45 @@ Codex: `$gauntlet:address-followups [--id fuN] [--limit N]`
 - `--id fuN` works exactly that entry and no other.
 - `--limit N` stops after N entries have reached an actionable outcome.
 
+These are the only **flags**. The checkout is an input rather than a flag, and the Runtime adapter's
+`<checkout>` rule above owns where it comes from — this list is not the skill's full set of inputs.
+
+## When a command refuses — one rule, for every step
+
+Every command this file tells an agent to run — every `git`, every `gh`, and every `followups.py`
+invocation, wherever it appears below and whether the driver or a subagent runs it — can refuse.
+**Refusing** means a non-zero exit **or** output that cannot be used: empty, truncated, or not the shape
+the step reads. This section is the **only** rule for all of them. No step below restates it, none
+overrides it, and none is exempt.
+
+On any refusal, always:
+
+- **Relay the command's stderr as-is, and do not paraphrase it** — the same thing the sibling skills do
+  (`../followups/SKILL.md` and `../ledger/SKILL.md`, final step of each).
+- **Write nothing to the store and mutate no PR.** A command that refused reported nothing about the
+  entry, so a transition read out of an error is **invented, never observed**. **NEVER infer a store
+  move, a PR state, or a decision from a failure.** The branches next to these commands are destructive
+  — Step 2's `merged` deletes the entry outright — and a guessed one destroys work nothing can rebuild.
+- **Do not retry it silently.** Report the refusal and let the user re-invoke.
+
+How far the refusal stops the invocation then depends on which command refused:
+
+- **Step 0 or Step 1 refuses → stop the invocation** and report why. Nothing after them has a repository
+  root, a store, or a work list, and working a list that lost entries to an error reads as "the queue is
+  clear" when it is not.
+- **Every other command refuses → leave the entry it belonged to unworked and move to the next entry.**
+  That is the default and it needs no per-step list: the store still holds the state the entry already
+  had, so Step 1's ordering re-picks it on a later invocation. Step 6 must list it as unworked and name
+  the command that refused.
+- **`open-pr` refuses after its PR is already open** → the PR exists and the store does not name it.
+  Report that PR ref next to the entry id in Step 6, because the driver's memory of the pair dies with
+  the driver's context. Do not close the PR and do not re-attempt the record here.
+
 ## Step 0 — resolve, then refuse early
 
-1. Resolve the repository root to an absolute path:
-   `git -C <checkout> rev-parse --show-toplevel`.
+1. Resolve the repository root to an absolute path from the `<checkout>` the Runtime adapter defines:
+   `git -C <checkout> rev-parse --show-toplevel`. Carry that result as `<repo-root>`; nothing below
+   re-runs it.
 2. The store is `<repo-root>/.gauntlet/followups.jsonl`. It is **user-local and git-ignored**; it is
    never created here. If it does not exist, report that there is no follow-up store and **stop** — an
    empty queue and an absent store are different answers, and inventing the file hides which one it was.
@@ -99,7 +141,10 @@ silently stops at a cap reads as "the queue is clear" when it is not.
 An `in-pr` entry names the PR addressing it, and that PR may have moved since the entry was written.
 `followups.md` requires the move to be recorded **in the turn that saw it**, because the driver's memory
 of it dies with the driver's context. Read the PR once —
-`gh pr view <ref> --json state,labels` — and act on what it says:
+`gh pr view <ref> --json state,labels` — and act on what it says. The four cases below are the whole set
+of things a **successful** read can say; anything else — a non-zero exit, empty output, output missing
+either field — is a refusal and is handled by "When a command refuses", not by guessing which case it
+was:
 
 - **merged** → `python3 <abs>/followups.py --file <abs-store> merged --id fuN`. The entry is deleted and
   the command prints it in full; that print is the handoff, so put it in the report.
@@ -181,6 +226,8 @@ rejection strands the rest.
   `../campaign/references/fix-subagent-contract.md`. The follow-up fixer that opens a **new** PR is
   outside that file's three materializer roles, so its prompt is assembled here rather than through
   `worker-prompt.py`.
+- The worker's prompt carries, as data, the same absolute paths Step 3's prompt list names, plus the
+  entry itself. It resolves none of them for itself.
 - The target base and how it is chosen per follow-up are owned by `followups.md`, "APPLICABLE →
   `take-up`, then a FIX SUBAGENT that opens a PR". Hand the worker a worktree branched from that base.
 - The worker branches, commits, pushes, and opens the PR **carrying the `gauntlet-authored` label**.
@@ -196,8 +243,8 @@ Report **before** Step 7, because Step 7 ends this skill and anything unsaid is 
 entry touched, give its id, its title, and its outcome: reconciled, corroborated, refuted, taken up with
 its PR, or surfaced for a ruling. Then:
 
-- list every entry left unworked and why (`--limit`, an unresumable state, a dispatch that failed, a PR
-  another run owns);
+- list every entry left unworked and why (`--limit`, an unresumable state, a dispatch that failed, a
+  command that refused and which one, a PR another run owns);
 - list every question a user must answer, each with the entry it belongs to;
 - print in full every entry a deleting step removed, since the store no longer holds it;
 - name the PRs about to be handed to campaign.
@@ -230,6 +277,8 @@ skill** — the campaign drives its own loop from there.
 - **Two subagents, in that order, always.** The investigation reproduces before anything changes; the
   fixer authors code the gauntlet then judges. Never one worker doing both, and never the driver doing
   either inline.
+- **A refused command is not an answer.** "When a command refuses — one rule, for every step" owns what
+  happens then, and it is the only place in this file that says.
 - **NEVER hand-edit `.gauntlet/followups.jsonl`.** `followups.py` is the only door; every concurrent run
   writes that one file and nothing can rebuild a lost entry.
 - **NEVER `accept` for the user, and NEVER `publish`.** An issue is a published claim made in the user's
