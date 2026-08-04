@@ -200,7 +200,8 @@ def t_unread_followup_store_is_disclosed():
         store = rd / "followups.jsonl"
         N.F.dump(store, [{"id": "fu1", "title": "t", "evidence": "e", "deferred_why": "w"}], 0)
         out = _run_main(["--file", str(led), "--followups", str(store)])
-        check("1 open follow-up(s) — start any you can." in out and "NOT READ" not in out,
+        check("1 open follow-up(s) — start any you can, "
+              "or run gauntlet:address-followups to work the queue." in out and "NOT READ" not in out,
               "a store that exists must yield the COUNT and no disclosure — the disclosure must "
               "discriminate on whether the store was actually read")
 

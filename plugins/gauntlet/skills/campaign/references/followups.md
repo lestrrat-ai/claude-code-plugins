@@ -98,9 +98,17 @@ middle step.
 
 The threshold above says what the driver **may** do. This is the **procedure** that does it — the loop
 that turns an open follow-up into either a refutation or a merged PR. Run it when a heartbeat has **spare
-capacity** and the gated PRs do not need the driver right now (the nudge's "start on follow-ups" reminder
-is one prompt for it). It is **work-conserving, never blocking**: it runs *alongside* gating the campaign's
+capacity** and the gated PRs do not need the driver right now (the nudge's follow-up reminder is one
+prompt for it). It is **work-conserving, never blocking**: it runs *alongside* gating the campaign's
 PRs, never instead of them, and it holds the run hostage on nothing.
+
+**This procedure is also invocable on its own.** A campaign heartbeat reaches this loop only when the
+driver chooses to spend spare capacity on it, and the nudge reminder that prompts one decides nothing —
+so a queue can sit untouched for the whole life of a run. The `gauntlet:address-followups` skill
+(`/gauntlet:address-followups` in Claude Code, `$gauntlet:address-followups` in Codex) works the queue **on
+demand**, applying **this file's rules unchanged**: it resumes each entry by the state below, dispatches
+the same two subagents in the same order, and hands the PRs it opens to a campaign to gate. It changes
+**who initiates** the loop, never **what the loop does**.
 
 **Scope: one run's driver, not cross-run coordination.** The follow-up store is shared across every
 concurrent run, and this loop does not claim a follow-up against a *second run* — two runs active at once

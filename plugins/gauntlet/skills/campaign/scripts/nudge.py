@@ -219,7 +219,8 @@ def followups_line(followups: FollowupsRead) -> "str | None":
     if followups.open_count is None:
         return f"follow-up store NOT READ ({followups.unread_reason}) — open follow-ups are UNKNOWN, not zero."
     if followups.open_count:
-        return f"{followups.open_count} open follow-up(s) — start any you can."
+        return (f"{followups.open_count} open follow-up(s) — start any you can, "
+                "or run gauntlet:address-followups to work the queue.")
     return None
 
 

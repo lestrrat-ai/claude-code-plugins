@@ -46,6 +46,7 @@ Start a new Codex session after installation.
 | [`gauntlet:copilot-address-reviews`](skills/copilot-address-reviews/README.md) | Verify and address GitHub Copilot's PR review comments, one at a time. |
 | [`gauntlet:ledger`](skills/ledger/SKILL.md) | Show one campaign run's ledger as the script-owned read-only table. |
 | [`gauntlet:followups`](skills/followups/SKILL.md) | Show the durable follow-up queue as the script-owned read-only table. |
+| [`gauntlet:address-followups`](skills/address-followups/SKILL.md) | Work that queue instead of showing it: investigate each entry with a read-only subagent that must reproduce or refute it, open one PR per entry it may act on, and hand those PRs to a campaign. |
 
 ## Requirements
 
