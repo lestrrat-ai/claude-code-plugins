@@ -217,8 +217,13 @@ about and one whose partial rejection strands the rest.
    a different-base target is adopted here, never diverted for base disagreement. That PR is opened
    **`gauntlet-authored`** and adopted into the current run so `pr-adoption.md` reads it as
    `pr_origin=gauntlet` — without the label it defaults to `external`, which then blocks campaign's own
-   later autonomous repair of the very PR it authored. Record the PR with `followups.py open-pr --id fuN
-   --pr <ref>`; the entry stays `in-pr` and names which PR is addressing it.
+   later autonomous repair of the very PR it authored. **The fixer's prompt must name the PR reference as a
+   REQUIRED RETURN, and the driver must record it in the same turn it comes back** — nothing else carries
+   it. There is **no durable fuN→PR key** until `open-pr` writes one (the `self-accepted` note above), so a
+   worker that finishes without returning the reference leaves a PR that only the driver's dying context
+   could name, and no later heartbeat can recover the pair. Record the PR with `followups.py open-pr --id
+   fuN --pr <ref>`, `<ref>` being what the worker returned; the entry stays `in-pr` and names which PR is
+   addressing it.
 
 4. **FOLD THE PR INTO THE CURRENT CAMPAIGN.** The follow-up's PR — which step 3 admitted on its own
    recorded base — is **adopted into this run** like any other

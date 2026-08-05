@@ -413,9 +413,10 @@
 - **Select a logical model class on EVERY worker dispatch** (`SKILL.md`, "Worker Dispatch";
   `runtime-adapter.md`). Never guess a model name from the other host.
 - **Model policy — the table is the owner. `SKILL.md`, "Worker Dispatch", assigns EVERY dispatched
-  worker's class; read it there rather than from any list, including this one.** Two rows are downgraded
-  and both share one reason — the judgment was already spent before that worker ran. Every other row is
-  `session` and is NEVER downgraded. A review pass *is* the gate; a review-fix authors code from scratch;
+  worker's class; read it there rather than from any list, including this one.** Do NOT reconstruct which
+  dispatches are downgraded from a count or a shared reason given here: a downgrade is never a default,
+  each downgraded row states **its own precondition**, and a dispatch whose row-precondition does not hold
+  is `session`. A review pass *is* the gate; a review-fix authors code from scratch;
   a `session`-class CI-fix authors code that gets merged; the mapper's under-map is **invisible**
   ("read-only" is not low-judgment). NEVER claim CI catches a bad fix — a wrong fix can turn CI green,
   and the review gate is a miss-catcher, not a proof of correctness.

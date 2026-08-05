@@ -36,6 +36,15 @@ what happens to the PRs at the end. Everything else is a pointer, deliberately.
   resolves it to an absolute repository root **once**, and that one absolute result is what every later
   `<repo-root>`, every path derived from it, and every subagent prompt carries. No worker re-resolves it,
   and none is handed a relative path or left to infer one from its own working directory.
+- **Every `gh` call this skill makes NAMES the repository it is about.** `gh` given no repository
+  resolves in **whatever checkout the process is standing in**, which need not be `<checkout>` —
+  `../campaign/references/ci-derivation-spec.md`, "`--repo` IS NOT OPTIONAL", owns that rule and campaign's
+  own call sites obey it (`../campaign/references/pr-adoption.md` pins the working directory;
+  `../campaign/scripts/label-mirror.py` passes `--repo`). Step 0 resolves the repository's `<owner>/<name>`
+  **once**, as `<repo-slug>`, and **every** `gh` invocation in this file carries `--repo <repo-slug>` — this
+  rule covers a `gh` call added here later exactly as it covers the ones written today. The single
+  exception is Step 0's own resolving call, which cannot name what it is resolving and is pinned by its
+  working directory instead.
 - Resolve `<skill-dir>` from the actual path of this active `SKILL.md`. NEVER depend on
   `CLAUDE_PLUGIN_ROOT`, `PLUGIN_ROOT`, the current working directory, or a repository-relative path.
 - Campaign's bundled scripts are `<skill-dir>/../campaign/scripts/`; its references are
@@ -87,8 +96,8 @@ On any refusal, always:
 How far the refusal stops the invocation then depends on which command refused:
 
 - **Step 0 or Step 1 refuses → stop the invocation** and report why. Nothing after them has a repository
-  root, a store, or a work list, and working a list that lost entries to an error reads as "the queue is
-  clear" when it is not.
+  root, the repository's identity, a store, or a work list, and working a list that lost entries to an
+  error reads as "the queue is clear" when it is not.
 - **Every other command refuses → leave the entry it belonged to unworked and move to the next entry.**
   That is the default and it needs no per-step list: the store still holds the state the entry already
   had, so Step 1's ordering re-picks it on a later invocation. Step 6 must list it as unworked and name
@@ -102,10 +111,15 @@ How far the refusal stops the invocation then depends on which command refused:
 1. Resolve the repository root to an absolute path from the `<checkout>` the Runtime adapter defines:
    `git -C <checkout> rev-parse --show-toplevel`. Carry that result as `<repo-root>`; nothing below
    re-runs it.
-2. The store is `<repo-root>/.gauntlet/followups.jsonl`. It is **user-local and git-ignored**; it is
+2. Resolve that repository's GitHub identity **once**, as `<repo-slug>`: `gh repo view --json
+   nameWithOwner --jq .nameWithOwner`, run with its **working directory pinned to `<repo-root>`**. This is
+   the one `gh` call here that names no repository, because it is the call that produces the name —
+   deriving it from the checkout is what `../campaign/scripts/merge.py` does before its own first
+   `gh pr view`. Nothing below re-resolves it, and every `gh` call below carries `--repo <repo-slug>`.
+3. The store is `<repo-root>/.gauntlet/followups.jsonl`. It is **user-local and git-ignored**; it is
    never created here. If it does not exist, report that there is no follow-up store and **stop** — an
    empty queue and an absent store are different answers, and inventing the file hides which one it was.
-3. Render the queue once, before any work, so the user sees what is about to be worked:
+4. Render the queue once, before any work, so the user sees what is about to be worked:
    `python3 <abs>/followups.py --file <abs-store> table`. Print its stdout as-is.
 
 ## Step 1 — build the work list from the STORE, never from memory
@@ -141,10 +155,10 @@ silently stops at a cap reads as "the queue is clear" when it is not.
 An `in-pr` entry names the PR addressing it, and that PR may have moved since the entry was written.
 `followups.md` requires the move to be recorded **in the turn that saw it**, because the driver's memory
 of it dies with the driver's context. Read the PR once —
-`gh pr view <ref> --json state,labels` — and act on what it says. The four cases below are the whole set
-of things a **successful** read can say; anything else — a non-zero exit, empty output, output missing
-either field — is a refusal and is handled by "When a command refuses", not by guessing which case it
-was:
+`gh pr view <ref> --repo <repo-slug> --json state,labels` — and act on what it says. The four cases
+below are the whole set of things a **successful** read can say; anything else — a non-zero exit, empty
+output, output missing either field — is a refusal and is handled by "When a command refuses", not by
+guessing which case it was:
 
 - **merged** → `python3 <abs>/followups.py --file <abs-store> merged --id fuN`. The entry is deleted and
   the command prints it in full; that print is the handoff, so put it in the report.
@@ -216,7 +230,9 @@ known non-goal of the loop, owned by `followups.md`, "Same-run idempotency is a 
 do not invent a reconciliation for it.
 
 For each, dispatch one subagent in the model class `../campaign/SKILL.md`, "Worker
-Dispatch — logical model class", assigns the **Follow-up fixer**.
+Dispatch — logical model class", assigns the **Follow-up fixer** **for the state of the entry in hand** —
+that table splits the fixer by entry state, so match the row to this entry before dispatching rather than
+reading the first row that names the worker. This file states no class of its own.
 
 **Strictly one at a time.** Finish an entry's PR before starting the next entry's fix. One follow-up per
 PR, never a grab-bag: a PR bundling several is one no reviewer can reason about, and its partial
@@ -233,9 +249,16 @@ rejection strands the rest.
 - The worker branches, commits, pushes, and opens the PR **carrying the `gauntlet-authored` label**.
   Without it, adoption reads the PR as `external` and campaign's own later repair of the PR it authored
   is blocked (`../campaign/references/pr-adoption.md`, `pr_origin`).
-- Record it in the **same turn that saw the PR open**:
-  `python3 <abs>/followups.py --file <abs-store> open-pr --id fuN --pr <ref>`. The entry stays in the
-  store and now names which PR is addressing it.
+- **The prompt states the worker's REQUIRED OUTPUT: the reference of the PR it opened** — a named result,
+  never something the driver has to spot in the worker's prose. `followups.md`, "APPLICABLE → `take-up`,
+  then a FIX SUBAGENT that opens a PR", owns that requirement and why nothing else can carry the value.
+  Everything downstream of the dispatch reads it: the record below, Step 6's report, and Step 7's
+  hand-off. A worker that returns without a usable reference leaves a PR the store cannot name — **do not
+  guess one and do not go hunting for it**; report it in Step 6 the way "When a command refuses" requires
+  an `open-pr` that never recorded its open PR to be reported.
+- Record it in the **same turn the worker returned it**, before dispatching anything else:
+  `python3 <abs>/followups.py --file <abs-store> open-pr --id fuN --pr <ref>`, with `<ref>` the value the
+  worker returned. The entry stays in the store and now names which PR is addressing it.
 
 ## Step 6 — REPORT, before the hand-off
 
