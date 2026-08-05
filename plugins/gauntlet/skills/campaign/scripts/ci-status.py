@@ -2255,11 +2255,22 @@ def _command_anchor(subcommand: str) -> re.Pattern[str]:
     a literal single space between the two tokens never matches, so the copy is never anchored and every
     downstream check (the paragraph read, the flag checks) never runs against it.
 
-    The tolerated gap is ONE wrap only: same-line spaces/tabs, or spaces/tabs around a single newline. A
-    blank line (a paragraph break, `\\n\\n`) is NOT absorbed, so an unrelated later mention of the
-    subcommand in a different paragraph is never merged into a false single copy.
+    The tolerated gap is ONE wrap only: same-line spaces/tabs, or spaces/tabs around a single newline —
+    with an OPTIONAL shell-continuation `\\` immediately before that newline, because a doc that wraps a
+    long invocation writes the wrap the way a reader would run it (`ci-status.py \\\\n   required-set …`),
+    and whitespace-only tolerance never matches that. A blank line (a paragraph break, `\\n\\n`) is NOT
+    absorbed, so an unrelated later mention of the subcommand in a different paragraph is never merged
+    into a false single copy.
+
+    **THIS LOCATES A COPY; IT DOES NOT JUDGE ONE.** Being permissive here can only ADD copies to the
+    flag checks — the failure it prevents is a non-compliant copy going UNCHECKED and its violation
+    disappearing with no diagnostic at all (the ZERO-copies safety net is silent as soon as any other
+    copy anchors). It is therefore deliberately looser than `_SHELL_BLANK`, which owns the shell's own
+    continuation grammar for the BYTE-EQUALITY check (`check_marked_commands`) — there a `\\` with no
+    space before it is not a wrap, because the shell joins it into one invalid token. That question is
+    the equality check's; this anchor must not answer it by refusing to look.
     """
-    return re.compile(rf"ci-status\.py(?:[ \t]+|[ \t]*\n[ \t]*){re.escape(subcommand)}")
+    return re.compile(rf"ci-status\.py(?:[ \t]+|[ \t]*\\?\n[ \t]*){re.escape(subcommand)}")
 
 
 def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]:

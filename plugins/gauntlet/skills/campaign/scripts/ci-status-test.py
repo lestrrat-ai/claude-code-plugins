@@ -1358,8 +1358,14 @@ def documentation_option_form_cases(ci, tmp: Path) -> list[str]:
     """Pin standalone and ``--name=value`` forms in all three documentation validators, plus the shared
     `_command_anchor` wrap tolerance: a copy WRAPS between the script name and the subcommand (a real doc,
     `loop-control.md`, does exactly this for `required-set`) and must still be found and checked like any
-    other copy — while a subcommand mention on the far side of a BLANK line (a different paragraph) must
-    stay unmatched, so the anchor never merges two unrelated mentions into one false copy."""
+    other copy — in EVERY spelling of that wrap, plain prose reflow and the shell's own ` \\` continuation
+    alike — while a subcommand mention on the far side of a BLANK line (a different paragraph) must stay
+    unmatched, so the anchor never merges two unrelated mentions into one false copy.
+
+    EACH WRAP IS PINNED TWICE, ON A COMPLIANT COPY *AND* ON A NON-COMPLIANT ONE. Counting the copy is the
+    weaker half: the flag checks run INSIDE the anchor's `finditer` loop, so a copy the anchor misses is
+    never asked for its required flag and its violation is reported as NOTHING — and the ZERO-copies
+    safety net cannot catch that, because it goes quiet the moment any other copy in the tree anchors."""
     problems: list[str] = []
     cases = [
         (
@@ -1424,19 +1430,49 @@ def documentation_option_form_cases(ci, tmp: Path) -> list[str]:
         # THE WRAP: the script name and the subcommand land on different physical lines — exactly what
         # `loop-control.md` does for `required-set` (`ci-status.py\n   required-set --ledger …`). The
         # anchor must still find and check this copy, not silently drop it from the count.
-        wrapped_root = tmp / f"documentation-options-{name}-wrapped"
-        wrapped_root.mkdir()
-        wrapped_valid = valid.replace(f"ci-status.py {name}", f"ci-status.py\n   {name}", 1)
-        if wrapped_valid == valid:
-            problems.append(f"[documentation options {name}:wrapped] fixture setup did not find "
-                             f"`ci-status.py {name}` in {valid!r} to wrap")
-        (wrapped_root / "commands.md").write_text(f"`{wrapped_valid}`\n", encoding="utf-8")
-        found, copies = check(wrapped_root)
-        if found or copies != ["commands.md:1"]:
-            problems.append(
-                f"[documentation options {name}:wrapped] expected one accepted copy despite the "
-                f"script-name/subcommand wrap; got copies={copies!r}, problems={found!r}"
-            )
+        #
+        # AND A DOC THAT WRAPS A LONG INVOCATION USUALLY WRITES THE SHELL'S OWN CONTINUATION — a `\` before
+        # the newline, the form a reader can paste and run — which whitespace-only tolerance never matches.
+        # Both spellings, with and without the space the shell wants before that backslash: the anchor only
+        # LOCATES a copy, so refusing to look is the one outcome it can never afford. `_SHELL_BLANK` owns
+        # the shell's grammar for the byte-EQUALITY check; this is deliberately looser than that.
+        for label, wrap in (
+            ("wrapped", f"ci-status.py\n   {name}"),
+            ("wrapped-backslash", f"ci-status.py \\\n   {name}"),
+            ("wrapped-backslash-nospace", f"ci-status.py\\\n   {name}"),
+        ):
+            wrapped_root = tmp / f"documentation-options-{name}-{label}"
+            wrapped_root.mkdir()
+            wrapped_valid = valid.replace(f"ci-status.py {name}", wrap, 1)
+            if wrapped_valid == valid:
+                problems.append(f"[documentation options {name}:{label}] fixture setup did not find "
+                                 f"`ci-status.py {name}` in {valid!r} to wrap")
+            (wrapped_root / "commands.md").write_text(f"`{wrapped_valid}`\n", encoding="utf-8")
+            found, copies = check(wrapped_root)
+            if found or copies != ["commands.md:1"]:
+                problems.append(
+                    f"[documentation options {name}:{label}] expected one accepted copy despite the "
+                    f"script-name/subcommand wrap; got copies={copies!r}, problems={found!r}"
+                )
+
+            # THE HALF THAT ACTUALLY GATES: the same wrap around a copy that DROPS the required flag. The
+            # flag checks live inside the anchor's loop, so a missed anchor does not merely undercount —
+            # it swallows the violation whole. **AND A COMPLIANT COPY SITS BESIDE IT ON PURPOSE**, because
+            # the ZERO-copies safety net is what would otherwise notice: it fires only when NOTHING in the
+            # tree anchors, so one good copy anywhere silences it and the miss becomes literally no output
+            # at all. That is the real tree's shape, and the only fixture shape that can see this defect.
+            bad_root = tmp / f"documentation-options-{name}-{label}-missing"
+            bad_root.mkdir()
+            wrapped_missing = missing.replace(f"ci-status.py {name}", wrap, 1)
+            (bad_root / "bad.md").write_text(f"`{wrapped_missing}`\n", encoding="utf-8")
+            (bad_root / "good.md").write_text(f"`{valid}`\n", encoding="utf-8")
+            found, copies = check(bad_root)
+            if len(found) != 1 or copies != ["bad.md:1", "good.md:1"]:
+                problems.append(
+                    f"[documentation options {name}:{label}:missing] expected the WRAPPED copy's missing "
+                    f"flag to be reported ALONGSIDE a compliant copy, which silences the ZERO-copies net; "
+                    f"got copies={copies!r}, problems={found!r}"
+                )
 
         # THE NON-WRAP: a BLANK line (a paragraph break) between the script name and the subcommand is NOT
         # a wrap — it is two unrelated mentions, and the anchor must not merge them into one false copy.
