@@ -518,17 +518,21 @@ report (`bailout-and-final-report.md`, **Follow-ups**) and `address-followups`' 
 owes it**: not heartbeat or interim output, not the `gauntlet:followups` listing skill, not `carryover.md`,
 not the run history file.
 The THRESHOLD above already fixes what that evidence must say, condition by condition; this section does
-not retype it. Read those values back with `get --field`, never by parsing the table. **Say so explicitly
-when none failed** — those are different outcomes, and the report is the only place they are told apart.
+not retype it. Read those values back with `get --field`, never by parsing the table. **An entry whose PR
+has MERGED is DELETED, so `get` fails for it** — what discharges its disclosure instead is the `merged`
+step's own printed output, owned above by "**A DELETING step still PRINTS the entry it removed, in
+full**" and not restated here. **Say so explicitly when none failed** — those are different outcomes, and
+the report is the only place they are told apart.
 Which conditions route and which one waits is the THRESHOLD's as well, not this section's.
 
 **What the driver may do with what it surfaces is the THRESHOLD above — do not re-derive it here.**
 Surfacing an entry to the user *is* how consensus gets reached, and it must never hold the run hostage
 (`run-identity-and-lease.md`, "Never hold the run hostage on a user prompt"): raise them alongside the
-report and fold any answer in as its own heartbeat. **A `candidate` is a question, not a task**: the driver has
-not investigated it yet, so it has nothing to act on and nothing to say. The FIRST move on a fresh
-candidate is to INVESTIGATE it — the active loop above, when there is spare capacity — because that is
-how the question gets answered. Surfacing it to the user is never a substitute for investigating it, and
+report and fold any answer in as its own heartbeat. **A `candidate` is an UNINVESTIGATED CLAIM, not a
+task**: the driver has not investigated it yet, so it has nothing to act on and nothing to say. The FIRST
+move on a fresh candidate is to INVESTIGATE it — the active loop above, when there is spare capacity —
+because that is what turns the claim into evidence, and investigating needs no permission (Tier 1).
+Surfacing it to the user is never a substitute for investigating it, and
 **a CORROBORATED entry is not surfaced INSTEAD of being worked** — the threshold above dispatches a fixer
 for it and reports what that fixer is doing, holding back only the one class it names.
 
