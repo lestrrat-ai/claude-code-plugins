@@ -258,12 +258,17 @@ that was never real (`AGENTS.md`/`CLAUDE.md`, "Your OWN diagnosis is a claim too
 **Only a `corroborated` entry reaches this step.** The other states arriving at Step 5 already carry a
 decision, and re-deciding one would overwrite a ruling that was already made.
 
-`followups.md`, "THE AUTONOMY THRESHOLD", owns the conditions and `followups.py take-up` enforces them,
-refusing the step when any is asserted without evidence. **Read them there and evidence each one.**
+`followups.md`, "THE AUTONOMY THRESHOLD", owns the conditions and what each one does; `followups.py
+take-up` refuses the step when any is asserted without evidence. **Read them there and evidence each
+one.** This file does not restate which conditions route and which one waits.
 
-- Every condition holds and is evidenced → `take-up`, then Step 5.
-- Any condition fails, **or you are unsure whether it holds** → surface the entry to the user with its
-  question and move to the next entry. That is the normal outcome, not a failure state.
+**A corroborated entry is worked, not surfaced instead of worked.** The default outcome of this step is
+`take-up` followed by Step 5, and the report says what the fixer is doing. The one class the threshold
+holds back waits for the user's ruling and is named in Step 6 with its question.
+
+- The threshold permits acting → `take-up`, then Step 5.
+- The threshold holds this entry back → record the question for Step 6 and move to the next entry. Do
+  not leave it silently undone, and do not re-decide it on a later invocation without new evidence.
 - **NEVER run `accept`.** It is the user's edge and the only way into `accepted`.
 - **NEVER run `publish`.** There is no autonomous path to it, from any state.
 

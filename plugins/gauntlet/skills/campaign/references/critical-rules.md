@@ -32,7 +32,7 @@
   adopted PRs — PR update, labels/checks/comments, and merge. Campaign ADOPTS existing PRs; it does not
   invent work. It opens a PR of its own in exactly ONE case: a **follow-up it has TAKEN UP** under the
   autonomy threshold (`followups.md`) — which requires a corroborated claim and every ACT condition
-  evidenced, and whose PR is then gated by the review gauntlet like any other. Otherwise PR creation lives
+  recorded, and whose PR is then gated by the review gauntlet like any other. Otherwise PR creation lives
   only in the `gauntlet:review` handoff. Ask for public API changes, active-run takeover, uncertain
   carryover pruning, or out-of-scope/destructive work.
 - NEVER commit the run's own bookkeeping — **the whole `.gauntlet/**` tree**, run scratch and every
