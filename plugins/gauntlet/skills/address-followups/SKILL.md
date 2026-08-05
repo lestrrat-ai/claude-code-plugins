@@ -3,9 +3,9 @@ name: address-followups
 description: >-
   Works Gauntlet's durable follow-up queue end to end instead of only listing it. Each open entry is
   resumed at the step its lifecycle state has already reached: a fresh read-only subagent must reproduce
-  or refute a still-unverified claim, only a corroborated entry meeting every autonomy-threshold condition
-  is taken up, a separate scoped subagent then authors the fix and opens ONE PR for that follow-up, and the PRs
-  opened this invocation are handed to gauntlet:campaign to gate and merge. Use when the user asks to
+  or refute a still-unverified claim, only a corroborated entry is taken up, a separate scoped subagent
+  then authors the fix and opens ONE PR for that follow-up, and the PRs opened this invocation are
+  handed to gauntlet:campaign to gate and merge. Use when the user asks to
   work, drive, clear, action, or process follow-ups. To only SEE the queue, use gauntlet:followups.
   Args (distinct modes): (no args) | --id fuN | --limit N
 ---

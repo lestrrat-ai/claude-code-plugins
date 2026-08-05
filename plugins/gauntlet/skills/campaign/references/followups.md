@@ -94,6 +94,15 @@ corroborated claim safe** — a wrong fix costs its own review rounds and never 
 else is disclosed and dispatched. A driver that surfaces a corroborated entry instead of working it has
 not been careful; it has left a reproduced defect in the tree and called that caution.
 
+**Checked claim about how this tier reads, not about the tool: its opening paragraph never directs an
+irreversible entry to a fixer without the user's ruling.** The whole tier was read for that conflict. The
+exception is announced twice **before** condition 3 states it — "for the classes below it **must**", and
+"it **routes** the entry and **raises a question**" — and the sentence directly above is what reconciles
+the two, not a second half of a contradiction. The mechanism cannot occur either: `self-accepted` is
+reachable only through the `take-up` command above, whose `--act-reversible` value condition 3 alone
+defines. Falsify this by producing a reading path from the opening paragraph to a dispatched fixer that
+never passes condition 3.
+
 ### Tier 3 — PUBLISH (a GitHub issue, a release). ALWAYS the user's call. Never autonomous.
 
 An issue is a **published claim**: it asserts to anyone reading the repo that the thing is real and worth
@@ -145,8 +154,9 @@ about and one whose partial rejection strands the rest.
 
 1. **VERIFY the claim — the main line, and where a fresh `candidate` starts.** The common path is one line:
    a `candidate` → **INVESTIGATE** (dispatch a context-isolated Tier-1, read-only subagent) → `corroborate`
-   or `refute` → if corroborated and every Tier-2 condition holds, `take-up` → a fix subagent opens a PR →
-   `open-pr` → adopt into the run → `merged`. A follow-up is a CLAIM, and the driver's own diagnosis needs
+   or `refute` → if corroborated and the threshold above does not hold the entry back, `take-up` → a fix
+   subagent opens a PR → `open-pr` → adopt into the run → `merged`.
+   A follow-up is a CLAIM, and the driver's own diagnosis needs
    corroboration exactly like a reviewer's finding does (`AGENTS.md`/`CLAUDE.md`, "Your OWN diagnosis is a
    claim too"). So the driver does **not** verify inline and does **not** skip to a fix: the investigation
    subagent's sole job is to **reproduce the claim** — read the code, run the commands, walk the causal
@@ -219,9 +229,9 @@ about and one whose partial rejection strands the rest.
    evidence the claim is false, never because a fix is inconvenient.
 
 3. **APPLICABLE → `take-up`, then a FIX SUBAGENT that opens a PR.** If the investigation `corroborated` it
-   **and every Tier-2 condition holds and is evidenced** (`corroborated`, `not-gate-machinery`,
-   `behavior-preserved`, `reversible` — `take-up` refuses without them), the driver takes it up
-   (→ `self-accepted`) and dispatches a **scoped fix subagent under the fix-subagent contract**
+   **and every ACT condition is recorded with evidence** — `take-up` refuses the step without that, and the
+   threshold above owns what a failing one does — the driver takes it up (→ `self-accepted`)
+   and dispatches a **scoped fix subagent under the fix-subagent contract**
    (`fix-subagent-contract.md`) that authors the fix **and opens a PR** for it. The driver hands the fixer
    a **worktree branched from the base the follow-up targets**, and the fixer branches, commits, pushes,
    and opens the PR against that base — its worktree and scope requirements are owned by

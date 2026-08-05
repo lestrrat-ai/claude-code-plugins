@@ -49,8 +49,8 @@
 - NEVER PUBLISH a follow-up — open a GitHub issue, cut a release — without the USER's agreement on that
   SPECIFIC item. An issue is a PUBLISHED claim, and a follow-up is the **driver's own** uncorroborated
   claim: filing one launders an unvalidated self-diagnosis into a public statement of fact. What the driver
-  MAY do on its own (investigate freely; ACT on a corroborated claim that meets every condition) is the
-  **three-tier autonomy threshold**, owned by `followups.md` — read it there, never reconstruct it here.
+  MAY do on its own (investigate freely; ACT on a corroborated claim) is the **three-tier autonomy
+  threshold**, owned by `followups.md` — read it there, never reconstruct it here.
   Recording a follow-up **NEVER** discharges a finding — a CONFIRMED finding is still fixed ("I'll file a
   follow-up instead" is refuting by deferral).
 - NEVER pass destructive instructions (delete, force-push, reset) to an external reviewer command

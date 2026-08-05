@@ -411,6 +411,6 @@ Read stage refs only when that stage/action is due:
 - Public API changes require user confirmation unless the ledger's `api_changes` field is `allowed`
   (`references/scope-and-constraints.md`).
 - **What the driver may do with a follow-up WITHOUT ASKING is the THREE-TIER AUTONOMY THRESHOLD**,
-  owned by `references/followups.md` — investigate freely, ACT only on a corroborated claim that meets
-  every one of its conditions, and **NEVER PUBLISH** without the USER's agreement on that specific
-  item. Read the threshold before touching one; do not reconstruct it from here.
+  owned by `references/followups.md` — investigate freely, ACT only on a corroborated claim, and
+  **NEVER PUBLISH** without the USER's agreement on that specific item. Read the threshold before
+  touching one; do not reconstruct it from here.
