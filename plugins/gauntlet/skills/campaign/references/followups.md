@@ -58,12 +58,14 @@ step.
 **A corroborated follow-up is NEVER left undone because a condition below is unclear.** Recording one and
 walking away is the permanent loss this store exists to prevent, arriving by a slower route: the entry
 sits corroborated forever, every later run re-reads it, and the defect it names stays in the tree. The
-driver may **CONFIRM** with the user, and for the classes below it **must**. It may not use uncertainty as
-a reason to act on nothing.
+driver may not use uncertainty as a reason to act on nothing.
 
 The three conditions below are still **RECORDED**, and `take-up` refuses the step if any is asserted
-without evidence. What changed is what a failing one does: it **routes** the entry and **raises a
-question**, rather than cancelling the work.
+without evidence. What changed is what a failing one does: it **routes** the entry rather than cancelling
+the work. A failing `not-gate-machinery` or `behavior-preserved` condition is **DISCLOSED and dispatched
+without a question** — the fixer runs and the user reads about it afterwards. Only a failing `reversible`
+condition raises a **question**: that entry **WAITS** for the user's ruling before any fixer is
+dispatched.
 
 1. **`not-gate-machinery`** (`--act-not-gate`) — does it decide whether a PR may merge? The active
    repository instruction file (`AGENTS.md` or `CLAUDE.md`) defines the gate; do not reconstruct that
@@ -510,9 +512,11 @@ hid and the flag that reveals them. Read a value back with `get --field`, **neve
 **Surfacing is NOT the whole of what the user is owed for an entry the driver TOOK UP.** No ACT evidence
 reaches that table — the fields `take-up` wrote sit outside its default view — and an entry the threshold
 **routes** is disclosed and dispatched, so it raises no question to be listed under and reads exactly like
-one every condition held for. So **wherever a report tells the user about an entry the driver took up** —
-campaign's final report (`bailout-and-final-report.md`, **Follow-ups**) and `address-followups`' own report
-step alike — name **each ACT condition that did NOT hold**, quoting the evidence `take-up` recorded for it.
+one every condition held for. So **exactly two reporting steps owe this disclosure** — campaign's final
+report (`bailout-and-final-report.md`, **Follow-ups**) and `address-followups`' Step 6 — and each must name
+**each ACT condition that did NOT hold**, quoting the evidence `take-up` recorded for it. **No other report
+owes it**: not heartbeat or interim output, not the `gauntlet:followups` listing skill, not `carryover.md`,
+not the run history file.
 The THRESHOLD above already fixes what that evidence must say, condition by condition; this section does
 not retype it. Read those values back with `get --field`, never by parsing the table. **Say so explicitly
 when none failed** — those are different outcomes, and the report is the only place they are told apart.

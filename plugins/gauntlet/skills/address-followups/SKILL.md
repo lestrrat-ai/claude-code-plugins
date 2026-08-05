@@ -336,9 +336,9 @@ its PR, or surfaced for a ruling.
 **A taken-up entry carries its ACT disclosure in that outcome, never in the question bullet below** — an
 entry the threshold **routes** is disclosed and dispatched, so it raises **no question** for that bullet
 to hold, and "taken up with its PR" on its own reads exactly like an entry every condition held for. What
-that disclosure must say is `followups.md`, "Surfacing them" — stated once there, for every report that
-names such an entry. Report it from there for **every** entry Step 4 took up; do not reconstruct it from
-this step.
+that disclosure must say is `followups.md`, "Surfacing them" — stated once there, for this step and
+campaign's final report, the only two reporting steps that owe it. Report it from there for **every** entry
+Step 4 took up; do not reconstruct it from this step.
 
 Then:
 
