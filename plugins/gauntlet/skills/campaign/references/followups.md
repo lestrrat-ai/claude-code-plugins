@@ -50,9 +50,10 @@ take the latest verdict on trust.
 ### Tier 2 — ACT (write a fix, open a PR). A CORROBORATED entry IS ACTED ON.
 
 **Corroboration is the whole precondition. Once an investigation has reproduced a claim, the driver takes
-it up and dispatches a fixer — it does not need a further ruling to begin.** `take-up` leaves **only**
-from `corroborated`, so a claim nobody investigated still cannot be taken up at all, and the
-investigation's own `finding` is what earns the step.
+it up and dispatches a fixer — it does not need a further ruling to begin, unless the change is
+irreversible (condition 3 below).** `take-up` leaves **only** from `corroborated`, so a claim nobody
+investigated still cannot be taken up at all, and the investigation's own `finding` is what earns the
+step.
 
 **A corroborated follow-up is NEVER left undone because a condition below is unclear.** Recording one and
 walking away is the permanent loss this store exists to prevent, arriving by a slower route: the entry
@@ -93,15 +94,6 @@ corroborated claim safe** — a wrong fix costs its own review rounds and never 
 **So exactly one condition still stops the work before it starts, and it is `reversible`.** Everything
 else is disclosed and dispatched. A driver that surfaces a corroborated entry instead of working it has
 not been careful; it has left a reproduced defect in the tree and called that caution.
-
-**Checked claim about how this tier reads, not about the tool: its opening paragraph never directs an
-irreversible entry to a fixer without the user's ruling.** The whole tier was read for that conflict. The
-exception is announced twice **before** condition 3 states it — "for the classes below it **must**", and
-"it **routes** the entry and **raises a question**" — and the sentence directly above is what reconciles
-the two, not a second half of a contradiction. The mechanism cannot occur either: `self-accepted` is
-reachable only through the `take-up` command above, whose `--act-reversible` value condition 3 alone
-defines. Falsify this by producing a reading path from the opening paragraph to a dispatched fixer that
-never passes condition 3.
 
 ### Tier 3 — PUBLISH (a GitHub issue, a release). ALWAYS the user's call. Never autonomous.
 
