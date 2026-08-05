@@ -459,7 +459,8 @@ why the driver **raised** it; the other is what happened when somebody actually 
 overwrites the claim, and a second investigation never overwrites the first — it **appends**. The driver
 changing its mind is part of the record, not a thing to tidy away. The **ACT grounds** are separate again:
 they are the driver's evidence for each tier-2 condition, and nothing can edit them after the fact, because
-they are what made the self-acceptance legal.
+they are what made the ACT decision legal — the dispatch and the wait alike, since both ACT edges demand
+and write them.
 
 **There is deliberately NO severity field.** Severity is the driver's judgment about a claim nobody has
 corroborated, and a machine-readable rank is exactly what an autonomous driver would sort on and *act*

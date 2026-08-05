@@ -1027,6 +1027,12 @@ def t_the_irreversible_change_waits(tmp: Path) -> None:
 
     # 1a. A value that carries NO verdict is refused at EVERY ACT edge — including the exact prose the
     #     reproduction used, which is the whole point: it says `no` in English and nothing could read it.
+    #
+    #     …AND THE GRAMMAR IS EXACT. The value OPENS with the token and the separator follows it
+    #     IMMEDIATELY; only the CASE is free (pinned just below). A spaced token is a shape the doc's
+    #     `reversible: <why>` never shows, and a parser wider than the form the driver is told to type
+    #     is a parser the doc cannot describe — the accepted grammar and the documented one are the same
+    #     grammar, or one of them is lying.
     unreadable = (
         "NO — this is NOT reversible; it is a one-way schema migration and a revert CANNOT restore "
         "the prior state",
@@ -1036,6 +1042,9 @@ def t_the_irreversible_change_waits(tmp: Path) -> None:
         f"maybe{VERDICT_SEP} who knows",   # a separator, but no verdict the code knows
         f"{IRREVERSIBLE}{VERDICT_SEP}",    # a verdict with NO grounds is the rumor the witnesses forbid
         f"{IRREVERSIBLE}{VERDICT_SEP} {PLACEHOLDER}",
+        f"{REVERSIBLE} {VERDICT_SEP} why",     # whitespace BEFORE the separator
+        f"{IRREVERSIBLE}\t{VERDICT_SEP} why",  # …of any kind
+        f" {REVERSIBLE}{VERDICT_SEP} why",     # …and the value must OPEN with the token
     )
     for act in ACT_CMDS:
         for i, value in enumerate(unreadable):
@@ -1050,6 +1059,14 @@ def t_the_irreversible_change_waits(tmp: Path) -> None:
                   f"{value!r}\n{out}")
             check(state_of(path, fid) == "corroborated", f"a refused `{act}` moved the state anyway")
             check(verdict_of(value) is None, f"`verdict_of` reads a verdict out of {value!r}")
+
+    # …and the ONE freedom the grammar does allow is CASE, so a driver that SHOUTS its verdict is obeying
+    # the same grammar rather than a wider one. Pinned here because the refusals above would otherwise be
+    # satisfied by a parser that demanded an exact-case token too.
+    for verdict in VERDICTS:
+        shouted = f"{verdict.upper()}{VERDICT_SEP} why"
+        check(verdict_of(shouted) == verdict,
+              f"`verdict_of` reads no verdict out of {shouted!r} — the token is matched case-insensitively")
 
     # 1b. …and each edge refuses the OTHER verdict. The verdict picks the edge; the driver does not.
     for act, verdict in ACT_EDGE_VERDICT.items():

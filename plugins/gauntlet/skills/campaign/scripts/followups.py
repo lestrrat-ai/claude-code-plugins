@@ -168,21 +168,20 @@ VERDICT_FIELD = next(w for c, w, _ in ACT_CONDITIONS if c == REVERSIBLE)
 def verdict_of(value: str) -> "str | None":
     """The verdict `value` LEADS WITH — or None if it carries none the code can act on.
 
-    `<verdict><VERDICT_SEP> <prose>`, case-insensitive. The prose after the separator must itself carry
-    something: a bare `irreversible:` is a verdict with no grounds, which is the same rumor a blank
-    witness is, and the whole point of the ACT witnesses is that an assertion comes with its evidence.
+    `<verdict><VERDICT_SEP><prose>`, and LEADS WITH is meant LITERALLY: the value OPENS with the verdict
+    token and the separator follows it IMMEDIATELY. Only the token's CASE is free — whitespace before the
+    token, or between the token and the separator, is REFUSED. So the grammar the code accepts is exactly
+    the one the driver is told to type (`references/followups.md`, the THRESHOLD's third condition), and
+    a parser wider than the documented form is one the doc cannot describe.
+
+    The prose after the separator must itself carry something: a bare `irreversible:` is a verdict with no
+    grounds, which is the same rumor a blank witness is, and the whole point of the ACT witnesses is that
+    an assertion comes with its evidence.
     """
-    # The token is STRIPPED, so `reversible : why` is accepted, and that is not a hole: the two verdicts
-    # differ by the `ir` prefix, so no amount of surrounding whitespace can turn one into the other. The
-    # verdict returned is always the word the driver led with, and `ACT_EDGE_VERDICT` then refuses the
-    # edge that verdict does not license. Verified end to end against a real store: `take-up` with
-    # `irreversible : spaced one-way` exits 1 and leaves the entry `corroborated`, `hold` with
-    # `reversible : why` exits 1, and `take-up` with `reversible : spaced verdict` lands `self-accepted`.
-    # This is also the ONLY parser of `act_reversible` in the repo, so no other reader sees a raw prefix.
-    token, sep, rest = value.strip().partition(VERDICT_SEP)
+    token, sep, rest = value.partition(VERDICT_SEP)
     if not sep or is_blank(rest):
         return None
-    token = token.strip().lower()
+    token = token.lower()
     return token if token in VERDICTS else None
 
 # --- schema (owned here, once) ------------------------------------------------
@@ -441,8 +440,8 @@ def role(cmd: str) -> str:
 
 
 # Every field some transition writes. NONE of them may be editable: `set` does not check where an entry
-# came from, so a settable witness would let the grounds that made a self-acceptance legal be rewritten
-# after the fact — or erased.
+# came from, so a settable witness would let the grounds that made an ACT decision legal — a dispatch or a
+# wait — be rewritten after the fact, or erased.
 EVIDENCE_FIELDS = tuple(dict.fromkeys(f for w in WRITES.values() for f in w))
 
 # Fields a caller may EDIT after the fact. `state` is deliberately ABSENT: it moves only through the
