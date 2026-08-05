@@ -172,12 +172,15 @@ Work the resumable entries in this order, which is this file's own rule:
    that costs one reconcile and closes the largest hole; starting new work while it is open widens it.
 2. `accepted`, then `self-accepted`, then `reopened` — the decision is already made and only the PR is
    missing.
-3. `corroborated` — investigated already, so it resumes at the take-up decision, **not** at another
+3. `corroborated` — investigated already, so it resumes at the ACT decision, **not** at another
    investigation.
 4. `candidate` — the only state that starts with an investigation.
 
 `refuted` is **not** picked up. It is re-investigated only when new evidence may overturn it, and an
 invocation of this skill supplies none. `rejected` is the user's terminal ruling and is never resumed.
+`held` is **not** picked up either: its ACT decision is already recorded and it is waiting on the user, so
+it is **surfaced in Step 6 with its question** and never re-decided here. The store enforces that rather
+than trusting it — no edge from `held` opens a PR.
 
 At most one of `--id` and `--limit` can have reached this step — the Args block above owns which
 invocations are legal. Apply whichever one was given **after** ordering, and **say what was left unworked
@@ -258,17 +261,20 @@ that was never real (`AGENTS.md`/`CLAUDE.md`, "Your OWN diagnosis is a claim too
 **Only a `corroborated` entry reaches this step.** The other states arriving at Step 5 already carry a
 decision, and re-deciding one would overwrite a ruling that was already made.
 
-`followups.md`, "THE AUTONOMY THRESHOLD", owns the conditions and what each one does; `followups.py
-take-up` refuses the step when any is asserted without evidence. **Read them there and evidence each
-one.** This file does not restate which conditions route and which one waits.
+`followups.md`, "THE AUTONOMY THRESHOLD", owns the conditions and what each one does; the ACT edges refuse
+the step when any is asserted without evidence, and refuse a verdict they are not the edge for. **Read
+them there and evidence each one.** This file does not restate which conditions route and which one waits,
+nor the form the verdict takes.
 
 **A corroborated entry is worked, not surfaced instead of worked.** The default outcome of this step is
 `take-up` followed by Step 5, and the report says what the fixer is doing. The one class the threshold
 holds back waits for the user's ruling and is named in Step 6 with its question.
 
 - The threshold permits acting → `take-up`, then Step 5.
-- The threshold holds this entry back → record the question for Step 6 and move to the next entry. Do
-  not leave it silently undone, and do not re-decide it on a later invocation without new evidence.
+- The threshold holds this entry back → **`hold`**, which records the same evidence and leaves the entry
+  in `held`; then record the question for Step 6 and move to the next entry. Do not leave it silently
+  undone, and do not re-decide it on a later invocation without new evidence. **Do not attempt Step 5 for
+  it** — no edge from `held` opens a PR, so the store refuses that rather than relying on this line.
 - **NEVER run `accept`.** It is the user's edge and the only way into `accepted`.
 - **NEVER run `publish`.** There is no autonomous path to it, from any state.
 
@@ -338,7 +344,8 @@ entry the threshold **routes** is disclosed and dispatched, so it raises **no qu
 to hold, and "taken up with its PR" on its own reads exactly like an entry every condition held for. What
 that disclosure must say is `followups.md`, "Surfacing them" — stated once there, for this step and
 campaign's final report, the only two reporting steps that owe it. Report it from there for **every** entry
-Step 4 took up; do not reconstruct it from this step.
+Step 4 disposed of on its own — the ones it took up and the ones it held; do not reconstruct it from this
+step.
 
 Then:
 

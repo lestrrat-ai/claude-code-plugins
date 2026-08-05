@@ -122,7 +122,10 @@ ACT_CONDITIONS = (
     ("reversible", "act_reversible",
      "WHETHER a revert restores the prior state. A schema migration does not; anything already published "
      "does not. This is the one condition whose failure makes the entry WAIT for the user's ruling instead "
-     "of routing it — read the THRESHOLD for that."),
+     "of routing it — read the THRESHOLD for that. So it is the one whose value must LEAD WITH A VERDICT "
+     "the code can read: 'reversible: <why>' or 'irreversible: <why>' (see VERDICTS). The verdict picks "
+     "the edge — `take-up` takes a reversible change up for work, `hold` parks an irreversible one for "
+     "the user's ruling — and each edge REFUSES the other's verdict"),
 )
 
 # Every ACT condition's witness field, and the subset `take-up` must carry in itself. Condition 1's
@@ -130,6 +133,50 @@ ACT_CONDITIONS = (
 # `corroborated` — so it takes no flag. Both are DERIVED from ACT_CONDITIONS; neither is a second list.
 ACT_WITNESSES = tuple(w for _, w, _ in ACT_CONDITIONS)
 ACT_FLAGS = tuple(w for w in ACT_WITNESSES if w != "finding")
+
+# --- the REVERSIBLE verdict: the one ACT condition the code must READ ---------
+#
+# The third condition is the only one whose failure STOPS the work (`references/followups.md`, "THE
+# AUTONOMY THRESHOLD"), and prose alone could not carry that: `take-up --act-reversible "NO — a revert
+# CANNOT restore the prior state"` used to exit 0 and land the entry in `self-accepted`, dispatching a
+# fixer at the one change class the threshold says must WAIT.
+#
+# SNIFFING THE PROSE IS NOT THE FIX. The evidence is free text the driver writes, and a negation search
+# fails BOTH ways: it refuses "a revert restores the prior state, so this is not irreversible", and it
+# passes a genuinely one-way change worded without a negation. A guard that fires on the wrong half of
+# the cases is worse than the prose it replaced.
+#
+# So the value carries a MACHINE-READABLE VERDICT *and* its prose — the same shape a `finding` already
+# has, where `[<outcome> <at>]` leads and the account follows. The verdict then picks the EDGE, and the
+# two edges refuse each other's verdict, so the wait is an ABSENT EDGE rather than a check somebody must
+# remember: from `held` there is no driver-only path to `open-pr` at all (`TRANSITIONS`).
+#
+# STATE THE LIMIT HONESTLY, exactly as `accept` does. Nothing here can tell whether a change really is
+# reversible; a driver that MIS-JUDGES it still gets through. What is now impossible is RECORDING
+# `irreversible` and dispatching a fixer anyway — the recorded judgment and the action taken can no
+# longer contradict each other. It is a footgun guard, NOT an oracle.
+REVERSIBLE = "reversible"      # the `reversible` condition HOLDS — a revert restores the prior state
+IRREVERSIBLE = "irreversible"  # it does NOT — the one class that waits for the user
+VERDICTS = (REVERSIBLE, IRREVERSIBLE)
+VERDICT_SEP = ":"
+
+# The witness that carries a verdict. DERIVED from the condition it belongs to, never retyped beside it:
+# rename that witness and this follows, rather than pointing at a field that no longer exists.
+VERDICT_FIELD = next(w for c, w, _ in ACT_CONDITIONS if c == REVERSIBLE)
+
+
+def verdict_of(value: str) -> "str | None":
+    """The verdict `value` LEADS WITH — or None if it carries none the code can act on.
+
+    `<verdict><VERDICT_SEP> <prose>`, case-insensitive. The prose after the separator must itself carry
+    something: a bare `irreversible:` is a verdict with no grounds, which is the same rumor a blank
+    witness is, and the whole point of the ACT witnesses is that an assertion comes with its evidence.
+    """
+    token, sep, rest = value.strip().partition(VERDICT_SEP)
+    if not sep or is_blank(rest):
+        return None
+    token = token.strip().lower()
+    return token if token in VERDICTS else None
 
 # --- schema (owned here, once) ------------------------------------------------
 
@@ -220,6 +267,11 @@ def project(rec: "dict", where: str = "") -> "dict[str, str]":
 #   * The driver's own edge for taking work up, `take-up`, leaves ONLY from `corroborated` and lands in
 #     `self-accepted` — a state that is NOT `accepted` and never becomes indistinguishable from it. Its
 #     ACT witnesses stay in the entry forever, and `decided` (the user's stamp) stays `-`.
+#   * AND AN IRREVERSIBLE CHANGE HAS NO DRIVER-ONLY PATH TO A PR AT ALL. The verdict the driver records in
+#     `act_reversible` picks which ACT edge is legal (`ACT_EDGE_VERDICT`), and `hold` lands in `held`,
+#     which `open-pr` does NOT leave from — the only edges out are the USER's rulings. So the threshold's
+#     "an IRREVERSIBLE change WAITS" is an ABSENT EDGE, the same way tier 3's guarantee is, rather than a
+#     check somebody must remember to run (`t_the_irreversible_change_waits`).
 #
 # This is why the lifecycle is a graph and not a settable string.
 #
@@ -244,8 +296,10 @@ TRANSITIONS = {
     "corroborate":     (("candidate", "refuted", "reopened"), "corroborated"),
     "refute":          (("candidate", "corroborated", "reopened"), "refuted"),
     "take-up":         (("corroborated",), "self-accepted"),
-    "accept":          (("candidate", "corroborated", "refuted", "self-accepted", "reopened"), "accepted"),
-    "reject":          (("candidate", "corroborated", "refuted", "self-accepted", "accepted",
+    "hold":            (("corroborated",), "held"),
+    "accept":          (("candidate", "corroborated", "refuted", "self-accepted", "held",
+                        "reopened"), "accepted"),
+    "reject":          (("candidate", "corroborated", "refuted", "self-accepted", "held", "accepted",
                         "reopened"), "rejected"),
     "open-pr":         (("accepted", "self-accepted", "reopened"), "in-pr"),
     "closed-unmerged": (("in-pr",), "reopened"),
@@ -267,6 +321,13 @@ DRIVER_STEPS = tuple(c for c in TRANSITIONS if c not in USER_RULINGS)
 # what they may do is still whatever the graph above says.
 INVESTIGATION = ("corroborate", "refute")
 ACT_CMD = "take-up"
+HOLD_CMD = "hold"
+
+# THE TWO ACT EDGES, and the verdict each one is the edge FOR. One entry per verdict, so the driver never
+# picks between them on judgment: whichever it runs, the store refuses the pairing the verdict does not
+# license. `take-up` dispatches the work; `hold` parks it for the user (see the graph comment above).
+ACT_EDGE_VERDICT = {ACT_CMD: REVERSIBLE, HOLD_CMD: IRREVERSIBLE}
+ACT_CMDS = tuple(ACT_EDGE_VERDICT)
 
 # The edges that END an entry. DERIVED — an edge deletes because its target is DELETED, never because a
 # list here says so, so a deleting edge added tomorrow is enforced and pinned the day it is added.
@@ -287,7 +348,9 @@ TERMINAL = tuple(s for s in STATES if not any(s in frm for frm, _ in TRANSITIONS
 WRITES = {
     "corroborate":     ("finding",),
     "refute":          ("finding",),
-    ACT_CMD:           ACT_FLAGS,
+    # BOTH ACT edges carry the SAME witnesses — an entry the threshold holds back is EVIDENCED exactly as
+    # one it dispatches. Derived from ACT_CMDS: an edge that skipped a witness would be the bypass.
+    **{c: ACT_FLAGS for c in ACT_CMDS},
     "accept":          ("decided",),
     "reject":          ("decided",),
     "open-pr":         ("pr",),
@@ -360,7 +423,11 @@ def role(cmd: str) -> str:
     if cmd in INVESTIGATION:
         return "an INVESTIGATION found (autonomous: it is READ-ONLY)"
     if cmd == ACT_CMD:
-        return "the DRIVER takes it up for work (autonomous ONLY with every ACT condition EVIDENCED)"
+        return (f"the DRIVER takes it up for work (autonomous ONLY with every ACT condition EVIDENCED, and "
+                f"only for a '{REVERSIBLE}' verdict)")
+    if cmd == HOLD_CMD:
+        return (f"the DRIVER parks an '{IRREVERSIBLE}' change for the USER's ruling (every ACT condition "
+                f"EVIDENCED; no edge from here opens a PR)")
     if cmd in DELETING:
         return "the record now lives ELSEWHERE, so the ENTRY IS DELETED"
     return "the driver records (it is already past the user)"
@@ -687,6 +754,11 @@ def taken(cmd: str, args) -> "dict[str, str]":
 
     A flag not passed is absent from the result: the field keeps its default (`-`, or a stamp of `now`).
     That is UNSET, which is not the same thing as a caller handing in something that carries nothing.
+
+    AND THE ONE VALUE THE CODE MUST READ — not merely store — IS CHECKED HERE TOO, for the same reason
+    and at the same door: `VERDICT_FIELD` must LEAD WITH a verdict (`verdict_of`), and the ACT edge it
+    was handed to must be the edge for that verdict (`ACT_EDGE_VERDICT`). Both refusals are about the
+    VALUE, so they belong where every other value check is; what the verdict then MEANS is the graph's.
     """
     values: "dict[str, str]" = {}
     for field, flag in INTAKE[cmd].items():
@@ -696,6 +768,22 @@ def taken(cmd: str, args) -> "dict[str, str]":
         if is_blank(value):  # THE one blank predicate — see `is_blank()`. Called HERE, once, for every door.
             fail(f"{flag} must not be empty — {BLANK_WHY[field]}")
         values[field] = value
+    if VERDICT_FIELD in values:
+        flag = INTAKE[cmd][VERDICT_FIELD]
+        verdict = verdict_of(values[VERDICT_FIELD])
+        if verdict is None:
+            fail(f"{flag} must LEAD WITH a verdict the code can read — "
+                 f"{' or '.join(f'{v}{VERDICT_SEP} <why>' for v in VERDICTS)} — and then say why. "
+                 f"Prose alone cannot carry this condition: it is the one whose answer decides whether a "
+                 f"fixer may be dispatched at all, and no reading of free text can be trusted with that.")
+        wanted = ACT_EDGE_VERDICT.get(cmd)
+        if wanted is not None and verdict != wanted:
+            other = next(c for c, v in ACT_EDGE_VERDICT.items() if v == verdict)
+            fail(f"`{cmd}` is the edge for a '{wanted}' change, and {flag} records '{verdict}' — "
+                 f"`{other}` is the edge for that ({'/'.join(TRANSITIONS[other][0])} -> "
+                 f"{TRANSITIONS[other][1]}). The verdict picks the edge; the driver does not. "
+                 f"An '{IRREVERSIBLE}' change WAITS for the user's ruling, which is why no edge from "
+                 f"'{TRANSITIONS[HOLD_CMD][1]}' opens a PR.")
     return values
 
 

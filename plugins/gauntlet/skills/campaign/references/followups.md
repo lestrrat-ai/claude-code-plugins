@@ -60,12 +60,19 @@ walking away is the permanent loss this store exists to prevent, arriving by a s
 sits corroborated forever, every later run re-reads it, and the defect it names stays in the tree. The
 driver may not use uncertainty as a reason to act on nothing.
 
-The three conditions below are still **RECORDED**, and `take-up` refuses the step if any is asserted
+The three conditions below are still **RECORDED**, and an ACT edge refuses the step if any is asserted
 without evidence. What changed is what a failing one does: it **routes** the entry rather than cancelling
 the work. A failing `not-gate-machinery` or `behavior-preserved` condition is **DISCLOSED and dispatched
 without a question** — the fixer runs and the user reads about it afterwards. Only a failing `reversible`
 condition raises a **question**: that entry **WAITS** for the user's ruling before any fixer is
 dispatched.
+
+**That wait is MECHANICAL, not a promise the driver keeps.** `reversible` is the one condition whose
+answer the code itself reads, so its evidence leads with a verdict — and the verdict picks the edge: a
+`reversible` change goes to `take-up`, an `irreversible` one to `hold`, and **each edge refuses the
+other's verdict**. `hold` lands the entry in `held`, which `open-pr` does not leave from, so there is no
+driver-only path from an irreversible change to a PR at all. It is the same shape as tier 3's guarantee
+below: an **absent edge**, not a check somebody must remember to run.
 
 1. **`not-gate-machinery`** (`--act-not-gate`) — does it decide whether a PR may merge? The active
    repository instruction file (`AGENTS.md` or `CLAUDE.md`) defines the gate; do not reconstruct that
@@ -80,14 +87,28 @@ dispatched.
    has no behavioral surface. That is a legitimate answer, not a loophole.)
 3. **`reversible`** (`--act-reversible`) — does a revert restore the prior state? A schema migration does
    not. Anything already published does not. **An irreversible change is the one class that WAITS**: the
-   fixer is not dispatched until the user rules, because no gate downstream can undo it.
+   fixer is not dispatched until the user rules, because no gate downstream can undo it. **So this one
+   value must LEAD WITH ITS VERDICT** — `reversible: <why>` or `irreversible: <why>` — the way an
+   investigation's `finding` leads with its outcome. Prose alone cannot carry a condition the code has to
+   act on, and **guessing the answer out of free text is not the alternative**: a search for a negation
+   would refuse *"a revert restores the prior state, so this is not irreversible"* and wave through a
+   one-way change worded without one. So the driver states the verdict, and **the verdict picks the
+   edge.**
 
 ```
-followups.py --file <store> take-up --id fuN \
-  --act-not-gate "..." --act-behavior "..." --act-reversible "..."
+followups.py --file <store> take-up --id fuN \        # a REVERSIBLE change — dispatch the fixer
+  --act-not-gate "..." --act-behavior "..." --act-reversible "reversible: ..."
+followups.py --file <store> hold --id fuN \           # an IRREVERSIBLE one — it WAITS for the user
+  --act-not-gate "..." --act-behavior "..." --act-reversible "irreversible: ..."
 ```
 
-It lands in **`self-accepted`** — deliberately **NOT** `accepted`. A follow-up the **user** agreed to and
+**Both edges leave from `corroborated` and demand the same evidence**, so nothing is skipped by taking
+the one that waits. `hold` lands in **`held`**, where the entry sits with its ACT grounds until the user
+rules (`accept` / `reject`); no other edge leaves it, and **`open-pr` is not among the ones that do**.
+That is what the wait IS. Neither edge accepts the other's verdict, so the driver cannot route around
+this by picking the wrong command.
+
+`take-up` lands in **`self-accepted`** — deliberately **NOT** `accepted`. A follow-up the **user** agreed to and
 one the **driver** took up on its own are different things, forever, and the table says which at a glance.
 **The PR that comes out of an ACT is not self-approved**: it is gated by the review gauntlet like any
 other, which is the independent authority the driver is not. **That gate is what makes acting on a
@@ -96,6 +117,12 @@ corroborated claim safe** — a wrong fix costs its own review rounds and never 
 **So exactly one condition still stops the work before it starts, and it is `reversible`.** Everything
 else is disclosed and dispatched. A driver that surfaces a corroborated entry instead of working it has
 not been careful; it has left a reproduced defect in the tree and called that caution.
+
+**State the limit honestly, as `accept` does below.** Nothing in the store can tell whether a change
+really is reversible — a driver that judges that wrong still gets through, and no local file could do
+better. What the verdict buys is that the recorded judgment and the action taken **cannot contradict each
+other**: `irreversible` in the entry and a fixer dispatched anyway is no longer a thing that can happen.
+It is a footgun guard, **NOT** an oracle.
 
 ### Tier 3 — PUBLISH (a GitHub issue, a release). ALWAYS the user's call. Never autonomous.
 
@@ -172,10 +199,15 @@ about and one whose partial rejection strands the rest.
 
    - **`candidate`** (a fresh one) — INVESTIGATE: this is step 1, the common path above. No prior step to
      resume.
-   - **`corroborated`** — skip investigation; resume at the `take-up` decision (step 3). No campaign action
-     beyond what step 3 already does.
+   - **`corroborated`** — skip investigation; resume at the ACT decision (step 3), which lands on `take-up`
+     or `hold` by the verdict it records. No campaign action beyond what step 3 already does.
    - **`refuted`** — re-investigated **only** when new evidence may overturn it, and that re-investigation
      succeeds by `corroborate`, never `refute`.
+   - **`held`** — the driver recorded an **irreversible** verdict, so the entry is **waiting on the user**
+     and its ACT decision is already made. It does **not** resume at a step: **SURFACE it with its
+     question** (step 5) and work the next entry. The user's ruling is the only thing that moves it, and
+     the graph enforces that — no fixer is dispatched from here, because `open-pr` does not leave from
+     `held`. **Never re-decide it** without new evidence.
    - **`self-accepted`** — the driver already took it up; the entry has **no PR yet** (a `self-accepted`
      entry stores no PR reference — `open-pr` is the step that first writes one). So resume at **step 3**:
      dispatch the scoped fix subagent, which authors the fix and **opens the PR**; `open-pr` then records it
@@ -223,12 +255,12 @@ about and one whose partial rejection strands the rest.
    evidence the claim is false, never because a fix is inconvenient.
 
 3. **APPLICABLE → `take-up`, then a FIX SUBAGENT that opens a PR.** If the investigation `corroborated` it,
-   **every ACT condition is recorded with evidence** — `take-up` refuses the step without that — **and the
+   **every ACT condition is recorded with evidence** — an ACT edge refuses the step without that — **and the
    threshold above does not hold the entry back**, the driver takes it up (→ `self-accepted`)
    and dispatches a **scoped fix subagent under the fix-subagent contract**
    (`fix-subagent-contract.md`) that authors the fix **and opens a PR** for it. **An entry the threshold
-   holds back stops here — before `take-up`, and before any fixer is dispatched** — and is routed by "A
-   CONDITION THAT FAILS ROUTES THE WORK" below. The driver hands the fixer
+   holds back stops here — it goes to `hold` (→ `held`) with the same evidence, and no fixer is
+   dispatched** — and is routed by "A CONDITION THAT FAILS ROUTES THE WORK" below. The driver hands the fixer
    a **worktree branched from the base the follow-up targets**, and the fixer branches, commits, pushes,
    and opens the PR against that base — its worktree and scope requirements are owned by
    `fix-subagent-contract.md`, not restated here. **The target is per follow-up**: a follow-up **derived
@@ -261,7 +293,8 @@ about and one whose partial rejection strands the rest.
 5. **A CONDITION THAT FAILS ROUTES THE WORK — it does not cancel it.** Read the threshold above for what
    each one does; the shape is that gate machinery and a behavior change are **DISCLOSED and dispatched**,
    while an **irreversible** change is the one class that WAITS for the user's ruling
-   (`accept` / `reject`) before a fixer runs. Surfacing an entry is how the user learns what the driver is
+   (`accept` / `reject`) before a fixer runs — recorded by `hold`, and enforced by the graph rather than
+   by this instruction. Surfacing an entry is how the user learns what the driver is
    doing, never a way to leave a reproduced defect undone. And **publishing is never on the autonomous
    path**: an issue or a release always waits for the user's agreement on that specific item (Tier 3).
 
@@ -350,7 +383,10 @@ exactly as with `ledger.py` and `emit-progress.py`.
 followups.py --file <store> add --title T --evidence E --deferred-why W [--run <run-id>]  # raise a CANDIDATE
 followups.py --file <store> corroborate --id fuN --finding F   # TIER 1 — free. An investigation confirmed it
 followups.py --file <store> refute      --id fuN --finding F   # TIER 1 — free. And it stays in the store
-followups.py --file <store> take-up     --id fuN --act-...     # TIER 2 — only with EVERY condition evidenced
+followups.py --file <store> take-up     --id fuN --act-...     # TIER 2 — only with EVERY condition evidenced,
+                                                               # and only for a `reversible:` verdict
+followups.py --file <store> hold        --id fuN --act-...     # TIER 2, the class that WAITS — the same
+                                                               # evidence, an `irreversible:` verdict, no fixer
 followups.py --file <store> accept  --id fuN        # THE USER AGREED — the only edge into `accepted`
 followups.py --file <store> reject  --id fuN        # the user ruled against it — and the entry is KEPT
 followups.py --file <store> open-pr --id fuN --pr <ref>    # a PR is addressing it — the entry STAYS
@@ -437,18 +473,23 @@ Every entry enters as a **candidate**. The state moves **only** along the transi
 transition validates the state it is coming **from**. **The END of an entry is on that graph too:** a
 deleting step is an edge like any other, and it is refused from any state it does not leave from.
 
-Two structural facts carry the whole threshold, and both are **proved on the graph** by the self-test
-(`user-step-unskippable`), not asserted in prose:
+Three structural facts carry the whole threshold, and each is **proved on the graph** by the self-test,
+not asserted in prose:
 
-- **No sequence of driver-only steps reaches `accepted`, nor any state `publish` may leave from.**
-  `accepted` has exactly one in-edge and it is the user's `accept`; `publish` leaves only from `accepted`.
-  Tier 3 has no back door — not a missing check, an absent **edge**. (That `publish` **deletes** the
-  entry rather than parking it changes nothing: the guarantee was never about the state it landed in, but
-  about which states the step may leave **from**.)
-- **The driver's own edge is evidence-bearing and lands somewhere else.** `take-up` leaves only from
-  `corroborated` (tier 2's own precondition) and lands in `self-accepted`, which is never `accepted`.
+- **No sequence of driver-only steps reaches `accepted`, nor any state `publish` may leave from**
+  (`user-step-unskippable`). `accepted` has exactly one in-edge and it is the user's `accept`; `publish`
+  leaves only from `accepted`. Tier 3 has no back door — not a missing check, an absent **edge**. (That
+  `publish` **deletes** the entry rather than parking it changes nothing: the guarantee was never about
+  the state it landed in, but about which states the step may leave **from**.)
+- **The driver's own edge is evidence-bearing and lands somewhere else** (`user-step-unskippable`).
+  `take-up` leaves only from `corroborated` (tier 2's own precondition) and lands in `self-accepted`,
+  which is never `accepted`.
+- **An IRREVERSIBLE change has no driver-only path to a PR** (`irreversible-waits`). The verdict recorded
+  in `act_reversible` decides which ACT edge is legal, and the one for `irreversible` lands in `held`,
+  which `open-pr` does not leave from. Tier 2's one WAIT is an absent edge too — the same guarantee as
+  the first fact, made the same way.
 
-And a third, which is what makes DELETION safe (`delete-needs-a-record`):
+And a fourth, which is what makes DELETION safe (`delete-needs-a-record`):
 
 - **No deleting edge can be reached without a durable record in the entry.** Every legal history that
   arrives at one has already written the field that names where the record lives — the PR, or the issue —
@@ -518,12 +559,14 @@ the ledger's (`files-and-ledger.md`, "`table` is a PROJECTION"): it shows only t
 only some fields, it **escapes** every cell, and **the omission is never silent** — it states how many it
 hid and the flag that reveals them. Read a value back with `get --field`, **never** by parsing the table.
 
-**Surfacing is NOT the whole of what the user is owed for an entry the driver TOOK UP.** No ACT evidence
-reaches that table — the fields `take-up` wrote sit outside its default view — and an entry the threshold
-**routes** is disclosed and dispatched, so it raises no question to be listed under and reads exactly like
-one every condition held for. So **exactly two reporting steps owe this disclosure** — campaign's final
-report (`bailout-and-final-report.md`, **Follow-ups**) and `address-followups`' Step 6 — and each must name
-**each ACT condition that did NOT hold**, quoting the evidence `take-up` recorded for it. **No other report
+**Surfacing is NOT the whole of what the user is owed for an entry the driver DISPOSED OF ON ITS OWN.** No
+ACT evidence reaches that table — the fields an ACT edge wrote sit outside its default view — and an entry
+the threshold **routes** is disclosed and dispatched, so it raises no question to be listed under and reads
+exactly like one every condition held for. So **exactly two reporting steps owe this disclosure** —
+campaign's final report (`bailout-and-final-report.md`, **Follow-ups**) and `address-followups`' Step 6 —
+and each must name **each ACT condition that did NOT hold**, quoting the evidence the ACT edge recorded for
+it. That edge is `take-up` for an entry that was dispatched and `hold` for the one class that waits; a
+`held` entry is where the user's **question** is, so it is named with its evidence like any other. **No other report
 owes it**: not heartbeat or interim output, not the `gauntlet:followups` listing skill, not `carryover.md`,
 not the run history file.
 The THRESHOLD above already fixes what that evidence must say, condition by condition; this section does
