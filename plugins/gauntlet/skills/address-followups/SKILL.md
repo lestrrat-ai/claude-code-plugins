@@ -20,8 +20,10 @@ Invocation: Claude Code `/gauntlet:address-followups`; Codex `$gauntlet:address-
 the resume-by-state list, and every store transition. **Read it before touching an entry, and read it
 from `<skill-dir>/../campaign/references/followups.md`, not from memory.** This skill is the **on-demand
 entry point** to that loop: it works the queue when the user asks for it, rather than only when a
-campaign heartbeat has spare capacity to spend on it. It changes **who initiates** the loop, never
-**what the loop does**.
+campaign heartbeat has spare capacity to spend on it. An invocation from here holds no lease and drives
+no run, so two of that loop's steps cannot mean from here what they mean to a run's driver;
+`followups.md`, "WORKING A FOLLOW-UP", names both deviations, and Steps 2 and 7 below are where this
+file carries them.
 
 **NEVER reconstruct the threshold, the conditions, or the legal transitions from this file.** It owns
 only what it says here: which entries get picked up, in what order, which worker runs each step, and
@@ -95,8 +97,8 @@ On any refusal, always:
   (`../followups/SKILL.md` and `../ledger/SKILL.md`, final step of each).
 - **Write nothing to the store and mutate no PR.** A command that refused reported nothing about the
   entry, so a transition read out of an error is **invented, never observed**. **NEVER infer a store
-  move, a PR state, or a decision from a failure.** The branches next to these commands are destructive
-  — Step 2's `merged` deletes the entry outright — and a guessed one destroys work nothing can rebuild.
+  move, a PR state, or a decision from a failure.** The branches next to these commands include
+  destructive ones — Step 2's `merged` among them — and a guessed one destroys work nothing can rebuild.
 - **Do not retry it silently.** Report the refusal and let the user re-invoke.
 
 How far the refusal stops the invocation then depends on which command refused:
@@ -185,10 +187,10 @@ below are the whole set of things a **successful** read can say; anything else �
 output, output missing either field — is a refusal and is handled by "When a command refuses", not by
 guessing which case it was:
 
-- **merged** → `python3 <abs>/followups.py --file <abs-store> merged --id fuN`. The entry is deleted and
-  the command prints it in full; that print is the handoff, so put it in the report.
-- **closed without merging** → `closed-unmerged --id fuN`. The entry returns to open work as `reopened`
-  with its history intact, and it is then eligible for Step 5 in this same invocation.
+- **merged** → `python3 <abs>/followups.py --file <abs-store> merged --id fuN`. Put that command's
+  output in Step 6's report.
+- **closed without merging** → `closed-unmerged --id fuN`. The entry is then eligible for Step 5 in this
+  same invocation.
 - **open, carrying no `gauntlet-run-*` label** → no campaign owns it, so it is sitting outside the gate.
   Add it to Step 7's hand-off.
 - **open, carrying a `gauntlet-run-*` label** → a run already owns it. **Touch nothing** — not the PR,
@@ -251,8 +253,8 @@ through Step 4:
   publication, **surface it and work the next entry**. Publication is Tier 3 and is never this skill's
   to do.
 
-None of them is looked up against an existing PR first: there is no durable follow-up-to-PR key before
-`open-pr` writes one, so an interrupted earlier session can leave a duplicate PR here. That gap is a
+None of them is looked up against an existing PR first: at this step there is no durable follow-up-to-PR
+key to look one up by, so an interrupted earlier session can leave a duplicate PR here. That gap is a
 known non-goal of the loop, owned by `followups.md`, "Same-run idempotency is a deliberate non-goal" —
 do not invent a reconciliation for it.
 
@@ -287,7 +289,7 @@ rejection strands the rest.
   an `open-pr` that never recorded its open PR to be reported.
 - Record it in the **same turn the worker returned it**, before dispatching anything else:
   `python3 <abs>/followups.py --file <abs-store> open-pr --id fuN --pr <ref>`, with `<ref>` the value the
-  worker returned. The entry stays in the store and now names which PR is addressing it.
+  worker returned.
 
 ## Step 6 — REPORT, before the hand-off
 
@@ -298,7 +300,7 @@ its PR, or surfaced for a ruling. Then:
 - list every entry left unworked and why (`--limit`, an unresumable state, a dispatch that failed, a
   command that refused and which one, a PR another run owns);
 - list every question a user must answer, each with the entry it belongs to;
-- print in full every entry a deleting step removed, since the store no longer holds it;
+- print in full the output of every deleting step this invocation ran;
 - name the PRs about to be handed to campaign.
 
 ## Step 7 — FOLD the PRs into a campaign

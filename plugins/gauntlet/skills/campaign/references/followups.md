@@ -106,9 +106,14 @@ PRs, never instead of them, and it holds the run hostage on nothing.
 driver chooses to spend spare capacity on it, and the nudge reminder that prompts one decides nothing —
 so a queue can sit untouched for the whole life of a run. The `gauntlet:address-followups` skill
 (`/gauntlet:address-followups` in Claude Code, `$gauntlet:address-followups` in Codex) works the queue **on
-demand** under **this file's rules unchanged** — the whole procedure below, nothing added to it and
-nothing dropped from it — and hands the PRs it opens to a campaign to gate. It changes **who initiates**
-the loop, never **what the loop does**.
+demand**, running the steps below in order. **Two of them cannot mean the same thing from there**, and
+both deviations follow from one fact: a standalone invocation **holds no lease and drives no run**.
+
+- **Step 4 is satisfied by a NEW run, not this one.** Starting a run that adopts those PRs is the only
+  fold available to a caller that owns none, and it delivers what step 4 guarantees. Adopting into a live
+  run would touch another driver's run, which `run-identity-and-lease.md`, "Isolation invariant", forbids.
+- **The `in-pr` resume in step 1 reconciles against the LIVE PR, not a ledger row** — there is no run
+  whose ledger could hold one.
 
 **Scope: one run's driver, not cross-run coordination.** The follow-up store is shared across every
 concurrent run, and this loop does not claim a follow-up against a *second run* — two runs active at once
