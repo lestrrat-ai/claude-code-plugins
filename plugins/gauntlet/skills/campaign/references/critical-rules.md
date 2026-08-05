@@ -412,12 +412,14 @@
 
 - **Select a logical model class on EVERY worker dispatch** (`SKILL.md`, "Worker Dispatch";
   `runtime-adapter.md`). Never guess a model name from the other host.
-- **Model policy — NEVER DOWNGRADED: only the formatting/lint CI-fix (economy) is ever downgraded; every
-  other DISPATCHED worker is `session`** (`SKILL.md`, "Worker Dispatch"). A review pass *is* the gate; a
-  review-fix authors code from scratch; a `session`-class
-  CI-fix authors code that gets merged; the mapper's under-map is **invisible** ("read-only" is not
-  low-judgment). NEVER claim CI catches a bad fix — a wrong fix can turn CI green, and the review gate is a
-  miss-catcher, not a proof of correctness.
+- **Model policy — the table is the owner. `SKILL.md`, "Worker Dispatch", assigns EVERY dispatched
+  worker's class; read it there rather than from any list, including this one.** Do NOT reconstruct which
+  dispatches are downgraded from a count or a shared reason given here: a downgrade is never a default,
+  each downgraded row states **its own precondition**, and a dispatch whose row-precondition does not hold
+  is `session`. A review pass *is* the gate; a review-fix authors code from scratch;
+  a `session`-class CI-fix authors code that gets merged; the mapper's under-map is **invisible**
+  ("read-only" is not low-judgment). NEVER claim CI catches a bad fix — a wrong fix can turn CI green,
+  and the review gate is a miss-catcher, not a proof of correctness.
 - **Model policy — DOWNGRADED ON PURPOSE when available: the CI-fix worker for a FORMATTING/LINT failure**
   uses the runtime adapter's `economy` class (`stage-2-ci.md`). It does **not** author a fix:
   it runs a deterministic formatter, **READS the resulting diff**, verifies it, and **escalates** anything

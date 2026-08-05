@@ -55,9 +55,10 @@ benefits of the default, not separate knobs — the reviewer choice is owned abo
 
 **A REVIEW PASS IS NEVER RUN ON A DOWNGRADED MODEL.** Whether the reviewer is a native worker or the
 worker fallback for a failed external reviewer, the pass runs in the **`session` class** — it *is* the
-gate, and a weaker verdict is simply a worse gate (`SKILL.md`, "Worker Dispatch"). The **one** deliberate
-downgrade in this skill is the CI-fix subagent for a **formatting/lint** failure (`stage-2-ci.md`), which
-runs a formatter and **verifies its diff** rather than authoring a fix — never a review pass. If the user
+gate, and a weaker verdict is simply a worse gate (`SKILL.md`, "Worker Dispatch"). Every deliberate
+downgrade in this skill is a row of that table carrying the precondition that earns it — the CI-fix
+subagent for a **formatting/lint** failure is one such row (`stage-2-ci.md`), running a formatter and
+**verifying its diff** rather than authoring a fix. **No row is a review pass, on any path.** If the user
 selects an available external reviewer, it can reduce native-worker token use; it never changes the required model
 class or review contract.
 

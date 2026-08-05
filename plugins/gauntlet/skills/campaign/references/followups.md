@@ -98,9 +98,22 @@ middle step.
 
 The threshold above says what the driver **may** do. This is the **procedure** that does it — the loop
 that turns an open follow-up into either a refutation or a merged PR. Run it when a heartbeat has **spare
-capacity** and the gated PRs do not need the driver right now (the nudge's "start on follow-ups" reminder
-is one prompt for it). It is **work-conserving, never blocking**: it runs *alongside* gating the campaign's
+capacity** and the gated PRs do not need the driver right now (the nudge's follow-up reminder is one
+prompt for it). It is **work-conserving, never blocking**: it runs *alongside* gating the campaign's
 PRs, never instead of them, and it holds the run hostage on nothing.
+
+**This procedure is also invocable on its own.** A campaign heartbeat reaches this loop only when the
+driver chooses to spend spare capacity on it, and the nudge reminder that prompts one decides nothing —
+so a queue can sit untouched for the whole life of a run. The `gauntlet:address-followups` skill
+(`/gauntlet:address-followups` in Claude Code, `$gauntlet:address-followups` in Codex) works the queue **on
+demand**, running the steps below in order. **Two of them cannot mean the same thing from there**, and
+both deviations follow from one fact: a standalone invocation **holds no lease and drives no run**.
+
+- **Step 4 is satisfied by a NEW run, not this one.** Starting a run that adopts those PRs is the only
+  fold available to a caller that owns none, and it delivers what step 4 guarantees. Adopting into a live
+  run would touch another driver's run, which `run-identity-and-lease.md`, "Isolation invariant", forbids.
+- **The `in-pr` resume in step 1 reconciles against the LIVE PR, not a ledger row** — there is no run
+  whose ledger could hold one.
 
 **Scope: one run's driver, not cross-run coordination.** The follow-up store is shared across every
 concurrent run, and this loop does not claim a follow-up against a *second run* — two runs active at once
@@ -209,8 +222,13 @@ about and one whose partial rejection strands the rest.
    a different-base target is adopted here, never diverted for base disagreement. That PR is opened
    **`gauntlet-authored`** and adopted into the current run so `pr-adoption.md` reads it as
    `pr_origin=gauntlet` — without the label it defaults to `external`, which then blocks campaign's own
-   later autonomous repair of the very PR it authored. Record the PR with `followups.py open-pr --id fuN
-   --pr <ref>`; the entry stays `in-pr` and names which PR is addressing it.
+   later autonomous repair of the very PR it authored. **The fixer's prompt must name the PR reference as a
+   REQUIRED RETURN, and the driver must record it in the same turn it comes back** — nothing else carries
+   it. There is **no durable fuN→PR key** until `open-pr` writes one (the `self-accepted` note above), so a
+   worker that finishes without returning the reference leaves a PR that only the driver's dying context
+   could name, and no later heartbeat can recover the pair. Record the PR with `followups.py open-pr --id
+   fuN --pr <ref>`, `<ref>` being what the worker returned; the entry stays `in-pr` and names which PR is
+   addressing it.
 
 4. **FOLD THE PR INTO THE CURRENT CAMPAIGN.** The follow-up's PR — which step 3 admitted on its own
    recorded base — is **adopted into this run** like any other

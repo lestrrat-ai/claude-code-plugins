@@ -980,9 +980,10 @@ Then, per verdict:
    reviewer reads it and can flag it if it is wrong. That commit is PR content and resets the gate through
    the same rule.
 
-  **Why the session class:** **Run the review-fix in the `session` class — NEVER downgraded** (`SKILL.md`, "Worker Dispatch"). The one
-  deliberate downgrade in this skill is the CI-fix subagent for a **formatting/lint** failure, which runs a
-  formatter and verifies its diff (`stage-2-ci.md`); a review defect is **authored code**, and this subagent
+  **Why the session class:** **Run the review-fix in the `session` class — NEVER downgraded** (`SKILL.md`, "Worker Dispatch"). Every
+  deliberate downgrade in this skill is a row of that table with its own precondition — the CI-fix subagent
+  for a **formatting/lint** failure is one, running a formatter and verifying its diff (`stage-2-ci.md`);
+  **the review-fix is none of them.** A review defect is **authored code**, and this subagent
   writes it from scratch. Its output is **code that gets merged**, and its only
   judge is another full review pass — which is a miss-catcher, not a proof of correctness. Best case, a
   weak fix produces a plausible-looking commit, the next pass returns `NOT SATISFIED`, the gate resets,

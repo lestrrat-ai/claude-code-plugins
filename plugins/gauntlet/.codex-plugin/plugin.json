@@ -23,7 +23,8 @@
       "Gate these pull requests through review and CI.",
       "Address Copilot review comments on this pull request.",
       "Show the current Gauntlet campaign ledger.",
-      "Show the durable Gauntlet follow-up queue."
+      "Show the durable Gauntlet follow-up queue.",
+      "Work the Gauntlet follow-up queue."
     ]
   }
 }

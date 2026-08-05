@@ -1,0 +1,4 @@
+interface:
+  display_name: "Gauntlet Address Follow-ups"
+  short_description: "Investigate and action the follow-up queue"
+  default_prompt: "Use $gauntlet:address-followups to work the durable follow-up queue."
