@@ -94,8 +94,9 @@ DESCRIPTION = "Schema-owning accessor for the follow-up ledger (.gauntlet/follow
 
 # --- the ACT conditions (owned here, once) ------------------------------------
 #
-# The FOUR conditions that let the driver take a follow-up up FOR WORK with no user ruling. The tier and
-# its rationale are owned by `references/followups.md`; what lives here is the one thing code can enforce:
+# The FOUR conditions a driver must RECORD to take a follow-up up FOR WORK with no user ruling. Which of
+# them route the work and which one holds it back is the THRESHOLD's, owned by `references/followups.md`,
+# "THE AUTONOMY THRESHOLD" — not restated here. What lives here is the one thing code can enforce:
 # EVERY CONDITION MUST BE WITNESSED BY EVIDENCE IN THE ENTRY, or the take-up is refused. A condition
 # ASSERTED but not EVIDENCED is not a condition — it is a bypass with a nicer name, and the whole tier
 # collapses into "the driver decided it was fine".
@@ -110,15 +111,17 @@ ACT_CONDITIONS = (
      "This one is enforced by the GRAPH (`take-up` leaves only from `corroborated`) and its witness is the "
      "investigation's own `finding`, so it takes no flag: the evidence is already in the entry."),
     ("not-gate-machinery", "act_not_gate",
-     "It does not decide whether a PR may merge (the active `AGENTS.md` or `CLAUDE.md` defines the gate). WHEN UNCLEAR IT IS GATE "
-     "MACHINERY — the ambiguous case resolves toward ASK, never toward act."),
+     "WHETHER it decides whether a PR may merge (the active `AGENTS.md` or `CLAUDE.md` defines the gate). "
+     "Record the answer either way, including that it is unclear. What a failing condition does is the "
+     "THRESHOLD's (`references/followups.md`, \"THE AUTONOMY THRESHOLD\")."),
     ("behavior-preserved", "act_behavior",
-     "It preserves user-facing behavior. If it HAS a behavioral surface, name the TEST that proves so. If "
-     "it has NONE, say so and name why — an assertion of no-behavioral-surface is itself a claim, and it "
-     "is recorded like any other."),
+     "WHETHER it changes user-facing behavior. Record what the change does either way: name the behavior "
+     "that changes and the TEST that pins it, or say it has NONE and why — an assertion of "
+     "no-behavioral-surface is itself a claim. What a failing condition does is the THRESHOLD's."),
     ("reversible", "act_reversible",
-     "A revert restores the prior state. A schema migration is not reversible; anything already published "
-     "is not."),
+     "WHETHER a revert restores the prior state. A schema migration does not; anything already published "
+     "does not. This is the one condition whose failure makes the entry WAIT for the user's ruling instead "
+     "of routing it — read the THRESHOLD for that."),
 )
 
 # Every ACT condition's witness field, and the subset `take-up` must carry in itself. Condition 1's

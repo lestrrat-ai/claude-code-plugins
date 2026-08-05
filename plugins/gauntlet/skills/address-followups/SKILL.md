@@ -3,9 +3,9 @@ name: address-followups
 description: >-
   Works Gauntlet's durable follow-up queue end to end instead of only listing it. Each open entry is
   resumed at the step its lifecycle state has already reached: a fresh read-only subagent must reproduce
-  or refute a still-unverified claim, only a corroborated entry meeting every autonomy-threshold condition
-  is taken up, a separate scoped subagent then authors the fix and opens ONE PR for that follow-up, and the PRs
-  opened this invocation are handed to gauntlet:campaign to gate and merge. Use when the user asks to
+  or refute a still-unverified claim, only a corroborated entry is taken up, a separate scoped subagent
+  then authors the fix and opens ONE PR for that follow-up, and the PRs opened this invocation are
+  handed to gauntlet:campaign to gate and merge. Use when the user asks to
   work, drive, clear, action, or process follow-ups. To only SEE the queue, use gauntlet:followups.
   Args (distinct modes): (no args) | --id fuN | --limit N
 ---
@@ -258,12 +258,17 @@ that was never real (`AGENTS.md`/`CLAUDE.md`, "Your OWN diagnosis is a claim too
 **Only a `corroborated` entry reaches this step.** The other states arriving at Step 5 already carry a
 decision, and re-deciding one would overwrite a ruling that was already made.
 
-`followups.md`, "THE AUTONOMY THRESHOLD", owns the conditions and `followups.py take-up` enforces them,
-refusing the step when any is asserted without evidence. **Read them there and evidence each one.**
+`followups.md`, "THE AUTONOMY THRESHOLD", owns the conditions and what each one does; `followups.py
+take-up` refuses the step when any is asserted without evidence. **Read them there and evidence each
+one.** This file does not restate which conditions route and which one waits.
 
-- Every condition holds and is evidenced → `take-up`, then Step 5.
-- Any condition fails, **or you are unsure whether it holds** → surface the entry to the user with its
-  question and move to the next entry. That is the normal outcome, not a failure state.
+**A corroborated entry is worked, not surfaced instead of worked.** The default outcome of this step is
+`take-up` followed by Step 5, and the report says what the fixer is doing. The one class the threshold
+holds back waits for the user's ruling and is named in Step 6 with its question.
+
+- The threshold permits acting → `take-up`, then Step 5.
+- The threshold holds this entry back → record the question for Step 6 and move to the next entry. Do
+  not leave it silently undone, and do not re-decide it on a later invocation without new evidence.
 - **NEVER run `accept`.** It is the user's edge and the only way into `accepted`.
 - **NEVER run `publish`.** There is no autonomous path to it, from any state.
 
@@ -326,7 +331,16 @@ rejection strands the rest.
 
 Report **before** Step 7, because Step 7 ends this skill and anything unsaid is lost with it. For every
 entry touched, give its id, its title, and its outcome: reconciled, corroborated, refuted, taken up with
-its PR, or surfaced for a ruling. Then:
+its PR, or surfaced for a ruling.
+
+**A taken-up entry carries its ACT disclosure in that outcome, never in the question bullet below** — an
+entry the threshold **routes** is disclosed and dispatched, so it raises **no question** for that bullet
+to hold, and "taken up with its PR" on its own reads exactly like an entry every condition held for. What
+that disclosure must say is `followups.md`, "Surfacing them" — stated once there, for this step and
+campaign's final report, the only two reporting steps that owe it. Report it from there for **every** entry
+Step 4 took up; do not reconstruct it from this step.
+
+Then:
 
 - list every entry left unworked and why (`--limit`, an unresumable state, a dispatch that failed, a
   command that refused and which one, a PR another run owns);

@@ -47,26 +47,40 @@ audit. The user can overturn it (`accept`), and so can a **later, better investi
 again): the finding **APPENDS**, so the record of the driver changing its mind survives, and nobody has to
 take the latest verdict on trust.
 
-### Tier 2 — ACT (write a fix, open a PR). ALL FOUR conditions, or ASK.
+### Tier 2 — ACT (write a fix, open a PR). A CORROBORATED entry IS ACTED ON.
 
-The driver may take a follow-up up for work with no user ruling — **only** when **every one** of these
-holds. They are not a checklist to feel good about; each is **EVIDENCED IN THE ENTRY**, and
-`followups.py take-up` **REFUSES the step** if any is asserted without evidence.
+**Corroboration is the whole precondition. Once an investigation has reproduced a claim, the driver takes
+it up and dispatches a fixer — it does not need a further ruling to begin, unless the change is
+irreversible (condition 3 below).** `take-up` leaves **only** from `corroborated`, so a claim nobody
+investigated still cannot be taken up at all, and the investigation's own `finding` is what earns the
+step.
 
-1. **`corroborated`** — an independent reviewer confirmed it, **or** the driver reproduced the failure.
-   This one is structural: `take-up` leaves **only** from the `corroborated` state, so a claim nobody
-   investigated cannot be taken up at all, and the investigation's own `finding` is its evidence.
-2. **`not-gate-machinery`** (`--act-not-gate`) — it does not decide whether a PR may merge. The active
+**A corroborated follow-up is NEVER left undone because a condition below is unclear.** Recording one and
+walking away is the permanent loss this store exists to prevent, arriving by a slower route: the entry
+sits corroborated forever, every later run re-reads it, and the defect it names stays in the tree. The
+driver may not use uncertainty as a reason to act on nothing.
+
+The three conditions below are still **RECORDED**, and `take-up` refuses the step if any is asserted
+without evidence. What changed is what a failing one does: it **routes** the entry rather than cancelling
+the work. A failing `not-gate-machinery` or `behavior-preserved` condition is **DISCLOSED and dispatched
+without a question** — the fixer runs and the user reads about it afterwards. Only a failing `reversible`
+condition raises a **question**: that entry **WAITS** for the user's ruling before any fixer is
+dispatched.
+
+1. **`not-gate-machinery`** (`--act-not-gate`) — does it decide whether a PR may merge? The active
    repository instruction file (`AGENTS.md` or `CLAUDE.md`) defines the gate; do not reconstruct that
-   definition here. **WHEN IT IS UNCLEAR, IT IS GATE
-   MACHINERY** — the ambiguous case resolves toward **ask**, never toward act.
-3. **`behavior-preserved`** (`--act-behavior`) — it preserves user-facing behavior. If it **has** a
-   behavioral surface, **name the test that proves it**. If it has **none**, say so and name why — *an
-   assertion of no-behavioral-surface is itself a claim*, and it is recorded like any other. (A docs-only
-   change has no behavioral surface. That is a legitimate answer, not a loophole — but it must be
-   **stated**, because it is the thing that could be wrong.)
-4. **`reversible`** (`--act-reversible`) — a revert restores the prior state. A schema migration is not
-   reversible. Anything already published is not.
+   definition here. **When it does, or when that is unclear, the fixer is still dispatched — and the
+   entry is named to the user in the same report, as a change to the machinery that judges changes.**
+   The PR waits for nothing, because the gauntlet judges it either way; what the user gets is notice, not
+   a veto.
+2. **`behavior-preserved`** (`--act-behavior`) — does it change user-facing behavior? Record what the
+   change does either way. A fix that deliberately changes behavior is the ordinary case, not a
+   disqualification: **name the behavior that changes and the test that pins it**. If it has **none**,
+   say so and name why — *an assertion of no-behavioral-surface is itself a claim*. (A docs-only change
+   has no behavioral surface. That is a legitimate answer, not a loophole.)
+3. **`reversible`** (`--act-reversible`) — does a revert restore the prior state? A schema migration does
+   not. Anything already published does not. **An irreversible change is the one class that WAITS**: the
+   fixer is not dispatched until the user rules, because no gate downstream can undo it.
 
 ```
 followups.py --file <store> take-up --id fuN \
@@ -76,10 +90,12 @@ followups.py --file <store> take-up --id fuN \
 It lands in **`self-accepted`** — deliberately **NOT** `accepted`. A follow-up the **user** agreed to and
 one the **driver** took up on its own are different things, forever, and the table says which at a glance.
 **The PR that comes out of an ACT is not self-approved**: it is gated by the review gauntlet like any
-other, which is the independent authority the driver is not.
+other, which is the independent authority the driver is not. **That gate is what makes acting on a
+corroborated claim safe** — a wrong fix costs its own review rounds and never reaches `main` unjudged.
 
-If any condition fails — or you are unsure whether it holds — **the follow-up is a candidate you surface
-and ASK about.** That is not a failure state. It is the normal one.
+**So exactly one condition still stops the work before it starts, and it is `reversible`.** Everything
+else is disclosed and dispatched. A driver that surfaces a corroborated entry instead of working it has
+not been careful; it has left a reproduced defect in the tree and called that caution.
 
 ### Tier 3 — PUBLISH (a GitHub issue, a release). ALWAYS the user's call. Never autonomous.
 
@@ -132,8 +148,9 @@ about and one whose partial rejection strands the rest.
 
 1. **VERIFY the claim — the main line, and where a fresh `candidate` starts.** The common path is one line:
    a `candidate` → **INVESTIGATE** (dispatch a context-isolated Tier-1, read-only subagent) → `corroborate`
-   or `refute` → if corroborated and every Tier-2 condition holds, `take-up` → a fix subagent opens a PR →
-   `open-pr` → adopt into the run → `merged`. A follow-up is a CLAIM, and the driver's own diagnosis needs
+   or `refute` → if corroborated and the threshold above does not hold the entry back, `take-up` → a fix
+   subagent opens a PR → `open-pr` → adopt into the run → `merged`.
+   A follow-up is a CLAIM, and the driver's own diagnosis needs
    corroboration exactly like a reviewer's finding does (`AGENTS.md`/`CLAUDE.md`, "Your OWN diagnosis is a
    claim too"). So the driver does **not** verify inline and does **not** skip to a fix: the investigation
    subagent's sole job is to **reproduce the claim** — read the code, run the commands, walk the causal
@@ -205,11 +222,13 @@ about and one whose partial rejection strands the rest.
    investigation) can overturn it. The driver then moves on. **Refuting is not declining** — refute only on
    evidence the claim is false, never because a fix is inconvenient.
 
-3. **APPLICABLE → `take-up`, then a FIX SUBAGENT that opens a PR.** If the investigation `corroborated` it
-   **and every Tier-2 condition holds and is evidenced** (`corroborated`, `not-gate-machinery`,
-   `behavior-preserved`, `reversible` — `take-up` refuses without them), the driver takes it up
-   (→ `self-accepted`) and dispatches a **scoped fix subagent under the fix-subagent contract**
-   (`fix-subagent-contract.md`) that authors the fix **and opens a PR** for it. The driver hands the fixer
+3. **APPLICABLE → `take-up`, then a FIX SUBAGENT that opens a PR.** If the investigation `corroborated` it,
+   **every ACT condition is recorded with evidence** — `take-up` refuses the step without that — **and the
+   threshold above does not hold the entry back**, the driver takes it up (→ `self-accepted`)
+   and dispatches a **scoped fix subagent under the fix-subagent contract**
+   (`fix-subagent-contract.md`) that authors the fix **and opens a PR** for it. **An entry the threshold
+   holds back stops here — before `take-up`, and before any fixer is dispatched** — and is routed by "A
+   CONDITION THAT FAILS ROUTES THE WORK" below. The driver hands the fixer
    a **worktree branched from the base the follow-up targets**, and the fixer branches, commits, pushes,
    and opens the PR against that base — its worktree and scope requirements are owned by
    `fix-subagent-contract.md`, not restated here. **The target is per follow-up**: a follow-up **derived
@@ -239,12 +258,12 @@ about and one whose partial rejection strands the rest.
    authority. When that PR **merges**, run `followups.py merged --id fuN`: the merged PR is the durable
    record now, so the entry is deleted (`closed-unmerged` if the PR dies instead — back to open work).
 
-5. **ANY TIER-2 CONDITION FAILS OR IS UNCLEAR → SURFACE AND ASK.** If the fix would touch gate machinery,
-   **change user-facing behavior at all** (Tier-2 condition 3 requires it **preserved** — a named test is
-   evidence the behavior is unchanged, never licence to change it), be irreversible — or you are simply
-   unsure — it is **not** the driver's to take up. Surface it in the report and let the user rule (`accept` / `reject`). That is
-   the normal case, not a failure. And **publishing is never on the autonomous path**: an issue or a
-   release always waits for the user's agreement on that specific item (Tier 3).
+5. **A CONDITION THAT FAILS ROUTES THE WORK — it does not cancel it.** Read the threshold above for what
+   each one does; the shape is that gate machinery and a behavior change are **DISCLOSED and dispatched**,
+   while an **irreversible** change is the one class that WAITS for the user's ruling
+   (`accept` / `reject`) before a fixer runs. Surfacing an entry is how the user learns what the driver is
+   doing, never a way to leave a reproduced defect undone. And **publishing is never on the autonomous
+   path**: an issue or a release always waits for the user's agreement on that specific item (Tier 3).
 
 **The two subagents are the load-bearing part.** The investigation reproduces before anything is changed,
 and the fix authors code that the gauntlet judges — never the same worker doing both, and never the driver
@@ -418,7 +437,7 @@ Two structural facts carry the whole threshold, and both are **proved on the gra
   entry rather than parking it changes nothing: the guarantee was never about the state it landed in, but
   about which states the step may leave **from**.)
 - **The driver's own edge is evidence-bearing and lands somewhere else.** `take-up` leaves only from
-  `corroborated` (tier 2, condition 1) and lands in `self-accepted`, which is never `accepted`.
+  `corroborated` (tier 2's own precondition) and lands in `self-accepted`, which is never `accepted`.
 
 And a third, which is what makes DELETION safe (`delete-needs-a-record`):
 
@@ -490,13 +509,31 @@ the ledger's (`files-and-ledger.md`, "`table` is a PROJECTION"): it shows only t
 only some fields, it **escapes** every cell, and **the omission is never silent** — it states how many it
 hid and the flag that reveals them. Read a value back with `get --field`, **never** by parsing the table.
 
+**Surfacing is NOT the whole of what the user is owed for an entry the driver TOOK UP.** No ACT evidence
+reaches that table — the fields `take-up` wrote sit outside its default view — and an entry the threshold
+**routes** is disclosed and dispatched, so it raises no question to be listed under and reads exactly like
+one every condition held for. So **exactly two reporting steps owe this disclosure** — campaign's final
+report (`bailout-and-final-report.md`, **Follow-ups**) and `address-followups`' Step 6 — and each must name
+**each ACT condition that did NOT hold**, quoting the evidence `take-up` recorded for it. **No other report
+owes it**: not heartbeat or interim output, not the `gauntlet:followups` listing skill, not `carryover.md`,
+not the run history file.
+The THRESHOLD above already fixes what that evidence must say, condition by condition; this section does
+not retype it. Read those values back with `get --field`, never by parsing the table. **An entry whose PR
+has MERGED is DELETED, so `get` fails for it** — what discharges its disclosure instead is the `merged`
+step's own printed output, owned above by "**A DELETING step still PRINTS the entry it removed, in
+full**" and not restated here. **Say so explicitly when none failed** — those are different outcomes, and
+the report is the only place they are told apart.
+Which conditions route and which one waits is the THRESHOLD's as well, not this section's.
+
 **What the driver may do with what it surfaces is the THRESHOLD above — do not re-derive it here.**
 Surfacing an entry to the user *is* how consensus gets reached, and it must never hold the run hostage
 (`run-identity-and-lease.md`, "Never hold the run hostage on a user prompt"): raise them alongside the
-report and fold any answer in as its own heartbeat. **A `candidate` is a question, not a task**: the driver has
-not investigated it yet, so it has nothing to act on and nothing to say. The FIRST move on a fresh
-candidate is to INVESTIGATE it — the active loop above, when there is spare capacity — because that is
-how the question gets answered. Surfacing it to the user is the THRESHOLD fallback (when the driver
-cannot act autonomously or a user ruling is required), never a substitute for investigating it.
+report and fold any answer in as its own heartbeat. **A `candidate` is an UNINVESTIGATED CLAIM, not a
+task**: the driver has not investigated it yet, so it has nothing to act on and nothing to say. The FIRST
+move on a fresh candidate is to INVESTIGATE it — the active loop above, when there is spare capacity —
+because that is what turns the claim into evidence, and investigating needs no permission (Tier 1).
+Surfacing it to the user is never a substitute for investigating it, and
+**a CORROBORATED entry is not surfaced INSTEAD of being worked** — the threshold above dispatches a fixer
+for it and reports what that fixer is doing, holding back only the one class it names.
 
 ---
