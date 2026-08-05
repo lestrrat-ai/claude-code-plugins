@@ -1355,7 +1355,11 @@ def verdict_doc_cases(ci) -> list[str]:
 
 
 def documentation_option_form_cases(ci, tmp: Path) -> list[str]:
-    """Pin standalone and ``--name=value`` forms in all three documentation validators."""
+    """Pin standalone and ``--name=value`` forms in all three documentation validators, plus the shared
+    `_command_anchor` wrap tolerance: a copy WRAPS between the script name and the subcommand (a real doc,
+    `loop-control.md`, does exactly this for `required-set`) and must still be found and checked like any
+    other copy — while a subcommand mention on the far side of a BLANK line (a different paragraph) must
+    stay unmatched, so the anchor never merges two unrelated mentions into one false copy."""
     problems: list[str] = []
     cases = [
         (
@@ -1414,6 +1418,36 @@ def documentation_option_form_cases(ci, tmp: Path) -> list[str]:
         if len(found) != 1 or copies != ["commands.md:1"]:
             problems.append(
                 f"[documentation options {name}:missing] expected one reported copy; "
+                f"got copies={copies!r}, problems={found!r}"
+            )
+
+        # THE WRAP: the script name and the subcommand land on different physical lines — exactly what
+        # `loop-control.md` does for `required-set` (`ci-status.py\n   required-set --ledger …`). The
+        # anchor must still find and check this copy, not silently drop it from the count.
+        wrapped_root = tmp / f"documentation-options-{name}-wrapped"
+        wrapped_root.mkdir()
+        wrapped_valid = valid.replace(f"ci-status.py {name}", f"ci-status.py\n   {name}", 1)
+        if wrapped_valid == valid:
+            problems.append(f"[documentation options {name}:wrapped] fixture setup did not find "
+                             f"`ci-status.py {name}` in {valid!r} to wrap")
+        (wrapped_root / "commands.md").write_text(f"`{wrapped_valid}`\n", encoding="utf-8")
+        found, copies = check(wrapped_root)
+        if found or copies != ["commands.md:1"]:
+            problems.append(
+                f"[documentation options {name}:wrapped] expected one accepted copy despite the "
+                f"script-name/subcommand wrap; got copies={copies!r}, problems={found!r}"
+            )
+
+        # THE NON-WRAP: a BLANK line (a paragraph break) between the script name and the subcommand is NOT
+        # a wrap — it is two unrelated mentions, and the anchor must not merge them into one false copy.
+        paragraph_root = tmp / f"documentation-options-{name}-paragraph-break"
+        paragraph_root.mkdir()
+        paragraph_text = valid.replace(f"ci-status.py {name}", f"ci-status.py\n\n{name}", 1)
+        (paragraph_root / "commands.md").write_text(f"{paragraph_text}\n", encoding="utf-8")
+        found, copies = check(paragraph_root)
+        if copies:
+            problems.append(
+                f"[documentation options {name}:paragraph-break] expected NO copy across a blank line; "
                 f"got copies={copies!r}, problems={found!r}"
             )
 

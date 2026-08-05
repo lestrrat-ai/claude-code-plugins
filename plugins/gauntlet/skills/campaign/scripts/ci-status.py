@@ -2249,6 +2249,19 @@ def _has_long_option(command: str, option: str) -> bool:
     return re.search(rf"(?<![\w-]){re.escape(option)}(?=[=\s]|$)", command) is not None
 
 
+def _command_anchor(subcommand: str) -> re.Pattern[str]:
+    """Locate ``ci-status.py <subcommand>`` even when prose or a shell continuation WRAPS the line BETWEEN
+    the script name and the subcommand — e.g. ``scripts/ci-status.py\\n   required-set --ledger …`` — which
+    a literal single space between the two tokens never matches, so the copy is never anchored and every
+    downstream check (the paragraph read, the flag checks) never runs against it.
+
+    The tolerated gap is ONE wrap only: same-line spaces/tabs, or spaces/tabs around a single newline. A
+    blank line (a paragraph break, `\\n\\n`) is NOT absorbed, so an unrelated later mention of the
+    subcommand in a different paragraph is never merged into a false single copy.
+    """
+    return re.compile(rf"ci-status\.py(?:[ \t]+|[ \t]*\n[ \t]*){re.escape(subcommand)}")
+
+
 def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]:
     """EVERY COPY OF THE DERIVE COMMAND, IN EVERY SKILL DOC — not just the one in the doc under test.
 
@@ -2261,8 +2274,11 @@ def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]
 
     A copy is any occurrence that RUNS the command (`ci-status.py derive` carrying `--pr`) — prose that
     merely NAMES the command is not a copy, and is not checked. **THE UNIT IS THE COMMAND, NOT THE LINE**:
-    an invocation WRAPS (a shell `\\`, or plain prose reflow), and a line-by-line check would report the
-    continuation line as a violation of itself. So each copy is read to the end of its PARAGRAPH.
+    an invocation WRAPS (a shell `\\`, or plain prose reflow) — including BETWEEN the script name and the
+    subcommand itself (`ci-status.py\n  derive`) — and a line-by-line check would report the continuation
+    line as a violation of itself, or, worse, never anchor the copy at all when the wrap falls inside the
+    two tokens the anchor matches. So each copy is located by `_command_anchor` (which tolerates that one
+    wrap) and then read to the end of its PARAGRAPH.
 
     FINDING ZERO COPIES IS A FAILURE: the command is prescribed by at least `stage-2-ci.md` and
     `critical-rules.md`, and a check that cannot find its subject never passes.
@@ -2270,7 +2286,7 @@ def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]
     problems, copies = [], []
     for md in sorted((root or HERE.parent).rglob("*.md")):
         text = md.read_text(encoding="utf-8")
-        for m in re.finditer(r"ci-status\.py derive", text):
+        for m in re.finditer(_command_anchor("derive"), text):
             end = text.find("\n\n", m.start())
             command = text[m.start(): end if end > 0 else len(text)]
             if not _has_long_option(command, "--pr"):
@@ -2302,7 +2318,7 @@ def check_liveness_copies(root: Path | None = None) -> tuple[list[str], list[str
     problems, copies = [], []
     for md in sorted((root or HERE.parent).rglob("*.md")):
         text = md.read_text(encoding="utf-8")
-        for match in re.finditer(r"ci-status\.py liveness", text):
+        for match in re.finditer(_command_anchor("liveness"), text):
             end = text.find("\n\n", match.start())
             command = text[match.start(): end if end > 0 else len(text)]
             # `--ledger`, not `--pr`, is the runnable-copy gate here: prose about liveness routinely sits
@@ -2331,7 +2347,7 @@ def check_required_set_copies(root: Path | None = None) -> tuple[list[str], list
     problems, copies = [], []
     for md in sorted((root or HERE.parent).rglob("*.md")):
         text = md.read_text(encoding="utf-8")
-        for match in re.finditer(r"ci-status\.py required-set", text):
+        for match in re.finditer(_command_anchor("required-set"), text):
             end = text.find("\n\n", match.start())
             command = text[match.start(): end if end > 0 else len(text)]
             if not _has_long_option(command, "--ledger"):
