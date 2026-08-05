@@ -106,9 +106,9 @@ PRs, never instead of them, and it holds the run hostage on nothing.
 driver chooses to spend spare capacity on it, and the nudge reminder that prompts one decides nothing —
 so a queue can sit untouched for the whole life of a run. The `gauntlet:address-followups` skill
 (`/gauntlet:address-followups` in Claude Code, `$gauntlet:address-followups` in Codex) works the queue **on
-demand**, applying **this file's rules unchanged**: it resumes each entry by the state below, dispatches
-the same two subagents in the same order, and hands the PRs it opens to a campaign to gate. It changes
-**who initiates** the loop, never **what the loop does**.
+demand** under **this file's rules unchanged** — the whole procedure below, nothing added to it and
+nothing dropped from it — and hands the PRs it opens to a campaign to gate. It changes **who initiates**
+the loop, never **what the loop does**.
 
 **Scope: one run's driver, not cross-run coordination.** The follow-up store is shared across every
 concurrent run, and this loop does not claim a follow-up against a *second run* — two runs active at once
