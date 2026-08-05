@@ -507,6 +507,17 @@ the ledger's (`files-and-ledger.md`, "`table` is a PROJECTION"): it shows only t
 only some fields, it **escapes** every cell, and **the omission is never silent** — it states how many it
 hid and the flag that reveals them. Read a value back with `get --field`, **never** by parsing the table.
 
+**Surfacing is NOT the whole of what the user is owed for an entry the driver TOOK UP.** No ACT evidence
+reaches that table — the fields `take-up` wrote sit outside its default view — and an entry the threshold
+**routes** is disclosed and dispatched, so it raises no question to be listed under and reads exactly like
+one every condition held for. So **wherever a report tells the user about an entry the driver took up** —
+campaign's final report (`bailout-and-final-report.md`, **Follow-ups**) and `address-followups`' own report
+step alike — name **each ACT condition that did NOT hold**, quoting the evidence `take-up` recorded for it.
+The THRESHOLD above already fixes what that evidence must say, condition by condition; this section does
+not retype it. Read those values back with `get --field`, never by parsing the table. **Say so explicitly
+when none failed** — those are different outcomes, and the report is the only place they are told apart.
+Which conditions route and which one waits is the THRESHOLD's as well, not this section's.
+
 **What the driver may do with what it surfaces is the THRESHOLD above — do not re-derive it here.**
 Surfacing an entry to the user *is* how consensus gets reached, and it must never hold the run hostage
 (`run-identity-and-lease.md`, "Never hold the run hostage on a user prompt"): raise them alongside the

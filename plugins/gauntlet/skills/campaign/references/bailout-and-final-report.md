@@ -204,6 +204,10 @@ When the loop exits, summarize:
   that list**: no issue, no release, without the user's agreement on that specific item. A defect a bailout
   exposed and this run will not fix is recorded in the store **before** the report is written, not
   announced only in it — a follow-up that exists only in this report dies with it.
+  **The table is not the whole of this bullet: every entry this run TOOK UP also owes its ACT disclosure
+  here**, and it is owed in this bullet rather than under the ASK above, because an entry the threshold
+  **routes** is disclosed and dispatched and raises no question to ask. What that disclosure must say is
+  `followups.md`, "Surfacing them" — report it from there; do not reconstruct it from this bullet.
 - Any worktrees left for inspection.
 
 This run's durable carryover file (`.gauntlet/history/<run-id>.md`) is written on exit by
