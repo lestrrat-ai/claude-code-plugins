@@ -51,7 +51,8 @@ file that grows.
     rejected PR takes down with it — the work still undone, and nothing left to remember it. So while a PR
     is OPEN the entry STAYS and records which PR is addressing it (`in-pr`), and a PR CLOSED WITHOUT
     MERGING returns it to OPEN WORK (`reopened`) — never a silent vanish, never stuck in "being worked on"
-    forever.
+    forever. A USER RULING waits on that same disposition: neither ruling leaves from `in-pr`, so a `no`
+    cannot land on an entry whose PR is still open and leave that PR behind it (see TRANSITIONS).
   * REJECTIONS STAY. A rejection is worth remembering PRECISELY so it is not re-raised: delete it and the
     next run rediscovers the same thing, records it again, and asks the user again. It is hidden from the
     default view; it is not deleted. (A published one CAN be deleted for the same test: the ISSUE is the
@@ -228,6 +229,13 @@ def project(rec: "dict", where: str = "") -> "dict[str, str]":
 # being lost: `in-pr` (a PR is open on it — the entry STAYS, and names the PR) and `reopened` (that PR was
 # closed WITHOUT merging — the work is undone, so the entry is OPEN WORK again, with its history intact).
 #
+# AND A USER RULING IS ORDERED AFTER THE PR'S DISPOSITION — which is why NEITHER ruling leaves from `in-pr`.
+# `rejected` is terminal AND hidden from the default view, so a `no` recorded while the PR was still open
+# would leave a PR nothing ever looks at again: the entry names it, and no campaign action reads a rejection.
+# The ruling is NOT BLOCKED, only ORDERED — dispose of the PR, record that (`closed-unmerged`, which keeps
+# the dead PR in the entry's history), and rule on the `reopened` entry. `accept` has always required this;
+# `reject` was the one edge that did not, and an `in-pr` rejection was the one way to strand an open PR.
+#
 # `<subcommand>: (states it may be applied FROM, the state it moves TO — or DELETED)`.
 DELETED = "deleted"  # NOT a state: the entry is REMOVED. It exists only in the CLI's output for that step,
                      # never on disk — `load()` refuses it as an unknown state, so a tombstone cannot linger.
@@ -237,7 +245,7 @@ TRANSITIONS = {
     "refute":          (("candidate", "corroborated", "reopened"), "refuted"),
     "take-up":         (("corroborated",), "self-accepted"),
     "accept":          (("candidate", "corroborated", "refuted", "self-accepted", "reopened"), "accepted"),
-    "reject":          (("candidate", "corroborated", "refuted", "self-accepted", "accepted", "in-pr",
+    "reject":          (("candidate", "corroborated", "refuted", "self-accepted", "accepted",
                         "reopened"), "rejected"),
     "open-pr":         (("accepted", "self-accepted", "reopened"), "in-pr"),
     "closed-unmerged": (("in-pr",), "reopened"),
@@ -745,6 +753,24 @@ def append_finding(existing: str, outcome: str, at: str, text: str) -> str:
     return record if is_blank(existing) else existing + "\n" + record
 
 
+def ruling_route(cmd: str, entry: "dict[str, str]") -> str:
+    """The ONE refusal a caller cannot act on from the graph alone: a USER RULING on an entry whose PR is
+    still open.
+
+    Every other refusal names the states the step applies to and that is the whole answer. Here the answer
+    is a CAMPAIGN ACTION the store cannot see — somebody must dispose of the PR — so the route is spelled
+    out at the moment it is needed. It is DERIVED from the graph (the state `open-pr` reaches, the state
+    `closed-unmerged` reaches), so it cannot go stale behind an edge that moves.
+    """
+    if cmd not in USER_RULINGS or entry["state"] != TRANSITIONS["open-pr"][1]:
+        return ""
+    return (f" It names PR {entry['pr']}, and nothing has disposed of that PR yet: close it, record the "
+            f"close (`closed-unmerged` -> '{TRANSITIONS['closed-unmerged'][1]}', which keeps the dead PR in "
+            f"the entry's history), then rule. The ruling is not blocked, only ORDERED after the PR's "
+            f"disposition — recorded while the PR was open it would leave that PR open with no campaign "
+            f"action that ever looks at it again.")
+
+
 def cmd_transition(path: Path, args) -> int:
     """The ONLY things that move `state` — or END an entry — and every one checks the state it comes FROM.
 
@@ -776,6 +802,7 @@ def cmd_transition(path: Path, args) -> int:
             fail(
                 f"{args.id} is '{entry['state']}' — `{cmd}` applies only to: {', '.join(frm)}. "
                 f"A follow-up reaches '{to}' only along the transition graph; nothing else moves `state`."
+                + ruling_route(cmd, entry)
             )
         # WHEN this step was taken. The user's ruling is DURABLE DATA, exactly like the ledger's
         # `api_approval`: a later run — or a fresh agent that never saw the conversation — reads it and does

@@ -296,6 +296,15 @@ time. So:
 - The PR is **closed WITHOUT merging** → `closed-unmerged` returns it to **open work** (`reopened`), with
   its history intact — the finding, the ACT grounds or the user's ruling, and the PR that died. It never
   vanishes with the PR, and it is never stuck in "being worked on" forever.
+- **The user rules while that PR is open** → **dispose of the PR first.** Close it, record the close
+  (`closed-unmerged`, the bullet above), and rule on the entry then. **Neither ruling leaves from `in-pr`**,
+  so this is the graph's order and not a convention the driver could forget: `rejected` is terminal *and*
+  hidden, and a `no` recorded while the PR was open would leave that PR open with **no campaign action that
+  ever looks at it again** — the store's own dead end. The ruling is **not blocked, only ordered**: the
+  entry keeps the PR in its history and the user's stamp lands the moment the PR is disposed of. A turn
+  that disposes of the PR and dies before recording the ruling leaves the entry in `reopened` — **visible
+  open work**, which the user rules on again. That is the disclosed cost of the order, and it is the
+  failure this store prefers: a ruling that has to be repeated, never a PR nothing will ever look at.
 
 **Move it in the heartbeat that SAW the event** — the same rule as recording one the moment it is noticed, and
 for the same reason: the driver's memory of it dies with the driver's context. The heartbeat that opens the PR
