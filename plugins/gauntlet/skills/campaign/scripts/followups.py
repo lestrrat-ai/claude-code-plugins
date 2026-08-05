@@ -172,6 +172,13 @@ def verdict_of(value: str) -> "str | None":
     something: a bare `irreversible:` is a verdict with no grounds, which is the same rumor a blank
     witness is, and the whole point of the ACT witnesses is that an assertion comes with its evidence.
     """
+    # The token is STRIPPED, so `reversible : why` is accepted, and that is not a hole: the two verdicts
+    # differ by the `ir` prefix, so no amount of surrounding whitespace can turn one into the other. The
+    # verdict returned is always the word the driver led with, and `ACT_EDGE_VERDICT` then refuses the
+    # edge that verdict does not license. Verified end to end against a real store: `take-up` with
+    # `irreversible : spaced one-way` exits 1 and leaves the entry `corroborated`, `hold` with
+    # `reversible : why` exits 1, and `take-up` with `reversible : spaced verdict` lands `self-accepted`.
+    # This is also the ONLY parser of `act_reversible` in the repo, so no other reader sees a raw prefix.
     token, sep, rest = value.strip().partition(VERDICT_SEP)
     if not sep or is_blank(rest):
         return None
