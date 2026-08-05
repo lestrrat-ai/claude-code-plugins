@@ -349,6 +349,17 @@ name from one host into another.
 | **Follow-up fixer** (opens a new PR) — dispatched for a **`self-accepted`** entry | **`economy`** | **Downgraded ON PURPOSE when the host has a configured economy mapping — and only for this entry state, which is what earns it.** `take-up` is the only edge into `self-accepted`, it leaves only from `corroborated`, and it refuses without every ACT condition evidenced (`scripts/followups.py`) — so on this path an investigation **reproduced** the defect before the worker ran, and its job is to implement a fix for a defect already shown to be real, not to establish that one exists. Its PR is then gated by the full review gauntlet like any other, and a bad fix costs that PR's own review rounds, never an in-flight gate (`references/followups.md`, `references/fix-subagent-contract.md`). |
 | Follow-up fixer — dispatched for an **`accepted`** or **`reopened`** entry | **`session`** | **The same worker, NOT downgraded, because the row above's precondition is absent here.** `accept`'s from-set is **not** restricted to corroborated states (`followups.py --help` owns it; this row does not retype it), and `reopened` inherits whatever its entry already had — so a user-ruled or revived entry can reach this worker with **no** corroborating investigation and **no** ACT evidence behind it. It then authors code from scratch exactly as review-fix does. **Read the entry's state and dispatch on it; never assume the diagnosed path** (`references/followups.md`). |
 
+<!-- Refutation of a review finding against the `accepted`/`reopened` follow-up-fixer row above, which
+     claimed that row still characterizes `accept`'s from-set instead of deferring to `followups.py --help`.
+     `followups.py --help` prints `accept  THE USER rules:
+     candidate/corroborated/refuted/self-accepted/reopened -> accepted`, and the row names none of those
+     five states as a member: it states one negative property — the set is not confined to corroborated
+     states — and cites the owner for the set itself. `references/followups.md` requires exactly that form,
+     saying the legal from-states are owned by `scripts/followups.py` and printed live by
+     `followups.py --help`, and that the page does not retype them. Property checked against `TRANSITIONS`
+     in `scripts/followups.py`: `candidate`, `refuted` and `reopened` are all in the set, so an `accepted`
+     entry can arrive with no corroborating investigation. -->
+
 **A downgrade is never a default, and no sentence outside the table is its authority.** Every row above
 carries its own class **and the precondition that earns it**; a dispatch whose row-precondition does not
 hold is `session`. **Read the class off the row that matches the dispatch in hand** — not off a count of
