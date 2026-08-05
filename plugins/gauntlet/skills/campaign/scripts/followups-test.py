@@ -1213,6 +1213,72 @@ def t_the_doc_and_the_code_agree(tmp: Path) -> None:
               f"step it has not been told exists")
 
 
+def t_every_reporting_step_owes_both_act_edges(tmp: Path) -> None:
+    """EVERY REPORTING STEP THAT OWES THE ACT DISCLOSURE OWES IT FOR **BOTH** ACT EDGES.
+
+    `followups.md`, "Surfacing them", owns which entries owe this disclosure — an entry the driver
+    DISPOSED OF ON ITS OWN, by either ACT edge — and it names the reporting steps that owe it. Those
+    steps live in OTHER files, so the definition is restated at each of them, which is the exact shape
+    this repo keeps being bitten by: the owner moved to cover `hold`, and a restatement that still said
+    "every entry this run took up" silently dropped the `held` entry — the one entry that carries a
+    QUESTION for the user, whose ruling is the only thing that ever moves it. The user is then never
+    asked, and the entry waits forever.
+
+    So the agreement is EXECUTED rather than trusted, on two axes:
+
+      1. Each site describes the owed set in the OWNER'S WORDS. A paraphrase is what drifts, and it
+         drifts silently because it shares no string with the rule it summarises.
+      2. Each site names the state the WAITING edge lands in — derived from the graph, so a renamed or
+         added waiting state pins every reporting step the day it lands.
+    """
+    references = Path(__file__).resolve().parent.parent / "references"
+    owner = references / "followups.md"
+    # The reporting steps `followups.md`, "Surfacing them", names — checked below to be the ones it still
+    # names, so a step that moves cannot leave this list pointing at a file that no longer owes anything.
+    reporting_steps = {
+        "bailout-and-final-report.md": references / "bailout-and-final-report.md",
+        "address-followups": (references.parent.parent / "address-followups" / "SKILL.md"),
+    }
+    # The owner's own name for the owed set. Every site must use it rather than restate the membership.
+    owed_set = "disposed of on its own"
+    waiting = TRANSITIONS[HOLD_CMD][1]
+
+    def block(text: str, needle: str) -> str:
+        """The smallest block holding `needle` — bounded by a blank line or the next top-level bullet."""
+        lines = text.splitlines()
+        i = next((n for n, line in enumerate(lines) if needle in line), -1)
+        check(i >= 0, f"{needle!r} appears nowhere — the pointer to the owner is gone")
+        start, end = i, i + 1
+        while start > 0 and not lines[start].startswith("- ") and lines[start - 1].strip():
+            start -= 1
+        while end < len(lines) and lines[end].strip() and not lines[end].startswith("- "):
+            end += 1
+        return "\n".join(lines[start:end])
+
+    owner_text = owner.read_text(encoding="utf-8")
+    owning = block(owner_text, "reporting steps")
+    check(owed_set in owning.lower(),
+          f"{owner.name} no longer names the owed set {owed_set!r} — every restatement below is checked "
+          f"against the owner's words, so the owner must still be the one saying them")
+    check(waiting in owning,
+          f"{owner.name} defines the disclosure without naming {waiting!r}, the state the WAITING ACT "
+          f"edge lands in — the entry that carries the user's question would owe nothing")
+    for name, path in reporting_steps.items():
+        check(name in owning,
+              f"{owner.name} no longer names {name} as a reporting step that owes the ACT disclosure — "
+              f"this fixture is checking a file the owner stopped pointing at")
+        check(path.exists(), f"the reporting step {name} is missing entirely: {path}")
+        # The site's own restatement: the block that points back at the owner.
+        site = block(path.read_text(encoding="utf-8"), '"Surfacing them"')
+        check(owed_set in site.lower(),
+              f"{path.name} restates the owed set in its OWN words instead of the owner's "
+              f"({owed_set!r}) — a paraphrase is what silently goes stale:\n{site}")
+        check(waiting in site,
+              f"{path.name} owes the ACT disclosure and never names {waiting!r} — a {waiting!r} entry is "
+              f"disclosed nowhere, so the user is never asked for the ruling that is the only thing that "
+              f"moves it:\n{site}")
+
+
 def t_ids_are_assigned_and_never_reused(tmp: Path) -> None:
     """`id` is assigned by the STORE (`fu<N>`, one past the highest EVER HANDED OUT) — never by the caller,
     and NEVER REUSED, not even after the entry that held it was DELETED.
@@ -1654,6 +1720,7 @@ CASES = [
     ("irreversible-waits", "an IRREVERSIBLE change reaches no PR without the user — the verdict picks the edge, and `held` has no way out but a ruling", t_the_irreversible_change_waits),
     ("self-accept-distinct", "a DRIVER-accepted follow-up is never mistaken for a USER-accepted one", t_self_accepted_is_never_mistaken_for_accepted),
     ("doc-and-code-agree", "the ACT conditions the driver READS are the ones the code ENFORCES", t_the_doc_and_the_code_agree),
+    ("reporting-covers-both-acts", "every reporting step that owes the ACT disclosure owes it for BOTH ACT edges — the `held` entry's question included", t_every_reporting_step_owes_both_act_edges),
     ("pr-reference-parser", "open-pr canonicalises recognised PR references and preserves opaque text", t_pr_references_keep_legacy_bare_numbers_and_github_urls),
     ("investigation-evidence", "an investigation shows its work; the finding APPENDS and never clobbers", t_investigation_shows_its_work),
     ("refutation-stays", "a refuted follow-up stays in the store, stays visible, and stays overturnable", t_refutation_stays_in_the_store),
