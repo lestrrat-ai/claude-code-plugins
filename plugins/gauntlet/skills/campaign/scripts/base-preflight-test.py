@@ -564,10 +564,20 @@ def _dash_base_ancestry(root: Path, *, current: bool) -> "tuple[int, dict, str, 
     check(old_base != advanced_base, "fixture setup: the candidate tracking ref must be stale")
 
     if current:
-        # Import the advanced base through a separate local ref so HEAD contains it while origin/<base>
-        # stays stale until the operation under test refreshes that tracking ref.
+        # Import the advanced base through a separate local ref so HEAD contains it. That fetch NAMES the
+        # configured remote, so Git ALSO opportunistically updates `tracking_ref` as a side effect — which
+        # would pre-satisfy the very refresh this fixture exists to prove. Force the tracking ref back to
+        # the stale tip so the operation under test is the only thing that can refresh it.
         _git(candidate, "fetch", "origin", f"{dash_head}:refs/heads/current-dash-base")
         _git(candidate, "checkout", "current-dash-base")
+        _git(candidate, "update-ref", tracking_ref, old_base)
+
+    # BOTH callers depend on this: the `refreshed == advanced_base` assertion below proves nothing unless the
+    # tracking ref is STALE at the moment the CLI runs. Assert the stale pre-state here and the fixture cannot
+    # silently lose its teeth to a setup step that refreshes the ref first.
+    check(_git(candidate, "rev-parse", tracking_ref).stdout.strip() == old_base,
+          "fixture setup: the base tracking ref must still be stale when the CLI runs, or the refresh "
+          "assertion is pre-satisfied and proves nothing")
 
     vjson = root / "clean-view.json"
     vjson.write_text(json.dumps(view()), encoding="utf-8")
