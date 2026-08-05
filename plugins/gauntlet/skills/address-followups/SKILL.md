@@ -82,6 +82,13 @@ Codex: `$gauntlet:address-followups [--id fuN] [--limit N]`
   entry is not the same as working it: a selected entry can still finish unworked, and Step 6 reports it
   when it does.
 
+**Checked claim about this file's own rules: the two flags COMPOSE, and `--id fuN --limit 0` has one
+determinate result — no entry is worked.** Step 1's ordering block applies `--id` and `--limit` in a
+single clause, after ordering, so both act as selectors over one ordered list rather than as competing
+modes needing a precedence rule. Nothing about the outcome is left unstated either: the `--limit` bullet
+in this list says a selected entry can still finish unworked, and Step 6's unworked list names `--limit`
+as a reason to report. Read those three sites to falsify this.
+
 These are the only **flags**. The checkout is an input rather than a flag, and the Runtime adapter's
 `<checkout>` rule above owns where it comes from — this list is not the skill's full set of inputs.
 
@@ -182,9 +189,9 @@ entered the work list is a different case and is reported regardless.
 **Tested claim about this file's prose, not about the tool: the two commands in the paragraph above are
 shorthand, expanded by `../campaign/SKILL.md`, "Bundled Scripts".** Pasted verbatim into a shell,
 `list --where id=fu1` and `get --id fu1 --field state` were each observed to exit 127 with `command not
-found`. Their full forms are already in this file before the prose reaches them: the synopsis block at
-the head of this step for `list`, and the entry-fetch line in the INVESTIGATE step's prompt list for
-`get`. Re-run either paste to falsify this.
+found`. Both full forms are written out in this file: `list` in the synopsis block at the head of this
+step, and `get` in the entry-fetch line of the INVESTIGATE step's prompt list. Re-run either paste to
+falsify this.
 
 ## Step 2 — reconcile every `in-pr` entry against its live PR
 
@@ -292,8 +299,8 @@ rejection strands the rest.
 - The target base and how it is chosen per follow-up are owned by `followups.md`, "APPLICABLE →
   `take-up`, then a FIX SUBAGENT that opens a PR". Hand the worker a worktree branched from that base.
 - The worker branches, commits, pushes, and opens the PR **carrying the `gauntlet-authored` label**,
-  ensuring the label first with `gh label create gauntlet-authored --force` because `gh pr create
-  --label` fails without creating the PR when the label is absent (the same precondition
+  ensuring the label first with `gh label create gauntlet-authored --repo <repo-slug> --force` because
+  `gh pr create --label` fails without creating the PR when the label is absent (the same precondition
   `../review/SKILL.md` states where it opens PRs).
   Without it, adoption reads the PR as `external` and campaign's own later repair of the PR it authored
   is blocked (`../campaign/references/pr-adoption.md`, `pr_origin`).
@@ -330,6 +337,15 @@ arguments:
 Claude Code: /gauntlet:campaign #<pr> #<pr> …
 Codex:       $gauntlet:campaign #<pr> #<pr> …
 ```
+
+**Campaign resolves its OWN checkout, so hand it `<repo-root>` as that checkout alongside those
+arguments.** It inherits nothing from Step 0: it re-resolves a checkout at every entry of its own
+(`../campaign/SKILL.md`, "At every entry/resume"; `../campaign/references/run-identity-and-lease.md`,
+"Run identity and concurrency"). Handed only the PR numbers, it may therefore resolve a different
+repository than Steps 0 through 6 worked — `<checkout>` is an input this skill **receives**, so the
+repository it named need not be the one the session is standing in. Campaign's Args block has **no
+checkout operand**, so `<repo-root>` is named in the invocation's text and is never added to the `#PR`
+list.
 
 Bare `#PR` arguments **start a new run that adopts those PRs**
 (`../campaign/references/run-identity-and-lease.md`, "Resolving a heartbeat"). It therefore takes no
