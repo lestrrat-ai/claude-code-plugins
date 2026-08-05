@@ -379,10 +379,16 @@ def t_ruling_is_recorded(tmp: Path) -> None:
           f"`open-pr` overwrote the USER's ruling timestamp: {after!r}")
     check(after["pr"] == "77", f"open-pr did not record WHICH PR is addressing it: {after!r}")
 
+    # …and the user changing their mind RE-STAMPS it — once the PR that entry names has been disposed of,
+    # which is the order the graph enforces (`t_a_ruling_waits_for_the_prs_disposition`).
+    run(["--file", str(path), "closed-unmerged", "--id", a])
+    code, out, err = run(["--file", str(path), "reject", "--id", a, "--at", "2026-07-14T11:00:00Z"])
+    check(code == 0, f"reject exited {code}: {err!r}")
+    check(json.loads(out)["decided"] == "2026-07-14T11:00:00Z",
+          f"the user's second ruling did not re-stamp `decided`: {out!r}")
+
     # …and so does the step that DELETES it: the record it prints is the handoff, and it still says the
     # user ruled, and when.
-    code, out, err = run(["--file", str(path), "reject", "--id", a, "--at", "2026-07-14T11:00:00Z"])
-    check(code == 0, f"reject exited {code}: {err!r}")  # the user changed their mind while the PR was open
     (b2,) = seed(path)
     run(["--file", str(path), "accept", "--id", b2, "--at", "2026-07-14T12:00:00Z"])
     code, out, _ = run(["--file", str(path), "publish", "--id", b2, "--ref", "#88"])
@@ -810,6 +816,64 @@ def t_a_closed_pr_returns_the_entry_to_open_work(tmp: Path) -> None:
         code, _, err = run(["--file", str(path), "merged", "--id", fid])
         check(code == 0, f"[{lineage}] `merged` exited {code}: {err!r}")
         check(load(path) == [], f"[{lineage}] the second PR merged and the entry was kept anyway")
+
+
+def t_a_ruling_waits_for_the_prs_disposition(tmp: Path) -> None:
+    """A USER RULING NEVER LANDS ON AN ENTRY WHOSE PR IS STILL OPEN — the ruling is ORDERED AFTER the PR's
+    disposition, and the graph is what orders it.
+
+    `rejected` is terminal AND hidden from the default view. So a `no` recorded straight from `in-pr` used to
+    produce the one shape this store cannot recover from: a closed entry that still NAMES a PR, sitting in
+    the one state no campaign action ever reads again. The entry says a PR is addressing it; the PR is open;
+    nothing on either side will ever touch it. Nothing else in the graph can strand an open PR — every other
+    exit from `in-pr` acts on the PR (`merged`, `closed-unmerged`).
+
+    THE RULING IS NOT BLOCKED, ONLY ORDERED. `closed-unmerged` records the close and returns the entry to
+    open work with the dead PR still in its history, and every ruling applies there — so the user's `no`
+    lands, on an entry that no longer names anything open.
+
+    Checked on the GRAPH first (an edge added tomorrow that rules from `in-pr` goes red here), then end to
+    end through the real CLI, including the refusal's own route.
+    """
+    open_pr_state = TRANSITIONS["open-pr"][1]
+    disposed = TRANSITIONS["closed-unmerged"][1]
+    for ruling in USER_RULINGS:
+        check(open_pr_state not in TRANSITIONS[ruling][0],
+              f"`{ruling}` applies to {open_pr_state!r} — a ruling recorded while the PR is open leaves an "
+              f"entry naming a PR that no campaign action ever looks at again")
+        check(disposed in TRANSITIONS[ruling][0],
+              f"`{ruling}` does not apply to {disposed!r} — the disposition would BLOCK the user's ruling "
+              f"instead of merely ordering it after the PR")
+    # …and the disposition edges are the ONLY way out of an open PR, so ordering the rulings after them
+    # leaves nothing that can end an entry with its PR untouched.
+    exits = {c for c, (frm, _) in TRANSITIONS.items() if open_pr_state in frm}
+    check(exits == {"merged", "closed-unmerged"},
+          f"{open_pr_state!r} has exits {sorted(exits)} — an exit that is not a disposition of the PR can "
+          f"end the entry while the PR it names stays open")
+
+    path = tmp / "ruling.jsonl"
+    (fid,) = seed(path)
+    run(["--file", str(path), "accept", "--id", fid])          # the user agreed; a fixer opened the PR
+    code, _, err = run(["--file", str(path), "open-pr", "--id", fid, "--pr", "#999"])
+    check(code == 0, f"open-pr exited {code}: {err!r}")
+    check(state_of(path, fid) == open_pr_state, "the setup did not reach an OPEN PR")
+    for ruling in USER_RULINGS:
+        code, out, err = run(["--file", str(path), ruling, "--id", fid, *transition_args(ruling)])
+        check(code == 1, f"`{ruling}` was ACCEPTED on an entry whose PR is open (exit {code}):\n{out}")
+        check(state_of(path, fid) == open_pr_state, f"a refused `{ruling}` moved the entry anyway")
+        # …and the refusal names the ROUTE, not just the refusal: the caller holds a ruling it must record.
+        check("999" in err and "closed-unmerged" in err and disposed in err,
+              f"the refusal does not tell the caller how to proceed: {err!r}")
+
+    # …and once the PR IS disposed of, the very same ruling lands — with the dead PR still in the history.
+    code, _, err = run(["--file", str(path), "closed-unmerged", "--id", fid])
+    check(code == 0, f"`closed-unmerged` exited {code}: {err!r}")
+    code, out, err = run(["--file", str(path), "reject", "--id", fid, "--at", "2026-07-30T09:00:00Z"])
+    check(code == 0, f"the ruling was BLOCKED rather than ordered: exit {code}, {err!r}")
+    entry = json.loads(out)
+    check(entry["state"] == "rejected", f"the ruling did not land: {entry!r}")
+    check(entry["decided"] == "2026-07-30T09:00:00Z", f"the user's `no` lost its stamp: {entry!r}")
+    check(entry["pr"] == "999", f"the disposed PR left the entry's history: {entry!r}")
 
 
 def t_a_rejection_is_never_deleted(tmp: Path) -> None:
@@ -1442,6 +1506,7 @@ CASES = [
     ("user-step-unskippable", "no driver-only path reaches `accepted`, nor any state `publish` leaves from — proved on the graph", t_user_ruling_is_unskippable),
     ("delete-needs-a-record", "an entry is deleted only once a DURABLE RECORD exists elsewhere — never on take-up", t_deletion_needs_a_durable_record),
     ("closed-pr-reopens", "a PR closed WITHOUT merging returns the entry to open work — it never vanishes with it", t_a_closed_pr_returns_the_entry_to_open_work),
+    ("ruling-waits-for-the-pr", "a USER RULING is ordered AFTER the PR's disposition — it can never strand the open PR the entry names", t_a_ruling_waits_for_the_prs_disposition),
     ("rejection-kept", "a REJECTED follow-up is kept — deleting it is how the next run re-raises it", t_a_rejection_is_never_deleted),
     ("act-needs-conditions", "the autonomous ACT edge must EVIDENCE every condition, or it is refused", t_act_edge_needs_every_condition),
     ("self-accept-distinct", "a DRIVER-accepted follow-up is never mistaken for a USER-accepted one", t_self_accepted_is_never_mistaken_for_accepted),
