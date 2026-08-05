@@ -220,11 +220,13 @@ about and one whose partial rejection strands the rest.
    investigation) can overturn it. The driver then moves on. **Refuting is not declining** — refute only on
    evidence the claim is false, never because a fix is inconvenient.
 
-3. **APPLICABLE → `take-up`, then a FIX SUBAGENT that opens a PR.** If the investigation `corroborated` it
-   **and every ACT condition is recorded with evidence** — `take-up` refuses the step without that, and the
-   threshold above owns what a failing one does — the driver takes it up (→ `self-accepted`)
+3. **APPLICABLE → `take-up`, then a FIX SUBAGENT that opens a PR.** If the investigation `corroborated` it,
+   **every ACT condition is recorded with evidence** — `take-up` refuses the step without that — **and the
+   threshold above does not hold the entry back**, the driver takes it up (→ `self-accepted`)
    and dispatches a **scoped fix subagent under the fix-subagent contract**
-   (`fix-subagent-contract.md`) that authors the fix **and opens a PR** for it. The driver hands the fixer
+   (`fix-subagent-contract.md`) that authors the fix **and opens a PR** for it. **An entry the threshold
+   holds back stops here — before `take-up`, and before any fixer is dispatched** — and is routed by "A
+   CONDITION THAT FAILS ROUTES THE WORK" below. The driver hands the fixer
    a **worktree branched from the base the follow-up targets**, and the fixer branches, commits, pushes,
    and opens the PR against that base — its worktree and scope requirements are owned by
    `fix-subagent-contract.md`, not restated here. **The target is per follow-up**: a follow-up **derived
@@ -433,7 +435,7 @@ Two structural facts carry the whole threshold, and both are **proved on the gra
   entry rather than parking it changes nothing: the guarantee was never about the state it landed in, but
   about which states the step may leave **from**.)
 - **The driver's own edge is evidence-bearing and lands somewhere else.** `take-up` leaves only from
-  `corroborated` (tier 2, condition 1) and lands in `self-accepted`, which is never `accepted`.
+  `corroborated` (tier 2's own precondition) and lands in `self-accepted`, which is never `accepted`.
 
 And a third, which is what makes DELETION safe (`delete-needs-a-record`):
 
