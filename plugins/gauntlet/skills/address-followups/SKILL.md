@@ -3,8 +3,8 @@ name: address-followups
 description: >-
   Works Gauntlet's durable follow-up queue end to end instead of only listing it. Each open entry is
   resumed at the step its lifecycle state has already reached: a fresh read-only subagent must reproduce
-  or refute the claim, only a corroborated entry meeting every autonomy-threshold condition is taken up,
-  a separate scoped subagent then authors the fix and opens ONE PR for that one follow-up, and the PRs
+  or refute a still-unverified claim, only a corroborated entry meeting every autonomy-threshold condition
+  is taken up, a separate scoped subagent then authors the fix and opens ONE PR for that follow-up, and the PRs
   opened this invocation are handed to gauntlet:campaign to gate and merge. Use when the user asks to
   work, drive, clear, action, or process follow-ups. To only SEE the queue, use gauntlet:followups. Args:
   (no args) | --id fuN | --limit N
@@ -36,13 +36,18 @@ what happens to the PRs at the end. Everything else is a pointer, deliberately.
   resolves it to an absolute repository root **once**, and that one absolute result is what every later
   `<repo-root>`, every path derived from it, and every subagent prompt carries. No worker re-resolves it,
   and none is handed a relative path or left to infer one from its own working directory.
-- **Every `gh` call this skill makes NAMES the repository it is about.** `gh` given no repository
+- **Every `gh` call made under this skill NAMES the repository it is about — the driver's own calls and
+  those of the subagents it dispatches alike.** `gh` given no repository
   resolves in **whatever checkout the process is standing in**, which need not be `<checkout>` —
   `../campaign/references/ci-derivation-spec.md`, "`--repo` IS NOT OPTIONAL", owns that rule and campaign's
   own call sites obey it (`../campaign/references/pr-adoption.md` pins the working directory;
   `../campaign/scripts/label-mirror.py` passes `--repo`). Step 0 resolves the repository's `<owner>/<name>`
-  **once**, as `<repo-slug>`, and **every** `gh` invocation in this file carries `--repo <repo-slug>` — this
-  rule covers a `gh` call added here later exactly as it covers the ones written today. The single
+  **once**, as `<repo-slug>`, and **every** `gh` invocation this file tells an agent to run carries
+  `--repo <repo-slug>` — this rule covers a `gh` call added here later exactly as it covers the ones
+  written today. A subagent stands
+  in its own working directory and cannot resolve the slug for itself, so **`<repo-slug>` travels as data
+  in the prompt of every worker this skill dispatches** (Steps 3 and 5), and each of those prompts is bound
+  by this rule for whatever `gh` calls that worker's job requires. The single
   exception is Step 0's own resolving call, which cannot name what it is resolving and is pinned by its
   working directory instead.
 - Resolve `<skill-dir>` from the actual path of this active `SKILL.md`. NEVER depend on
@@ -59,8 +64,9 @@ what happens to the PRs at the end. Everything else is a pointer, deliberately.
 - Logical model classes map to the active host through `../campaign/references/runtime-adapter.md`,
   "Model classes".
 - **If the host has no fresh-worker mechanism, STOP and report that.** Do not investigate inline and do
-  not fix inline. The two separate subagents are the whole guarantee (`followups.md`, "The two subagents
-  are the load-bearing part"); running either in the driver's context removes it.
+  not fix inline. Keeping those two steps out of the driver's context, and out of each other's, is the
+  whole guarantee (`followups.md`, "The two subagents are the load-bearing part"); running either in the
+  driver's context removes it.
 
 ## Args
 
@@ -116,6 +122,15 @@ How far the refusal stops the invocation then depends on which command refused:
    the one `gh` call here that names no repository, because it is the call that produces the name —
    deriving it from the checkout is what `../campaign/scripts/merge.py` does before its own first
    `gh pr view`. Nothing below re-resolves it, and every `gh` call below carries `--repo <repo-slug>`.
+   **Tested claim about `gh` itself, `gh` 2.96.0: `GH_REPO` does not redirect this call.** The commands
+   quoted in this paragraph are the probe that was run, not calls this skill makes, so the rule above does
+   not reach them. With `GH_REPO=cli/cli` exported,
+   `gh repo view --json nameWithOwner` still printed this repository's own slug, and the same command run
+   outside any git repository failed with "not a git repository" rather than falling back to the
+   environment value; `gh pr list` in that same shell **did** honour `GH_REPO`, so the negative result is
+   this command's behaviour and not an unset variable. Re-run those three commands to falsify it.
+   Independently of that, an explicit `--repo` beats `GH_REPO`, so every call below is pinned whatever the
+   environment holds.
 3. The store is `<repo-root>/.gauntlet/followups.jsonl`. It is **user-local and git-ignored**; it is
    never created here. If it does not exist, report that there is no follow-up store and **stop** — an
    empty queue and an absent store are different answers, and inventing the file hides which one it was.
@@ -150,6 +165,16 @@ invocation of this skill supplies none. `rejected` is the user's terminal ruling
 Apply `--id` and `--limit` **after** ordering, and **say what was left unworked and why**. A skill that
 silently stops at a cap reads as "the queue is clear" when it is not.
 
+**A requested `--id` that reaches no work is a REPORTED result, never an empty run.** `--id` names the one
+entry the user asked for, so when the ordering above leaves it out, say so, and say **which case it was**:
+there is **no entry with that id**, or **the entry exists in a state this skill does not resume** — name
+that state. Neither case is a refusal — `list` prints nothing and exits 0 for both — so "When a command
+refuses" never fires and nothing else here would ever mention it. Tell the two apart with `list --where
+id=fuN`, which exits 0 either way: no output means no such entry, and the id echoed back means the entry
+exists, whereupon `get --id fuN --field state` names the state to report. This is **not** Step 6's
+unworked list, which covers entries this skill **selected** and then left unworked; an id that never
+entered the work list is a different case and is reported regardless.
+
 ## Step 2 — reconcile every `in-pr` entry against its live PR
 
 An `in-pr` entry names the PR addressing it, and that PR may have moved since the entry was written.
@@ -182,6 +207,8 @@ writes, so these may be dispatched as one parallel batch. Nothing later in this 
 Each prompt carries, as data:
 
 - the absolute repository root;
+- `<repo-slug>`, which the worker never resolves for itself and which the Runtime adapter's
+  repository-naming rule requires on any `gh` call it makes;
 - the entry itself, from `python3 <abs>/followups.py --file <abs-store> get --id fuN`;
 - the absolute `followups.py` path and the absolute `--file` store path;
 - the absolute path of `../campaign/references/followups.md`, which the worker reads itself.
@@ -242,8 +269,10 @@ rejection strands the rest.
   `../campaign/references/fix-subagent-contract.md`. The follow-up fixer that opens a **new** PR is
   outside that file's three materializer roles, so its prompt is assembled here rather than through
   `worker-prompt.py`.
-- The worker's prompt carries, as data, the same absolute paths Step 3's prompt list names, plus the
-  entry itself. It resolves none of them for itself.
+- The worker's prompt carries, as data, everything Step 3's prompt list names — the absolute paths and
+  `<repo-slug>` — plus the entry itself. It resolves none of them for itself. This worker runs `gh` (it
+  opens and labels the PR, below), so its prompt is one of those the Runtime adapter's repository-naming
+  rule binds; that rule is stated once, there, and is not restated here.
 - The target base and how it is chosen per follow-up are owned by `followups.md`, "APPLICABLE →
   `take-up`, then a FIX SUBAGENT that opens a PR". Hand the worker a worktree branched from that base.
 - The worker branches, commits, pushes, and opens the PR **carrying the `gauntlet-authored` label**.
@@ -297,9 +326,13 @@ skill** — the campaign drives its own loop from there.
 
 ## Critical rules
 
-- **Two subagents, in that order, always.** The investigation reproduces before anything changes; the
-  fixer authors code the gauntlet then judges. Never one worker doing both, and never the driver doing
-  either inline.
+- **Never one worker for both steps, and never the driver for either.** That separation is what holds on
+  **every** path: where this skill investigates, a fresh worker does it; where it fixes, a different
+  worker authors the code the gauntlet then judges; the driver runs neither in its own context. What does
+  **not** hold on every path is an investigation preceding every fix — Step 1 routes an entry that already
+  carries its decision straight to Step 5, and an agent that tried to investigate an `accepted` one anyway
+  would find the store offers no edge back to an investigation at all (`followups.py --help` owns each
+  subcommand's from-set).
 - **A refused command is not an answer.** "When a command refuses — one rule, for every step" owns what
   happens then, and it is the only place in this file that says.
 - **NEVER hand-edit `.gauntlet/followups.jsonl`.** `followups.py` is the only door; every concurrent run
