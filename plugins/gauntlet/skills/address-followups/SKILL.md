@@ -177,6 +177,13 @@ exists, whereupon `get --id fuN --field state` names the state to report. This i
 unworked list, which covers entries this skill **selected** and then left unworked; an id that never
 entered the work list is a different case and is reported regardless.
 
+**Tested claim about this file's prose, not about the tool: the two commands in the paragraph above are
+shorthand, expanded by `../campaign/SKILL.md`, "Bundled Scripts".** Pasted verbatim into a shell,
+`list --where id=fu1` and `get --id fu1 --field state` were each observed to exit 127 with `command not
+found`. Their full forms are already in this file before the prose reaches them: the synopsis block at
+the head of this step for `list`, and the entry-fetch line in the INVESTIGATE step's prompt list for
+`get`. Re-run either paste to falsify this.
+
 ## Step 2 — reconcile every `in-pr` entry against its live PR
 
 An `in-pr` entry names the PR addressing it, and that PR may have moved since the entry was written.
@@ -190,7 +197,12 @@ guessing which case it was:
 - **merged** → `python3 <abs>/followups.py --file <abs-store> merged --id fuN`. Put that command's
   output in Step 6's report.
 - **closed without merging** → `closed-unmerged --id fuN`. The entry is then eligible for Step 5 in this
-  same invocation.
+  same invocation. **Tested claim about this file's prose, not about the tool: that command is shorthand,
+  expanded by `../campaign/SKILL.md`, "Bundled Scripts"** — the `merged` bullet directly above shows the
+  expansion. Pasted verbatim into a shell, `closed-unmerged --id fu1` was observed to exit 127 with
+  `command not found`. Argparse's exit 2 for a missing `--file` is reachable only by taking the
+  interpreter and script path from that convention while declining `--file` from the same convention.
+  Re-run both to falsify this.
 - **open, carrying no `gauntlet-run-*` label** → no campaign owns it, so it is sitting outside the gate.
   Add it to Step 7's hand-off.
 - **open, carrying a `gauntlet-run-*` label** → a run already owns it. **Touch nothing** — not the PR,
