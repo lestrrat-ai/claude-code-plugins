@@ -6,8 +6,8 @@ description: >-
   or refute a still-unverified claim, only a corroborated entry meeting every autonomy-threshold condition
   is taken up, a separate scoped subagent then authors the fix and opens ONE PR for that follow-up, and the PRs
   opened this invocation are handed to gauntlet:campaign to gate and merge. Use when the user asks to
-  work, drive, clear, action, or process follow-ups. To only SEE the queue, use gauntlet:followups. Args:
-  (no args) | --id fuN | --limit N
+  work, drive, clear, action, or process follow-ups. To only SEE the queue, use gauntlet:followups.
+  Args (distinct modes): (no args) | --id fuN | --limit N
 ---
 
 # Work Follow-ups
@@ -72,9 +72,12 @@ what happens to the PRs at the end. Everything else is a pointer, deliberately.
 
 ## Args
 
-Claude Code: `/gauntlet:address-followups [--id fuN] [--limit N]`
+Claude Code: `/gauntlet:address-followups (no args) | --id fuN | --limit N`
 
-Codex: `$gauntlet:address-followups [--id fuN] [--limit N]`
+Codex: `$gauntlet:address-followups (no args) | --id fuN | --limit N`
+
+These are **distinct modes**, not freely-composable flags — the same convention `../campaign/SKILL.md`'s
+"Args" block states for its own modes.
 
 - No argument works every resumable entry, in the order Step 1 fixes.
 - `--id fuN` works exactly that entry and no other.
@@ -82,12 +85,15 @@ Codex: `$gauntlet:address-followups [--id fuN] [--limit N]`
   entry is not the same as working it: a selected entry can still finish unworked, and Step 6 reports it
   when it does.
 
-**Checked claim about this file's own rules: the two flags COMPOSE, and `--id fuN --limit 0` has one
-determinate result — no entry is worked.** Step 1's ordering block applies `--id` and `--limit` in a
-single clause, after ordering, so both act as selectors over one ordered list rather than as competing
-modes needing a precedence rule. Nothing about the outcome is left unstated either: the `--limit` bullet
-in this list says a selected entry can still finish unworked, and Step 6's unworked list names `--limit`
-as a reason to report. Read those three sites to falsify this.
+**An invocation carrying both `--id` and `--limit` is invalid: REJECT it, tell the user those two flags
+conflict, and select nothing and work nothing.** The combination has no useful meaning — `--limit` caps
+an ordered list while `--id` reduces that list to a single entry, so a cap over it is either redundant or
+turns the invocation into a no-op. Because the combination is rejected, this file states no precedence
+between the two flags anywhere, and none is to be inferred.
+
+That rejection is **not** an instance of "When a command refuses — one rule, for every step". That
+section governs a command this file told an agent to run; here the arguments are rejected before Step 0,
+so no command has run, there is no stderr to relay, and no entry has been selected to leave unworked.
 
 These are the only **flags**. The checkout is an input rather than a flag, and the Runtime adapter's
 `<checkout>` rule above owns where it comes from — this list is not the skill's full set of inputs.
@@ -173,8 +179,9 @@ Work the resumable entries in this order, which is this file's own rule:
 `refuted` is **not** picked up. It is re-investigated only when new evidence may overturn it, and an
 invocation of this skill supplies none. `rejected` is the user's terminal ruling and is never resumed.
 
-Apply `--id` and `--limit` **after** ordering, and **say what was left unworked and why**. A skill that
-silently stops at a cap reads as "the queue is clear" when it is not.
+At most one of `--id` and `--limit` can have reached this step — the Args block above owns which
+invocations are legal. Apply whichever one was given **after** ordering, and **say what was left unworked
+and why**. A skill that silently stops at a cap reads as "the queue is clear" when it is not.
 
 **A requested `--id` that reaches no work is a REPORTED result, never an empty run.** `--id` names the one
 entry the user asked for, so when the ordering above leaves it out, say so, and say **which case it was**:
