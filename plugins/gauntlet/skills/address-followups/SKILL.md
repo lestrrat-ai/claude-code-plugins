@@ -78,7 +78,9 @@ Codex: `$gauntlet:address-followups [--id fuN] [--limit N]`
 
 - No argument works every resumable entry, in the order Step 1 fixes.
 - `--id fuN` works exactly that entry and no other.
-- `--limit N` stops after N entries have reached an actionable outcome.
+- `--limit N` selects at most the first N resumable entries, in the order Step 1 fixes. Selecting an
+  entry is not the same as working it: a selected entry can still finish unworked, and Step 6 reports it
+  when it does.
 
 These are the only **flags**. The checkout is an input rather than a flag, and the Runtime adapter's
 `<checkout>` rule above owns where it comes from — this list is not the skill's full set of inputs.
