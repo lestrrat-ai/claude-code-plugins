@@ -291,7 +291,10 @@ rejection strands the rest.
   rule binds; that rule is stated once, there, and is not restated here.
 - The target base and how it is chosen per follow-up are owned by `followups.md`, "APPLICABLE →
   `take-up`, then a FIX SUBAGENT that opens a PR". Hand the worker a worktree branched from that base.
-- The worker branches, commits, pushes, and opens the PR **carrying the `gauntlet-authored` label**.
+- The worker branches, commits, pushes, and opens the PR **carrying the `gauntlet-authored` label**,
+  ensuring the label first with `gh label create gauntlet-authored --force` because `gh pr create
+  --label` fails without creating the PR when the label is absent (the same precondition
+  `../review/SKILL.md` states where it opens PRs).
   Without it, adoption reads the PR as `external` and campaign's own later repair of the PR it authored
   is blocked (`../campaign/references/pr-adoption.md`, `pr_origin`).
 - **The prompt states the worker's REQUIRED OUTPUT: the reference of the PR it opened** — a named result,
