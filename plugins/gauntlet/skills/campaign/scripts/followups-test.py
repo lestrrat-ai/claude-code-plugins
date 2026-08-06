@@ -45,11 +45,12 @@ check = ledger_test.check
 # this resolves to the module that is actually RUNNING — not a second copy of the same file.
 import followups  # noqa: E402
 from followups import (  # noqa: E402
-    ACT_CMD, ACT_CONDITIONS, ACT_FLAGS, ACT_WITNESSES, BLANK_WHY, DEFAULTS, DELETED, DELETING,
-    DRIVER_STEPS, DURABLE_RECORD, EDITABLE, ENTRY_TYPE, EVIDENCE_FIELDS, FIELDS, FLAG, INTAKE,
-    INVESTIGATION, OPTIONAL, PLACEHOLDER, REQUIRED, SEQ_TYPE, STATES, TABLE_ALL_HIDDEN_MARKER,
-    TABLE_DEFAULT_FIELDS, TABLE_EMPTY_MARKER, TABLE_HIDDEN_STATES, TABLE_MARKERS, TERMINAL, TRANSITIONS,
-    USER_RULINGS, WRITE_CMDS, WRITES, build_parser, deletable, find, is_blank, load,
+    ACT_CMD, ACT_CMDS, ACT_CONDITIONS, ACT_EDGE_VERDICT, ACT_FLAGS, ACT_WITNESSES, BLANK_WHY, DEFAULTS,
+    DELETED, DELETING, DRIVER_STEPS, DURABLE_RECORD, EDITABLE, ENTRY_TYPE, EVIDENCE_FIELDS, FIELDS, FLAG,
+    HOLD_CMD, INTAKE, INVESTIGATION, IRREVERSIBLE, OPTIONAL, PLACEHOLDER, REQUIRED, REVERSIBLE, SEQ_TYPE,
+    STATES, TABLE_ALL_HIDDEN_MARKER, TABLE_DEFAULT_FIELDS, TABLE_EMPTY_MARKER, TABLE_HIDDEN_STATES,
+    TABLE_MARKERS, TERMINAL, TRANSITIONS, USER_RULINGS, VERDICT_FIELD, VERDICT_SEP, VERDICTS, WRITE_CMDS,
+    WRITES, build_parser, deletable, find, is_blank, load, verdict_of,
 )
 
 
@@ -81,6 +82,17 @@ def raw_line(field: str, raw: str, **over: object) -> str:
     return json.dumps(rec).replace('"@@RAW@@"', raw)
 
 
+def legal_value(cmd: str, field: str, text: str) -> str:
+    """A value `cmd` ACCEPTS for `field` — carrying the verdict token that edge requires, if any.
+
+    DERIVED from `ACT_EDGE_VERDICT`, so every fixture that builds legal argv keeps building it after a
+    field starts carrying a verdict. A fixture that hard-coded prose here would go red for the wrong
+    reason — the value form, not the rule it came to check.
+    """
+    verdict = ACT_EDGE_VERDICT.get(cmd) if field == VERDICT_FIELD else None
+    return f"{verdict}{VERDICT_SEP} {text}" if verdict else text
+
+
 def transition_args(cmd: str) -> "list[str]":
     """The flags a transition REQUIRES — derived from `WRITES`, never retyped.
 
@@ -91,7 +103,7 @@ def transition_args(cmd: str) -> "list[str]":
     for field in WRITES[cmd]:
         if field in OPTIONAL:
             continue
-        argv += [FLAG[field], f"{cmd}:{field}"]
+        argv += [FLAG[field], legal_value(cmd, field, f"{cmd}:{field}")]
     return argv
 
 
@@ -164,6 +176,25 @@ def state_of(path: Path, fid: str) -> str:
     return out.strip()
 
 
+def doc_block(text: str, needle: str) -> str:
+    """The smallest block of an agent-read document holding `needle` — bounded by a blank line or the next
+    top-level bullet.
+
+    Shared by every fixture that checks a RESTATEMENT: a whole-file search would pass on a rule stated in
+    some unrelated section, and the point of those fixtures is that the SITE which restates the rule is
+    the one that has to be right.
+    """
+    lines = text.splitlines()
+    i = next((n for n, line in enumerate(lines) if needle in line), -1)
+    check(i >= 0, f"{needle!r} appears nowhere — the pointer to the owner is gone")
+    start, end = i, i + 1
+    while start > 0 and not lines[start].startswith("- ") and lines[start - 1].strip():
+        start -= 1
+    while end < len(lines) and lines[end].strip() and not lines[end].startswith("- "):
+        end += 1
+    return "\n".join(lines[start:end])
+
+
 def closure(start: "tuple[str, ...]", cmds: "tuple[str, ...]") -> "set[str]":
     """Every STATE reachable from `start` using ONLY the named transitions. A fixpoint over the graph.
 
@@ -195,7 +226,7 @@ def write_argv(cmd: str, fid: str, field: str, value: str) -> "list[str]":
         elif cmd == "add" and f in REQUIRED:
             argv += [flag, f"add:{f}"]                      # the door cannot be without these
         elif cmd in TRANSITIONS and f in WRITES[cmd] and f not in OPTIONAL:
-            argv += [flag, f"{cmd}:{f}"]                    # nor these — the edge's own witnesses
+            argv += [flag, legal_value(cmd, f, f"{cmd}:{f}")]  # nor these — the edge's own witnesses
     return argv
 
 
@@ -920,63 +951,203 @@ def t_a_rejection_is_never_deleted(tmp: Path) -> None:
 
 
 def t_act_edge_needs_every_condition(tmp: Path) -> None:
-    """THE AUTONOMOUS EDGE IS EVIDENCE-BEARING, OR IT IS A BYPASS WITH A NICER NAME.
+    """AN AUTONOMOUS EDGE IS EVIDENCE-BEARING, OR IT IS A BYPASS WITH A NICER NAME.
 
-    `take-up` is the one step where the driver commits the repo to work with NO user ruling. What makes
-    that safe is not the driver's good intentions — it is that EVERY ACT condition must be witnessed IN THE
-    ENTRY, and the accessor refuses the step otherwise, exactly as `add` refuses a blank `evidence`.
+    The ACT edges are where the driver disposes of a corroborated claim with NO user ruling — `take-up`
+    commits the repo to work, `hold` parks the change the threshold says must wait. What makes either safe
+    is not the driver's good intentions: EVERY ACT condition must be witnessed IN THE ENTRY, and the
+    accessor refuses the step otherwise, exactly as `add` refuses a blank `evidence`.
 
-    Condition 1 (CORROBORATED) is enforced by the GRAPH, not by a flag: `take-up` leaves only from
-    `corroborated`, so a claim nobody investigated cannot be taken up at all. The rest are flags, and each
-    is REQUIRED and must be non-blank. Every check below is derived from ACT_CONDITIONS — a fifth condition
-    is pinned here the day it is added.
+    Condition 1 (CORROBORATED) is enforced by the GRAPH, not by a flag: an ACT edge leaves only from
+    `corroborated`, so a claim nobody investigated cannot be disposed of at all. The rest are flags, and
+    each is REQUIRED and must be non-blank. Every check below is derived from ACT_CONDITIONS and
+    ACT_CMDS — a fifth condition, or a third ACT edge, is pinned here the day it is added.
     """
-    # Condition 1: the graph. An UNINVESTIGATED claim cannot be taken up — and neither can a REFUTED one.
-    check(TRANSITIONS[ACT_CMD][0] == ("corroborated",),
-          f"`{ACT_CMD}` leaves from {TRANSITIONS[ACT_CMD][0]!r} — it must leave ONLY from `corroborated`, "
-          f"which is what makes CORROBORATION structural rather than a claim the driver types in")
-    for setup in ([], ["refute"]):
-        path = tmp / ("cond1-" + "-".join(setup or ["raw"]) + ".jsonl")
-        (fid,) = seed(path)
-        for cmd in setup:
-            run(["--file", str(path), cmd, "--id", fid, *transition_args(cmd)])
-        was = state_of(path, fid)
-        code, _, err = run(["--file", str(path), ACT_CMD, "--id", fid, *transition_args(ACT_CMD)])
-        check(code == 1, f"`{ACT_CMD}` was ACCEPTED on a {was!r} follow-up (exit {code}) — the driver took "
-                         f"up an UNCORROBORATED claim")
-        check(state_of(path, fid) == was, f"a refused `{ACT_CMD}` moved {was!r} anyway")
+    for act in ACT_CMDS:
+        # Condition 1: the graph. An UNINVESTIGATED claim cannot be acted on — and neither can a REFUTED one.
+        check(TRANSITIONS[act][0] == ("corroborated",),
+              f"`{act}` leaves from {TRANSITIONS[act][0]!r} — it must leave ONLY from `corroborated`, "
+              f"which is what makes CORROBORATION structural rather than a claim the driver types in")
+        for setup in ([], ["refute"]):
+            path = tmp / (f"{act}-cond1-" + "-".join(setup or ["raw"]) + ".jsonl")
+            (fid,) = seed(path)
+            for cmd in setup:
+                run(["--file", str(path), cmd, "--id", fid, *transition_args(cmd)])
+            was = state_of(path, fid)
+            code, _, err = run(["--file", str(path), act, "--id", fid, *transition_args(act)])
+            check(code == 1, f"`{act}` was ACCEPTED on a {was!r} follow-up (exit {code}) — the driver "
+                             f"disposed of an UNCORROBORATED claim")
+            check(state_of(path, fid) == was, f"a refused `{act}` moved {was!r} anyway")
 
-    # Conditions 2..N: each is a REQUIRED flag, and each refuses a blank.
-    for witness in ACT_FLAGS:
-        path = tmp / f"cond-{witness}.jsonl"
-        (fid,) = seed(path)
-        run(["--file", str(path), "corroborate", "--id", fid, "--finding", "reproduced"])
+        # Conditions 2..N: each is a REQUIRED flag, and each refuses a blank.
+        for witness in ACT_FLAGS:
+            path = tmp / f"{act}-cond-{witness}.jsonl"
+            (fid,) = seed(path)
+            run(["--file", str(path), "corroborate", "--id", fid, "--finding", "reproduced"])
 
-        argv = ["--file", str(path), ACT_CMD, "--id", fid]
-        omitted = [a for f in ACT_FLAGS if f != witness for a in (FLAG[f], "x")]
-        code, _, err = run([*argv, *omitted])
-        check(code == 2, f"`{ACT_CMD}` without {FLAG[witness]} was ACCEPTED (exit {code}): {err!r}")
-        for blank in BLANKS:
-            values = [a for f in ACT_FLAGS for a in (FLAG[f], blank if f == witness else "x")]
-            code, _, err = run([*argv, *values])
+            argv = ["--file", str(path), act, "--id", fid]
+            omitted = [a for f in ACT_FLAGS if f != witness
+                       for a in (FLAG[f], legal_value(act, f, "x"))]
+            code, _, err = run([*argv, *omitted])
+            check(code == 2, f"`{act}` without {FLAG[witness]} was ACCEPTED (exit {code}): {err!r}")
+            for blank in BLANKS:
+                values = [a for f in ACT_FLAGS
+                          for a in (FLAG[f], blank if f == witness else legal_value(act, f, "x"))]
+                code, _, err = run([*argv, *values])
+                check(code == 1,
+                      f"`{act}` with a BLANK {FLAG[witness]} ({blank!r}) was ACCEPTED (exit {code}) — a "
+                      f"condition asserted with no evidence is not a condition")
+                check("bypass" in err, f"`{act}` failed for the wrong reason: {err!r}")
+            check(state_of(path, fid) == "corroborated", f"a refused `{act}` moved the state anyway")
+
+        # …and with every condition evidenced, it goes through — and the evidence is IN the entry.
+        path = tmp / f"{act}-ok.jsonl"
+        (fid,) = seed(path)
+        run(["--file", str(path), "corroborate", "--id", fid, "--finding", "reproduced at followups.py:1"])
+        code, _, err = run(["--file", str(path), act, "--id", fid, *transition_args(act)])
+        check(code == 0, f"`{act}` exited {code} with every condition evidenced: {err!r}")
+        entry = json.loads(run(["--file", str(path), "get", "--id", fid])[1])
+        check(entry["state"] == TRANSITIONS[act][1], f"`{act}` did not reach its state: {entry!r}")
+        for witness in ACT_WITNESSES:
+            check(not is_blank(entry[witness]),
+                  f"`{act}` disposed of the entry with NO evidence for the condition witnessed by "
+                  f"{witness!r}: {entry!r}")
+
+
+def t_the_irreversible_change_waits(tmp: Path) -> None:
+    """AN IRREVERSIBLE CHANGE WAITS FOR THE USER — and the wait is an ABSENT EDGE, not an exhortation.
+
+    The threshold's third condition is the only one whose failure STOPS the work, and it used to be prose
+    ALONE. Reproduced on the parent commit of the change that added this fixture: `take-up
+    --act-reversible "NO — this is NOT reversible; it is a one-way schema migration and a revert CANNOT
+    restore the prior state"` exited 0 and landed the entry in `self-accepted` — the state a fixer is
+    dispatched from. The only check on that flag was the shared non-blank test.
+
+    What backs the guarantee now, and NEITHER half is a prose sniff (a negation search would refuse "a
+    revert restores the prior state, so this is not irreversible" and pass a one-way change worded without
+    a negation — wrong on both halves of the cases):
+
+      1. THE VALUE CARRIES A VERDICT the code can read, and the ACT edge must be the edge for that
+         verdict. Neither edge accepts the other's.
+      2. THE GRAPH does the rest. `hold` lands in `held`, and NO driver-only path leaves `held` for a PR —
+         only the USER's rulings leave it at all. Same shape as tier 3's guarantee, proved the same way.
+
+    AND THE LIMIT IS PINNED TOO, because overstating it would be the worse lie: nothing here can tell
+    whether a change really is reversible, so a driver that RECORDS `reversible` for a one-way change
+    still goes through. What is now impossible is recording `irreversible` and dispatching a fixer anyway.
+    """
+    # The verdict belongs to the `reversible` CONDITION — not to a field name that happens to look right.
+    check((REVERSIBLE, VERDICT_FIELD) in [(c, w) for c, w, _ in ACT_CONDITIONS],
+          f"{VERDICT_FIELD!r} is not the witness of the {REVERSIBLE!r} ACT condition — the verdict would "
+          f"be enforced on a field the threshold does not name")
+    check(sorted(ACT_EDGE_VERDICT.values()) == sorted(VERDICTS),
+          f"the ACT edges cover {sorted(ACT_EDGE_VERDICT.values())!r}, not every verdict {sorted(VERDICTS)!r} "
+          f"— a verdict with no edge is a corroborated follow-up with nowhere to go")
+
+    # 1a. A value that carries NO verdict is refused at EVERY ACT edge — including the exact prose the
+    #     reproduction used, which is the whole point: it says `no` in English and nothing could read it.
+    #
+    #     …AND THE GRAMMAR IS EXACT. The value OPENS with the token and the separator follows it
+    #     IMMEDIATELY; only the CASE is free (pinned just below). A spaced token is a shape the doc's
+    #     `reversible: <why>` never shows, and a parser wider than the form the driver is told to type
+    #     is a parser the doc cannot describe — the accepted grammar and the documented one are the same
+    #     grammar, or one of them is lying.
+    unreadable = (
+        "NO — this is NOT reversible; it is a one-way schema migration and a revert CANNOT restore "
+        "the prior state",
+        "a revert restores the prior state",
+        "not reversible",
+        REVERSIBLE,                        # the token alone, with no separator and no grounds
+        f"maybe{VERDICT_SEP} who knows",   # a separator, but no verdict the code knows
+        f"{IRREVERSIBLE}{VERDICT_SEP}",    # a verdict with NO grounds is the rumor the witnesses forbid
+        f"{IRREVERSIBLE}{VERDICT_SEP} {PLACEHOLDER}",
+        f"{REVERSIBLE} {VERDICT_SEP} why",     # whitespace BEFORE the separator
+        f"{IRREVERSIBLE}\t{VERDICT_SEP} why",  # …of any kind
+        f" {REVERSIBLE}{VERDICT_SEP} why",     # …and the value must OPEN with the token
+    )
+    for act in ACT_CMDS:
+        for i, value in enumerate(unreadable):
+            path = tmp / f"unreadable-{act}-{i}.jsonl"
+            (fid,) = seed(path)
+            run(["--file", str(path), "corroborate", "--id", fid, "--finding", "reproduced"])
+            argv = [a for f in ACT_FLAGS
+                    for a in (FLAG[f], value if f == VERDICT_FIELD else legal_value(act, f, "x"))]
+            code, out, err = run(["--file", str(path), act, "--id", fid, *argv])
             check(code == 1,
-                  f"`{ACT_CMD}` with a BLANK {FLAG[witness]} ({blank!r}) was ACCEPTED (exit {code}) — a "
-                  f"condition asserted with no evidence is not a condition")
-            check("bypass" in err, f"`{ACT_CMD}` failed for the wrong reason: {err!r}")
-        check(state_of(path, fid) == "corroborated", f"a refused `{ACT_CMD}` moved the state anyway")
+                  f"`{act}` ACCEPTED an {VERDICT_FIELD} carrying no readable verdict (exit {code}): "
+                  f"{value!r}\n{out}")
+            check(state_of(path, fid) == "corroborated", f"a refused `{act}` moved the state anyway")
+            check(verdict_of(value) is None, f"`verdict_of` reads a verdict out of {value!r}")
 
-    # …and with every condition evidenced, it goes through — and the evidence is IN the entry.
-    path = tmp / "ok.jsonl"
+    # …and the ONE freedom the grammar does allow is CASE, so a driver that SHOUTS its verdict is obeying
+    # the same grammar rather than a wider one. Pinned here because the refusals above would otherwise be
+    # satisfied by a parser that demanded an exact-case token too.
+    for verdict in VERDICTS:
+        shouted = f"{verdict.upper()}{VERDICT_SEP} why"
+        check(verdict_of(shouted) == verdict,
+              f"`verdict_of` reads no verdict out of {shouted!r} — the token is matched case-insensitively")
+
+    # 1b. …and each edge refuses the OTHER verdict. The verdict picks the edge; the driver does not.
+    for act, verdict in ACT_EDGE_VERDICT.items():
+        for other in VERDICTS:
+            path = tmp / f"verdict-{act}-{other}.jsonl"
+            (fid,) = seed(path)
+            run(["--file", str(path), "corroborate", "--id", fid, "--finding", "reproduced"])
+            argv = [a for f in ACT_FLAGS
+                    for a in (FLAG[f], f"{other}{VERDICT_SEP} why" if f == VERDICT_FIELD
+                              else legal_value(act, f, "x"))]
+            code, out, err = run(["--file", str(path), act, "--id", fid, *argv])
+            if other == verdict:
+                check(code == 0, f"`{act}` refused its OWN verdict {other!r} (exit {code}): {err!r}")
+                check(state_of(path, fid) == TRANSITIONS[act][1],
+                      f"`{act}` did not reach {TRANSITIONS[act][1]!r} on its own verdict")
+            else:
+                check(code == 1,
+                      f"`{act}` ACCEPTED the verdict {other!r} it is not the edge for (exit {code}) — an "
+                      f"{IRREVERSIBLE} change reached {TRANSITIONS[act][1]!r} with no user ruling:\n{out}")
+                check(state_of(path, fid) == "corroborated", f"a refused `{act}` moved the state anyway")
+
+    # 2. THE GRAPH. From `held` no driver-only path reaches a PR at all — derived from `open-pr`, so
+    #    moving that edge cannot quietly move the guarantee.
+    held = TRANSITIONS[HOLD_CMD][1]
+    pr_states = {TRANSITIONS["open-pr"][1]} | set(TRANSITIONS["open-pr"][0])
+    reach = closure((held,), DRIVER_STEPS)
+    check(not (reach & pr_states),
+          f"a driver with NO user ruling reaches {sorted(reach & pr_states)!r} from {held!r} — an "
+          f"IRREVERSIBLE change does not WAIT (reachable: {sorted(reach)})")
+    check(held not in TERMINAL,
+          f"{held!r} is TERMINAL — an irreversible follow-up would wait forever, with no ruling able to "
+          f"release it")
+
+    # …and end to end: the PR door is shut, and the USER's ruling is what opens it.
+    path = tmp / "route.jsonl"
     (fid,) = seed(path)
-    run(["--file", str(path), "corroborate", "--id", fid, "--finding", "reproduced at followups.py:1"])
-    code, _, err = run(["--file", str(path), ACT_CMD, "--id", fid, *transition_args(ACT_CMD)])
-    check(code == 0, f"`{ACT_CMD}` exited {code} with every condition evidenced: {err!r}")
-    entry = json.loads(run(["--file", str(path), "get", "--id", fid])[1])
-    check(entry["state"] == TRANSITIONS[ACT_CMD][1], f"`{ACT_CMD}` did not reach its state: {entry!r}")
-    for witness in ACT_WITNESSES:
-        check(not is_blank(entry[witness]),
-              f"the entry was taken up with NO evidence for the condition witnessed by {witness!r}: "
-              f"{entry!r}")
+    run(["--file", str(path), "corroborate", "--id", fid, "--finding", "reproduced"])
+    code, _, err = run(["--file", str(path), HOLD_CMD, "--id", fid, *transition_args(HOLD_CMD)])
+    check(code == 0, f"`{HOLD_CMD}` exited {code} with every condition evidenced: {err!r}")
+    code, out, err = run(["--file", str(path), "open-pr", "--id", fid, "--pr", "#1"])
+    check(code == 1, f"`open-pr` was ACCEPTED on a {held!r} follow-up (exit {code}):\n{out}")
+    check(state_of(path, fid) == held, "a refused `open-pr` moved the held entry anyway")
+    check(run(["--file", str(path), "accept", "--id", fid])[0] == 0,
+          f"the USER cannot `accept` a {held!r} follow-up — the wait would never end")
+    code, _, err = run(["--file", str(path), "open-pr", "--id", fid, "--pr", "#1"])
+    check(code == 0, f"`open-pr` was refused AFTER the user ruled (exit {code}): {err!r}")
+
+    # AND THE STORE THAT ALREADY EXISTS STILL OPENS. Entries written under the old contract carry FREE
+    # PROSE in this witness, and nothing can rebuild a lost follow-up — so the verdict is enforced at the
+    # WRITE DOOR only. A row that predates it loads, reads back VERBATIM, and survives the next write.
+    legacy = "NO — this is NOT reversible; a revert CANNOT restore the prior state"
+    path = tmp / "legacy.jsonl"
+    write_lines(path, entry_line(id="fu1", state=TRANSITIONS[ACT_CMD][1], **{VERDICT_FIELD: legacy}))
+    code, out, err = run(["--file", str(path), "get", "--id", "fu1", "--field", VERDICT_FIELD])
+    check((code, out.strip()) == (0, legacy),
+          f"a follow-up written under the OLD contract no longer reads back (exit {code}): {out!r} {err!r}")
+    check(run(["--file", str(path), *add_argv()])[0] == 0,
+          "a store holding a pre-verdict follow-up can no longer be written to")
+    code, out, _ = run(["--file", str(path), "get", "--id", "fu1", "--field", VERDICT_FIELD])
+    check((code, out.strip()) == (0, legacy),
+          f"the next write REWROTE a pre-verdict witness: {out!r} — the ACT grounds are what made that "
+          f"self-acceptance legal, and nothing may edit them after the fact")
 
 
 def t_self_accepted_is_never_mistaken_for_accepted(tmp: Path) -> None:
@@ -1062,6 +1233,13 @@ def t_the_doc_and_the_code_agree(tmp: Path) -> None:
               f"driver is refused a step it was never told the rule for")
     check(ACT_CMD in text, f"`{ACT_CMD}` — the autonomous edge itself — is not documented in {doc.name}")
 
+    # …and the VERDICT the driver has to type is documented in the FORM the code demands. A condition the
+    # code refuses in a spelling the doc never shows is one the driver cannot obey on the first try.
+    for verdict in VERDICTS:
+        check(f"{verdict}{VERDICT_SEP}" in text,
+              f"the store refuses {FLAG[VERDICT_FIELD]} unless it leads with "
+              f"'{verdict}{VERDICT_SEP}', and {doc.name} never shows that form")
+
     # …and EVERY step is named there, not just the ACT one. Derived from TRANSITIONS: an edge added to the
     # graph — a deleting one above all — that the driver is never told about is an edge it never takes, and
     # the entry it should have ended sits in the queue forever.
@@ -1069,6 +1247,141 @@ def t_the_doc_and_the_code_agree(tmp: Path) -> None:
         check(cmd in text,
               f"`{cmd}` is a step the store enforces and {doc.name} never names — the driver cannot take a "
               f"step it has not been told exists")
+
+
+def t_every_reporting_step_owes_both_act_edges(tmp: Path) -> None:
+    """EVERY REPORTING STEP THAT OWES THE ACT DISCLOSURE OWES IT FOR **BOTH** ACT EDGES.
+
+    `followups.md`, "Surfacing them", owns which entries owe this disclosure — an entry the driver
+    DISPOSED OF ON ITS OWN, by either ACT edge — and it names the reporting steps that owe it. Those
+    steps live in OTHER files, so the definition is restated at each of them, which is the exact shape
+    this repo keeps being bitten by: the owner moved to cover `hold`, and a restatement that still said
+    "every entry this run took up" silently dropped the `held` entry — the one entry that carries a
+    QUESTION for the user, whose ruling is the only thing that ever moves it. The user is then never
+    asked, and the entry waits forever.
+
+    So the agreement is EXECUTED rather than trusted, on two axes:
+
+      1. Each site describes the owed set in the OWNER'S WORDS. A paraphrase is what drifts, and it
+         drifts silently because it shares no string with the rule it summarises.
+      2. Each site names the state the WAITING edge lands in — derived from the graph, so a renamed or
+         added waiting state pins every reporting step the day it lands.
+    """
+    references = Path(__file__).resolve().parent.parent / "references"
+    owner = references / "followups.md"
+    # The reporting steps `followups.md`, "Surfacing them", names — checked below to be the ones it still
+    # names, so a step that moves cannot leave this list pointing at a file that no longer owes anything.
+    reporting_steps = {
+        "bailout-and-final-report.md": references / "bailout-and-final-report.md",
+        "address-followups": (references.parent.parent / "address-followups" / "SKILL.md"),
+    }
+    # The owner's own name for the owed set. Every site must use it rather than restate the membership.
+    owed_set = "disposed of on its own"
+    waiting = TRANSITIONS[HOLD_CMD][1]
+
+    owner_text = owner.read_text(encoding="utf-8")
+    owning = doc_block(owner_text, "reporting steps")
+    check(owed_set in owning.lower(),
+          f"{owner.name} no longer names the owed set {owed_set!r} — every restatement below is checked "
+          f"against the owner's words, so the owner must still be the one saying them")
+    check(waiting in owning,
+          f"{owner.name} defines the disclosure without naming {waiting!r}, the state the WAITING ACT "
+          f"edge lands in — the entry that carries the user's question would owe nothing")
+    for name, path in reporting_steps.items():
+        check(name in owning,
+              f"{owner.name} no longer names {name} as a reporting step that owes the ACT disclosure — "
+              f"this fixture is checking a file the owner stopped pointing at")
+        check(path.exists(), f"the reporting step {name} is missing entirely: {path}")
+        # The site's own restatement: the block that points back at the owner.
+        site = doc_block(path.read_text(encoding="utf-8"), '"Surfacing them"')
+        check(owed_set in site.lower(),
+              f"{path.name} restates the owed set in its OWN words instead of the owner's "
+              f"({owed_set!r}) — a paraphrase is what silently goes stale:\n{site}")
+        check(waiting in site,
+              f"{path.name} owes the ACT disclosure and never names {waiting!r} — a {waiting!r} entry is "
+              f"disclosed nowhere, so the user is never asked for the ruling that is the only thing that "
+              f"moves it:\n{site}")
+
+
+def t_a_held_entry_is_surfaced_on_a_later_invocation(tmp: Path) -> None:
+    """A `held` ENTRY IS SURFACED BY THE INVOCATION THAT **FINDS** IT, NOT ONLY BY THE ONE THAT HELD IT.
+
+    `hold` persists, so the entry outlives the invocation that recorded it. Every later invocation of
+    `address-followups` therefore opens on a store where that entry is ALREADY `held` — and that is the
+    only way an entry can be `held` while the work list is being built, because the skill's own `hold`
+    happens later, at its ACT step. The later invocation is the ordinary case, not an edge one.
+
+    What that costs, reproduced below on this store: once `hold` has run, the entry answers to no state
+    query but its own. A work list built from the RESUMABLE states cannot contain it, so no step touches
+    it, so a report of "the entries this invocation touched" reaches it — and its ACT disclosure and the
+    user's question with it — never. The user is then not asked for the one ruling that moves it.
+
+    Both halves are executed:
+
+      1. THE STORE, over EVERY state in the graph: only the `held` query returns it, the ACT witnesses
+         the `hold` edge wrote are all still there (so there IS a disclosure to make), and the default
+         table carries none of them (so an enumeration and a `get` are the only way to it).
+      2. THE PROCEDURE: `address-followups` runs that enumeration with the real command, NAMES the list
+         it builds, and its ACT-disclosure block consumes that same list by name. A reporting step that
+         covers only what this invocation disposed of goes red here.
+    """
+    held = TRANSITIONS[HOLD_CMD][1]
+
+    # 1. THE STORE. Drive one entry to `held`, exactly as an EARLIER invocation's Step 4 would leave it.
+    path = tmp / "later-invocation.jsonl"
+    (fid,) = seed(path)
+    run(["--file", str(path), "corroborate", "--id", fid, "--finding", "reproduced"])
+    code, _, err = run(["--file", str(path), HOLD_CMD, "--id", fid, *transition_args(HOLD_CMD)])
+    check(code == 0, f"`{HOLD_CMD}` exited {code} with every condition evidenced: {err!r}")
+
+    # Every state the graph has — so the day a state is added, this fixture asks about it too. Only the
+    # one the WAITING edge lands in returns the entry; a work list built from any other set misses it.
+    for state in STATES:
+        code, out, err = run(["--file", str(path), "list", "--where", f"state={state}"])
+        check(code == 0, f"`list --where state={state}` exited {code}: {err!r}")
+        found = out.split()
+        check(found == ([fid] if state == held else []),
+              f"`list --where state={state}` printed {found!r} for an entry sitting in {held!r} — the "
+              f"enumeration a later invocation depends on disagrees with the state the entry is in")
+
+    # …and there IS something to disclose: the evidence outlives the invocation that recorded it.
+    entry = json.loads(run(["--file", str(path), "get", "--id", fid])[1])
+    check(entry["state"] == held, f"the entry did not settle in {held!r}: {entry!r}")
+    for witness in ACT_WITNESSES:
+        check(not is_blank(entry[witness]),
+              f"a {held!r} entry a LATER invocation owes a disclosure for carries no evidence for the "
+              f"condition witnessed by {witness!r}: {entry!r} — there would be nothing to report")
+
+    # …and the table is not that disclosure. Derived from the default field set, so a field promoted into
+    # the table tomorrow retires this check honestly instead of leaving it asserting a stale shape.
+    check(not (set(ACT_FLAGS) & set(TABLE_DEFAULT_FIELDS)),
+          f"an ACT witness is in the table's default fields {TABLE_DEFAULT_FIELDS!r} — this fixture's "
+          f"premise, that the ACT evidence is reachable only by enumerating and FETCHING, no longer holds")
+
+    # 2. THE PROCEDURE. The skill that runs on a store like the one above.
+    skill = Path(__file__).resolve().parent.parent.parent / "address-followups" / "SKILL.md"
+    check(skill.exists(), f"the on-demand follow-up skill is missing entirely: {skill}")
+    text = skill.read_text(encoding="utf-8")
+
+    enumeration = f"list --where state={held}"
+    check(enumeration in text,
+          f"{skill.name} never runs `{enumeration}`. Part 1 above shows no other state query returns a "
+          f"{held!r} entry, so one an EARLIER invocation held is enumerated nowhere, touched by no step, "
+          f"and reported by nothing")
+
+    # The list that enumeration builds is named ONCE and consumed BY THAT NAME, which is what carries an
+    # untouched entry from the selection step to the report. Rename it in one place and this goes red.
+    listed = "surfacing list"
+    at = text.index(enumeration)
+    named = text.find(listed)
+    check(named > at,
+          f"{skill.name} enumerates {held!r} entries without naming the resulting list after it — its "
+          f"reporting step has nothing to carry an untouched entry in")
+    reporting = doc_block(text, '"Surfacing them"')
+    check(listed in reporting,
+          f"{skill.name}'s ACT-disclosure block never names the {listed!r} its selection step builds, so "
+          f"the disclosure reaches only entries THIS invocation disposed of and a {held!r} entry from an "
+          f"earlier one is disclosed nowhere:\n{reporting}")
 
 
 def t_ids_are_assigned_and_never_reused(tmp: Path) -> None:
@@ -1508,9 +1821,12 @@ CASES = [
     ("closed-pr-reopens", "a PR closed WITHOUT merging returns the entry to open work — it never vanishes with it", t_a_closed_pr_returns_the_entry_to_open_work),
     ("ruling-waits-for-the-pr", "a USER RULING is ordered AFTER the PR's disposition — it can never strand the open PR the entry names", t_a_ruling_waits_for_the_prs_disposition),
     ("rejection-kept", "a REJECTED follow-up is kept — deleting it is how the next run re-raises it", t_a_rejection_is_never_deleted),
-    ("act-needs-conditions", "the autonomous ACT edge must EVIDENCE every condition, or it is refused", t_act_edge_needs_every_condition),
+    ("act-needs-conditions", "every autonomous ACT edge must EVIDENCE every condition, or it is refused", t_act_edge_needs_every_condition),
+    ("irreversible-waits", "an IRREVERSIBLE change reaches no PR without the user — the verdict picks the edge, and `held` has no way out but a ruling", t_the_irreversible_change_waits),
     ("self-accept-distinct", "a DRIVER-accepted follow-up is never mistaken for a USER-accepted one", t_self_accepted_is_never_mistaken_for_accepted),
     ("doc-and-code-agree", "the ACT conditions the driver READS are the ones the code ENFORCES", t_the_doc_and_the_code_agree),
+    ("reporting-covers-both-acts", "every reporting step that owes the ACT disclosure owes it for BOTH ACT edges — the `held` entry's question included", t_every_reporting_step_owes_both_act_edges),
+    ("held-survives-the-invocation", "a `held` entry is enumerated and disclosed by a LATER invocation — no state query but its own returns it", t_a_held_entry_is_surfaced_on_a_later_invocation),
     ("pr-reference-parser", "open-pr canonicalises recognised PR references and preserves opaque text", t_pr_references_keep_legacy_bare_numbers_and_github_urls),
     ("investigation-evidence", "an investigation shows its work; the finding APPENDS and never clobbers", t_investigation_shows_its_work),
     ("refutation-stays", "a refuted follow-up stays in the store, stays visible, and stays overturnable", t_refutation_stays_in_the_store),

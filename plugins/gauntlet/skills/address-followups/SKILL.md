@@ -172,12 +172,30 @@ Work the resumable entries in this order, which is this file's own rule:
    that costs one reconcile and closes the largest hole; starting new work while it is open widens it.
 2. `accepted`, then `self-accepted`, then `reopened` — the decision is already made and only the PR is
    missing.
-3. `corroborated` — investigated already, so it resumes at the take-up decision, **not** at another
+3. `corroborated` — investigated already, so it resumes at the ACT decision, **not** at another
    investigation.
 4. `candidate` — the only state that starts with an investigation.
 
 `refuted` is **not** picked up. It is re-investigated only when new evidence may overturn it, and an
 invocation of this skill supplies none. `rejected` is the user's terminal ruling and is never resumed.
+`held` is **not** picked up either: its ACT decision is already recorded and it is waiting on the user, so
+it is **surfaced in Step 6 with its question** and never re-decided here. The store enforces that rather
+than trusting it — no edge from `held` opens a PR.
+
+Surfacing one takes an enumeration of its own, because the work list above can never contain it. Run the
+same command for the state it is in:
+
+```text
+python3 <abs>/followups.py --file <abs-store> list --where state=held
+```
+
+Carry the ids it prints as the **surfacing list** — a second list, never worked, never dispatched — and
+fetch each entry with `python3 <abs>/followups.py --file <abs-store> get --id fuN`, which prints the
+fields the `hold` edge wrote. Every entry on it is one **no step of this invocation touches**: at Step 1
+the only way an entry can already be `held` is that an EARLIER invocation held it, since this
+invocation's own `hold` happens later, at Step 4. Step 6 reports the surfacing list whether or not Step 4
+ran at all, and an empty list is reported as none. `--limit` does not cap it — that flag caps the work
+list — and `--id fuN` reduces it to that one entry when that entry is the `held` one.
 
 At most one of `--id` and `--limit` can have reached this step — the Args block above owns which
 invocations are legal. Apply whichever one was given **after** ordering, and **say what was left unworked
@@ -197,8 +215,7 @@ entered the work list is a different case and is reported regardless.
 shorthand, expanded by `../campaign/SKILL.md`, "Bundled Scripts".** Pasted verbatim into a shell,
 `list --where id=fu1` and `get --id fu1 --field state` were each observed to exit 127 with `command not
 found`. Both full forms are written out in this file: `list` in the synopsis block at the head of this
-step, and `get` in the entry-fetch line of the INVESTIGATE step's prompt list. Re-run either paste to
-falsify this.
+step, and `get` in the surfacing-list paragraph just above. Re-run either paste to falsify this.
 
 ## Step 2 — reconcile every `in-pr` entry against its live PR
 
@@ -258,17 +275,20 @@ that was never real (`AGENTS.md`/`CLAUDE.md`, "Your OWN diagnosis is a claim too
 **Only a `corroborated` entry reaches this step.** The other states arriving at Step 5 already carry a
 decision, and re-deciding one would overwrite a ruling that was already made.
 
-`followups.md`, "THE AUTONOMY THRESHOLD", owns the conditions and what each one does; `followups.py
-take-up` refuses the step when any is asserted without evidence. **Read them there and evidence each
-one.** This file does not restate which conditions route and which one waits.
+`followups.md`, "THE AUTONOMY THRESHOLD", owns the conditions and what each one does; the ACT edges refuse
+the step when any is asserted without evidence, and refuse a verdict they are not the edge for. **Read
+them there and evidence each one.** This file does not restate which conditions route and which one waits,
+nor the form the verdict takes.
 
 **A corroborated entry is worked, not surfaced instead of worked.** The default outcome of this step is
 `take-up` followed by Step 5, and the report says what the fixer is doing. The one class the threshold
 holds back waits for the user's ruling and is named in Step 6 with its question.
 
 - The threshold permits acting → `take-up`, then Step 5.
-- The threshold holds this entry back → record the question for Step 6 and move to the next entry. Do
-  not leave it silently undone, and do not re-decide it on a later invocation without new evidence.
+- The threshold holds this entry back → **`hold`**, which records the same evidence and leaves the entry
+  in `held`; then record the question for Step 6 and move to the next entry. Do not leave it silently
+  undone, and do not re-decide it on a later invocation without new evidence. **Do not attempt Step 5 for
+  it** — no edge from `held` opens a PR, so the store refuses that rather than relying on this line.
 - **NEVER run `accept`.** It is the user's edge and the only way into `accepted`.
 - **NEVER run `publish`.** There is no autonomous path to it, from any state.
 
@@ -333,18 +353,26 @@ Report **before** Step 7, because Step 7 ends this skill and anything unsaid is 
 entry touched, give its id, its title, and its outcome: reconciled, corroborated, refuted, taken up with
 its PR, or surfaced for a ruling.
 
+**Step 1's surfacing list is reported here too, and NOT ONE of its entries was touched.** Every step
+between Step 1 and here skips a `held` entry by design, so "every entry touched" reaches none of them and
+this is the only line that does. Give each the same id, title, and outcome — surfaced for a ruling — from
+what Step 1 fetched.
+
 **A taken-up entry carries its ACT disclosure in that outcome, never in the question bullet below** — an
 entry the threshold **routes** is disclosed and dispatched, so it raises **no question** for that bullet
 to hold, and "taken up with its PR" on its own reads exactly like an entry every condition held for. What
 that disclosure must say is `followups.md`, "Surfacing them" — stated once there, for this step and
 campaign's final report, the only two reporting steps that owe it. Report it from there for **every** entry
-Step 4 took up; do not reconstruct it from this step.
+disposed of on its own, **whichever invocation disposed of it** — the ones Step 4 took up, the ones Step 4
+held, and every entry on Step 1's surfacing list, which an earlier invocation held in exactly the same
+way; do not reconstruct it from this step.
 
 Then:
 
 - list every entry left unworked and why (`--limit`, an unresumable state, a dispatch that failed, a
   command that refused and which one, a PR another run owns);
-- list every question a user must answer, each with the entry it belongs to;
+- list every question a user must answer, each with the entry it belongs to — the surfacing list's
+  entries included, each of whose question is the ruling its `held` state is waiting on;
 - print in full the output of every deleting step this invocation ran;
 - name the PRs about to be handed to campaign.
 
