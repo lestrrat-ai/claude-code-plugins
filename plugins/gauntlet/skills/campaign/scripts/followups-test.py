@@ -176,6 +176,25 @@ def state_of(path: Path, fid: str) -> str:
     return out.strip()
 
 
+def doc_block(text: str, needle: str) -> str:
+    """The smallest block of an agent-read document holding `needle` — bounded by a blank line or the next
+    top-level bullet.
+
+    Shared by every fixture that checks a RESTATEMENT: a whole-file search would pass on a rule stated in
+    some unrelated section, and the point of those fixtures is that the SITE which restates the rule is
+    the one that has to be right.
+    """
+    lines = text.splitlines()
+    i = next((n for n, line in enumerate(lines) if needle in line), -1)
+    check(i >= 0, f"{needle!r} appears nowhere — the pointer to the owner is gone")
+    start, end = i, i + 1
+    while start > 0 and not lines[start].startswith("- ") and lines[start - 1].strip():
+        start -= 1
+    while end < len(lines) and lines[end].strip() and not lines[end].startswith("- "):
+        end += 1
+    return "\n".join(lines[start:end])
+
+
 def closure(start: "tuple[str, ...]", cmds: "tuple[str, ...]") -> "set[str]":
     """Every STATE reachable from `start` using ONLY the named transitions. A fixpoint over the graph.
 
@@ -1260,20 +1279,8 @@ def t_every_reporting_step_owes_both_act_edges(tmp: Path) -> None:
     owed_set = "disposed of on its own"
     waiting = TRANSITIONS[HOLD_CMD][1]
 
-    def block(text: str, needle: str) -> str:
-        """The smallest block holding `needle` — bounded by a blank line or the next top-level bullet."""
-        lines = text.splitlines()
-        i = next((n for n, line in enumerate(lines) if needle in line), -1)
-        check(i >= 0, f"{needle!r} appears nowhere — the pointer to the owner is gone")
-        start, end = i, i + 1
-        while start > 0 and not lines[start].startswith("- ") and lines[start - 1].strip():
-            start -= 1
-        while end < len(lines) and lines[end].strip() and not lines[end].startswith("- "):
-            end += 1
-        return "\n".join(lines[start:end])
-
     owner_text = owner.read_text(encoding="utf-8")
-    owning = block(owner_text, "reporting steps")
+    owning = doc_block(owner_text, "reporting steps")
     check(owed_set in owning.lower(),
           f"{owner.name} no longer names the owed set {owed_set!r} — every restatement below is checked "
           f"against the owner's words, so the owner must still be the one saying them")
@@ -1286,7 +1293,7 @@ def t_every_reporting_step_owes_both_act_edges(tmp: Path) -> None:
               f"this fixture is checking a file the owner stopped pointing at")
         check(path.exists(), f"the reporting step {name} is missing entirely: {path}")
         # The site's own restatement: the block that points back at the owner.
-        site = block(path.read_text(encoding="utf-8"), '"Surfacing them"')
+        site = doc_block(path.read_text(encoding="utf-8"), '"Surfacing them"')
         check(owed_set in site.lower(),
               f"{path.name} restates the owed set in its OWN words instead of the owner's "
               f"({owed_set!r}) — a paraphrase is what silently goes stale:\n{site}")
@@ -1294,6 +1301,87 @@ def t_every_reporting_step_owes_both_act_edges(tmp: Path) -> None:
               f"{path.name} owes the ACT disclosure and never names {waiting!r} — a {waiting!r} entry is "
               f"disclosed nowhere, so the user is never asked for the ruling that is the only thing that "
               f"moves it:\n{site}")
+
+
+def t_a_held_entry_is_surfaced_on_a_later_invocation(tmp: Path) -> None:
+    """A `held` ENTRY IS SURFACED BY THE INVOCATION THAT **FINDS** IT, NOT ONLY BY THE ONE THAT HELD IT.
+
+    `hold` persists, so the entry outlives the invocation that recorded it. Every later invocation of
+    `address-followups` therefore opens on a store where that entry is ALREADY `held` — and that is the
+    only way an entry can be `held` while the work list is being built, because the skill's own `hold`
+    happens later, at its ACT step. The later invocation is the ordinary case, not an edge one.
+
+    What that costs, reproduced below on this store: once `hold` has run, the entry answers to no state
+    query but its own. A work list built from the RESUMABLE states cannot contain it, so no step touches
+    it, so a report of "the entries this invocation touched" reaches it — and its ACT disclosure and the
+    user's question with it — never. The user is then not asked for the one ruling that moves it.
+
+    Both halves are executed:
+
+      1. THE STORE, over EVERY state in the graph: only the `held` query returns it, the ACT witnesses
+         the `hold` edge wrote are all still there (so there IS a disclosure to make), and the default
+         table carries none of them (so an enumeration and a `get` are the only way to it).
+      2. THE PROCEDURE: `address-followups` runs that enumeration with the real command, NAMES the list
+         it builds, and its ACT-disclosure block consumes that same list by name. A reporting step that
+         covers only what this invocation disposed of goes red here.
+    """
+    held = TRANSITIONS[HOLD_CMD][1]
+
+    # 1. THE STORE. Drive one entry to `held`, exactly as an EARLIER invocation's Step 4 would leave it.
+    path = tmp / "later-invocation.jsonl"
+    (fid,) = seed(path)
+    run(["--file", str(path), "corroborate", "--id", fid, "--finding", "reproduced"])
+    code, _, err = run(["--file", str(path), HOLD_CMD, "--id", fid, *transition_args(HOLD_CMD)])
+    check(code == 0, f"`{HOLD_CMD}` exited {code} with every condition evidenced: {err!r}")
+
+    # Every state the graph has — so the day a state is added, this fixture asks about it too. Only the
+    # one the WAITING edge lands in returns the entry; a work list built from any other set misses it.
+    for state in STATES:
+        code, out, err = run(["--file", str(path), "list", "--where", f"state={state}"])
+        check(code == 0, f"`list --where state={state}` exited {code}: {err!r}")
+        found = out.split()
+        check(found == ([fid] if state == held else []),
+              f"`list --where state={state}` printed {found!r} for an entry sitting in {held!r} — the "
+              f"enumeration a later invocation depends on disagrees with the state the entry is in")
+
+    # …and there IS something to disclose: the evidence outlives the invocation that recorded it.
+    entry = json.loads(run(["--file", str(path), "get", "--id", fid])[1])
+    check(entry["state"] == held, f"the entry did not settle in {held!r}: {entry!r}")
+    for witness in ACT_WITNESSES:
+        check(not is_blank(entry[witness]),
+              f"a {held!r} entry a LATER invocation owes a disclosure for carries no evidence for the "
+              f"condition witnessed by {witness!r}: {entry!r} — there would be nothing to report")
+
+    # …and the table is not that disclosure. Derived from the default field set, so a field promoted into
+    # the table tomorrow retires this check honestly instead of leaving it asserting a stale shape.
+    check(not (set(ACT_FLAGS) & set(TABLE_DEFAULT_FIELDS)),
+          f"an ACT witness is in the table's default fields {TABLE_DEFAULT_FIELDS!r} — this fixture's "
+          f"premise, that the ACT evidence is reachable only by enumerating and FETCHING, no longer holds")
+
+    # 2. THE PROCEDURE. The skill that runs on a store like the one above.
+    skill = Path(__file__).resolve().parent.parent.parent / "address-followups" / "SKILL.md"
+    check(skill.exists(), f"the on-demand follow-up skill is missing entirely: {skill}")
+    text = skill.read_text(encoding="utf-8")
+
+    enumeration = f"list --where state={held}"
+    check(enumeration in text,
+          f"{skill.name} never runs `{enumeration}`. Part 1 above shows no other state query returns a "
+          f"{held!r} entry, so one an EARLIER invocation held is enumerated nowhere, touched by no step, "
+          f"and reported by nothing")
+
+    # The list that enumeration builds is named ONCE and consumed BY THAT NAME, which is what carries an
+    # untouched entry from the selection step to the report. Rename it in one place and this goes red.
+    listed = "surfacing list"
+    at = text.index(enumeration)
+    named = text.find(listed)
+    check(named > at,
+          f"{skill.name} enumerates {held!r} entries without naming the resulting list after it — its "
+          f"reporting step has nothing to carry an untouched entry in")
+    reporting = doc_block(text, '"Surfacing them"')
+    check(listed in reporting,
+          f"{skill.name}'s ACT-disclosure block never names the {listed!r} its selection step builds, so "
+          f"the disclosure reaches only entries THIS invocation disposed of and a {held!r} entry from an "
+          f"earlier one is disclosed nowhere:\n{reporting}")
 
 
 def t_ids_are_assigned_and_never_reused(tmp: Path) -> None:
@@ -1738,6 +1826,7 @@ CASES = [
     ("self-accept-distinct", "a DRIVER-accepted follow-up is never mistaken for a USER-accepted one", t_self_accepted_is_never_mistaken_for_accepted),
     ("doc-and-code-agree", "the ACT conditions the driver READS are the ones the code ENFORCES", t_the_doc_and_the_code_agree),
     ("reporting-covers-both-acts", "every reporting step that owes the ACT disclosure owes it for BOTH ACT edges — the `held` entry's question included", t_every_reporting_step_owes_both_act_edges),
+    ("held-survives-the-invocation", "a `held` entry is enumerated and disclosed by a LATER invocation — no state query but its own returns it", t_a_held_entry_is_surfaced_on_a_later_invocation),
     ("pr-reference-parser", "open-pr canonicalises recognised PR references and preserves opaque text", t_pr_references_keep_legacy_bare_numbers_and_github_urls),
     ("investigation-evidence", "an investigation shows its work; the finding APPENDS and never clobbers", t_investigation_shows_its_work),
     ("refutation-stays", "a refuted follow-up stays in the store, stays visible, and stays overturnable", t_refutation_stays_in_the_store),

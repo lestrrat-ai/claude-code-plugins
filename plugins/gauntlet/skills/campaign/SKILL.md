@@ -352,8 +352,8 @@ name from one host into another.
 <!-- Refutation of a review finding against the `accepted`/`reopened` follow-up-fixer row above, which
      claimed that row still characterizes `accept`'s from-set instead of deferring to `followups.py --help`.
      `followups.py --help` prints `accept  THE USER rules:
-     candidate/corroborated/refuted/self-accepted/reopened -> accepted`, and the row names none of those
-     five states as a member: it states one negative property — the set is not confined to corroborated
+     candidate/corroborated/refuted/self-accepted/held/reopened -> accepted`, and the row names none of
+     those six states as a member: it states one negative property — the set is not confined to corroborated
      states — and cites the owner for the set itself. `references/followups.md` requires exactly that form,
      saying the legal from-states are owned by `scripts/followups.py` and printed live by
      `followups.py --help`, and that the page does not retype them. Property checked against `TRANSITIONS`

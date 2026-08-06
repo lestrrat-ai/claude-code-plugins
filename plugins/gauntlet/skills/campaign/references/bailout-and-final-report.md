@@ -209,15 +209,17 @@ When the loop exits, summarize:
   that surfacing is never a substitute for that (`followups.md`, "Surfacing them"). A defect a bailout
   exposed and this run will not fix is recorded in the store **before** the report is written, not
   announced only in it — a follow-up that exists only in this report dies with it.
-  **The table is not the whole of this bullet: every entry this run DISPOSED OF ON ITS OWN — by either
-  ACT edge — also owes its ACT disclosure here.** It is owed in this bullet rather than under the ASK
-  above because that ASK belongs to a `candidate`, a claim nobody has investigated yet, while these the
-  run investigated and decided. **The one class the threshold makes WAIT was disposed of too, and the
-  question it raises is asked HERE**, beside that entry's own disclosure and its `held` row in the table:
-  no other part of this report asks it, and the user's ruling is the only thing that ever moves that entry
-  (`followups.md`, "WORKING A FOLLOW-UP"). Which entries owe the disclosure, what it must say, and which
-  of them carries that question are all `followups.md`, "Surfacing them" — report them from there; do not
-  reconstruct them from this bullet.
+  **The table is not the whole of this bullet: every entry DISPOSED OF ON ITS OWN — by either ACT edge —
+  also owes its ACT disclosure here.** It is owed in this bullet rather than under the ASK above because
+  that ASK belongs to a `candidate`, a claim nobody has investigated yet, while these a run investigated
+  and decided. **The one class the threshold makes WAIT was disposed of too, and the question it raises
+  is asked HERE**, beside that entry's own disclosure and its `held` row in the table: no other part of
+  this report asks it, and the user's ruling is the only thing that ever moves that entry
+  (`followups.md`, "WORKING A FOLLOW-UP"). **That is why this bullet is not scoped to what THIS run did**:
+  a `held` entry an earlier run left behind is still open, still in the table, and still waiting on a
+  ruling nobody has been asked for, so it owes the same disclosure and the same question here. Which
+  entries owe the disclosure, what it must say, and which of them carries that question are all
+  `followups.md`, "Surfacing them" — report them from there; do not reconstruct them from this bullet.
 - Any worktrees left for inspection.
 
 This run's durable carryover file (`.gauntlet/history/<run-id>.md`) is written on exit by
