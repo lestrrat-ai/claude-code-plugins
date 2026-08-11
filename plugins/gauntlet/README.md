@@ -68,9 +68,12 @@ native-limitation level whenever the paired CLI is present — engine diversity 
 
 You can override the default: name a reviewer when you invoke the campaign (including a native worker), or
 record a preference in the orchestrator's own trusted state — never in the checkout under review
-(`skills/campaign/references/reviewer.md`, "Selecting the reviewer", owns which sources count). If the paired CLI is absent, or a cross-engine
-reviewer can't return a verdict because of a system problem (quota, auth, timeout), the pipeline retries
-once and then falls back to a fresh native worker. The existing Codex retry uses repository-maintenance
+(`skills/campaign/references/reviewer.md`, "Selecting the reviewer", owns which sources count). The
+pipeline falls back to a fresh native worker only when the cross-engine reviewer is genuinely unusable:
+the paired CLI is absent, the engine itself can't produce a verdict (quota or usage limits, auth, a
+process that won't run), or retries of a transient failure (a timeout, a bad report, a launch fault) ran
+out. A reviewer that refuses to review the content parks the PR for you instead of downgrading the
+review. The existing Codex retry uses repository-maintenance
 framing with the same full review contract and process command; it does not resume the failed session or
 switch models. Campaign therefore runs with or without the other engine.
 The cross-engine and native routes both keep fresh conversational context and disclose the host's

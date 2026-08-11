@@ -544,8 +544,11 @@ rules keep their own wording; these are illustrations of them, not a second copy
      transport-failure`, then run `review-dispatch.py allocation-status`. Read its durable history through
      `runtime-adapter.md`, **Review allocation journal**, to choose the due allocation purpose: when the
      final allocation remains reserved and due, prepare the next monotonic attempt with
-     `--allocation-purpose final`; otherwise prepare the due `initial` or `recovery` allocation. Then take
-     the route/profile branch in **Review preparation mapping**. `review-dispatch.py prepare` creates
+     `--allocation-purpose final`; otherwise prepare the due `initial` or `recovery` allocation. Then
+     classify the failure through `reviewer.md`, "External failure classes" — a reviewer that never
+     started is `transient`, so the same route is relaunched rather than downgraded — take the
+     `review_transition` that class selects, and follow its route/profile branch in
+     **Review preparation mapping**. `review-dispatch.py prepare` creates
      coherent attempt-scoped artifacts, never the dead attempt's files, which a surviving process could
      still write to. A failed launch yields no verdict: it never touches `reviews_ok` and never bumps the
      row's `attempts`;

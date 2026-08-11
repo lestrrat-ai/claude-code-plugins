@@ -740,12 +740,25 @@ def check_document_contract() -> None:
         # nothing, and a capture beside the door would be a second writer on one artifact.
         "The captured final-output channel is authoritative for NOTHING",
         "ReviewIsolationCapability",
-        "external_retry_spent: Bool",
+        'external_failure_class: "unusable-engine" | "content-refusal" | "transient" | null',
+        "external_retry_available: Bool",
         'event: "selected" | "external-system-failure" | "native-system-failure"',
         "current Claude Code and Codex adapters",
         "launch_mechanism_present",
         "Their absence NEVER blocks launch",
         "selected cross-engine route, paired CLI available | `launch-external`",
+        # The narrowed fallback: only these three failure inputs (plus the absent CLI above) reach
+        # `fallback-native`, and a content refusal reaches it from none of them.
+        "| `external-system-failure`, class `unusable-engine` | report the failure, then "
+        "`fallback-native` (disclosed) |",
+        "| `external-system-failure`, class `content-refusal` | `park-machine-blocker`; **never** "
+        "`fallback-native` |",
+        "| `external-system-failure`, class `transient`, `external_retry_available` | re-evaluate "
+        "capability, then `retry-external` only if still available |",
+        "| `external-system-failure`, class `transient`, no external retry available | report the "
+        "failure, then `fallback-native` (disclosed) |",
+        "The native fallback is for a reviewer that is genuinely UNUSABLE, never for one bad attempt",
+        "An external retry may spend an ordinary allocation only while a later one would still remain",
         "Missing native OS/startup controls alone never select",
         "### Review preparation mapping",
         "| `launch-external` | selected capability's external route | "
@@ -818,6 +831,21 @@ def check_document_contract() -> None:
             "never resumes the failed external session" in reviewer_flat and
             "does not require a model switch" in reviewer_flat,
             "reviewer retry recovered provider matching, session resume, or model switching")
+    # `reviewer.md` OWNS the failure classes the transition table consumes. Losing any of the three, or
+    # losing the refusal's never-fall-back rule, would put the transition back to "any failure downgrades
+    # the reviewer" while the table above still reads as though a class decided it.
+    require("#### External failure classes" in reviewer,
+            "reviewer.md lost the external failure-class owner")
+    for needle in (
+        "A FAILED ATTEMPT IS NOT AN UNUSABLE REVIEWER.",
+        "**`unusable-engine` — the engine itself cannot produce a verdict",
+        "**`content-refusal` — the engine started, declined to review THIS content",
+        "**`transient` — everything else, INCLUDING everything unclear.**",
+        "Never `fallback-native`, and never reword the intent to get past the filter.",
+        "an unexplained failure is `transient`",
+        "it selects only the transition",
+    ):
+        require(needle in reviewer_flat, f"reviewer.md external failure classes drifted: {needle}")
     stage_flat = " ".join(stage.split())
     require('"--file", ledger_file' in stage_flat and
             '"--prompt-profile", prompt_profile' in stage_flat and
@@ -1151,7 +1179,8 @@ def run_repository_context_fixtures() -> None:
                 "repository Git argv shifted a hostile ref")
 
 
-def review_action(capability: Mapping[str, object], external_retry_spent: bool = False,
+def review_action(capability: Mapping[str, object], external_retry_available: bool = True,
+                  external_failure_class: str | None = None,
                   external_failed: bool = False, native_failed: bool = False,
                   final_review_available: bool = True) -> str:
     # Every route launches on `fresh_conversation` + `launch_mechanism_present` alone. The three
@@ -1163,7 +1192,13 @@ def review_action(capability: Mapping[str, object], external_retry_spent: bool =
         if not launchable:
             return "fallback-native"
         if external_failed:
-            return "fallback-native" if external_retry_spent else "retry-external"
+            # The fallback is for a reviewer that is genuinely unusable, never for one bad attempt: a
+            # refusal never reaches it, and a transient failure only after ordinary retries run out.
+            if external_failure_class == "content-refusal":
+                return "park-machine-blocker"
+            if external_failure_class == "unusable-engine":
+                return "fallback-native"
+            return "retry-external" if external_retry_available else "fallback-native"
         return "launch-external"
     # Native is the last-resort route: if it cannot launch (unavailable — no fresh conversation or no
     # launch mechanism), there is nothing left to fall back to, which is exactly `park-machine-blocker`.
@@ -1194,10 +1229,32 @@ def run_isolation_transition_fixtures() -> None:
         }
         require(review_action(shipped) == "launch-external",
                 f"shipped {route} did not launch cross-engine at native-limitation level")
+
+        # A TRANSIENT failure (timeout, bad report, launch fault) relaunches the SAME diverse engine
+        # while an ordinary allocation would still remain for a later fallback.
+        require(review_action(shipped, external_failed=True,
+                              external_failure_class="transient") == "retry-external",
+                f"{route} first transient failure lost its retry")
+        require(review_action(shipped, external_failed=True, external_failure_class="transient",
+                              external_retry_available=False) == "fallback-native",
+                f"{route} transient failure did not fall back to native once retries ran out")
+        # An UNCLASSIFIED failure is transient: an unexplained failure must never buy a downgrade.
         require(review_action(shipped, external_failed=True) == "retry-external",
-                f"{route} first failure lost its retry")
-        require(review_action(shipped, external_failed=True, external_retry_spent=True) == "fallback-native",
-                f"{route} retry failure did not fall back to native")
+                f"{route} treated an unclassified failure as an unusable reviewer")
+
+        # Only a genuinely unusable ENGINE falls back without spending a retry first.
+        require(review_action(shipped, external_failed=True,
+                              external_failure_class="unusable-engine") == "fallback-native",
+                f"{route} did not fall back on an unusable engine")
+        require(review_action(shipped, external_failed=True, external_failure_class="unusable-engine",
+                              external_retry_available=False) == "fallback-native",
+                f"{route} unusable engine changed action with retries spent")
+
+        # A CONTENT REFUSAL never reaches the fallback, with or without retries left: the user answers it.
+        for retry_available in (True, False):
+            require(review_action(shipped, external_failed=True, external_failure_class="content-refusal",
+                                  external_retry_available=retry_available) == "park-machine-blocker",
+                    f"{route} content refusal silently downgraded the reviewer instead of parking")
 
         # Paired CLI absent -> unavailable -> immediate native fallback, no retry consumed.
         absent = dict(shipped, launch_mechanism_present=False)

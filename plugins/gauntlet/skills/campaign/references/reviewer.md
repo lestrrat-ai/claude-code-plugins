@@ -31,10 +31,11 @@ note it in the final report. Resolve in priority order:
    file can reach the selection.
 3. **Default — the cross-engine route for the active host.** No preference → Claude Code reviews with
    Codex (`codex exec`) and Codex reviews with Claude Code (`claude -p`), launched at native-limitation
-   level whenever the paired CLI is present. When the paired CLI is absent, or the cross-engine process
-   fails after its one retry, fall back to a fresh, context-isolated **native worker** on the active host,
-   disclosed in the final report. **No paired CLI is required for the campaign to run** — the native
-   fallback is always available.
+   level whenever the paired CLI is present. Fall back to a fresh, context-isolated **native worker** on
+   the active host, disclosed in the final report, **only when the cross-engine reviewer is genuinely
+   unusable** — the paired CLI is absent, the engine cannot produce a verdict at all, or ordinary retries
+   of a transient failure ran out ("External failure classes" below owns which is which). **No paired CLI
+   is required for the campaign to run** — the native fallback is always available.
 
 **Reviewer diversity is the default, not an add-on — and it also reduces native-worker cost.** The gate's
 passes are already fresh, context-isolated re-rolls, but two native workers share the orchestrator's model,
@@ -43,8 +44,10 @@ so they are less independent than a *different* engine would be. So the default 
 `claude -p`. It launches at native-limitation level whenever the paired CLI is present — engine diversity
 needs no OS sandbox. A same-engine process (Codex → another `codex exec`, Claude Code → another `claude
 -p`) provides fresh context only and must not be reported as diversity. A fresh native worker on the
-active host is the complete, valid **fallback** when the paired CLI is absent or the cross-engine process
-fails after its retry. The cost benefit compounds the diversity one: review passes dominate campaign's
+active host is the complete, valid **fallback** for a cross-engine reviewer that is genuinely unusable —
+and taking it costs exactly the diversity this paragraph is about, which is why "External failure classes"
+below reaches it from a narrow set of failures rather than from any failed attempt. The cost benefit
+compounds the diversity one: review passes dominate campaign's
 native-worker spend — each re-reads the **whole** `origin/<base>...HEAD` diff (where `<base>` is the
 selected PR row's **effective base** — its explicit `base_branch`, else the legacy header fallback,
 resolved through `ledger.py`'s `effective_base`, never the one header base), runs `required(tier)` times
@@ -84,7 +87,7 @@ RECORDS, not prose", "Does this pass COUNT?"), and the one time this section car
 the summary went stale: it still described a plan/progress/verdict protocol with **no intent, no findings
 artifact and no gating rule**, months after those became the contract. Following it recreated exactly the
 open-ended review — *"is anything wrong with this code?"* — that the intent block exists to kill, **on the
-native-worker path**, which is the fallback whenever a cross-engine reviewer is absent or fails. A stale
+native-worker path**, which is the fallback whenever a cross-engine reviewer is absent or unusable. A stale
 summary is worse than no summary: it is the version people actually read, and it is believed.
 
 **Prepare it with `review-dispatch.py prepare`, using the exact invocation in `review-dispatch.md`.** The
@@ -128,17 +131,53 @@ exhaustion, auth failures, timeouts, or other system errors. Distinguish this fr
 run that produced its report record — or reported a finding — is a *result*, act on it. A *failure*
 is the absence of a report.
 
-**On a capable external process failure, follow `runtime-adapter.md`, "Review allocation journal", then
-take its fresh native fallback transition when it selects one.** A pre-launch capability miss (the paired
-CLI is absent) takes that fallback immediately. Note in the final report which cross-engine routes were
-unavailable and which passes used the recovery profile or ran on the native-worker fallback. The gate is
-unchanged: a worker pass is a fresh, context-isolated re-roll that counts toward the review gate exactly
-like an external pass. The runtime owner defines allocation, native limitations, and the only
-machine-blocker transition; do not restate them here.
+**On a capable external process failure, settle the attempt through `review-dispatch.py result`, classify
+it below, then take the `review_transition` that class selects** (`runtime-adapter.md`, "Review isolation
+capability and transition", with "Review allocation journal" owning the allocation the action spends). A
+pre-launch capability miss (the paired CLI is absent) takes the fresh native fallback immediately. Note in
+the final report which cross-engine routes were unavailable and which passes used the recovery profile,
+parked on a refusal, or ran on the native-worker fallback. The gate is unchanged: a worker pass is a
+fresh, context-isolated re-roll that counts toward the review gate exactly like an external pass. The
+runtime owner defines allocation, native limitations, and the only machine-blocker transition; do not
+restate them here.
 
-**Prepare every retry from `runtime-adapter.md`, "Review preparation mapping".** The transition does not
-inspect provider error text: it assigns `codex-recovery` only to `retry-external` on `external-codex`, at
-every launch attempt, and assigns `standard` to every other `ReviewAction`. The retry always starts a
+#### External failure classes
+
+**A FAILED ATTEMPT IS NOT AN UNUSABLE REVIEWER.** The native fallback exists for a reviewer that cannot
+render this run's verdicts at all; taking it for anything less throws away the engine diversity the
+default route is for. So every external failure that yields no usable verdict is classified into exactly
+one of three classes, and only two of them ever reach a fallback. This section is `external_failure_class`'s
+owner; `runtime-adapter.md`'s transition table consumes it.
+
+- **`unusable-engine` — the engine itself cannot produce a verdict, and relaunching the same argv cannot
+  change that.** Quota, rate-limit, or usage exhaustion; rejected or missing credentials; a process that
+  could not run at all (exec failure, immediate crash, an engine-reported internal fatal error). →
+  `fallback-native`, disclosed. Do not spend a retry first: the next launch fails identically.
+- **`content-refusal` — the engine started, declined to review THIS content, and produced no verdict.**
+  Its safety or content filter answered instead of the review (for example `codex exec` printing that the
+  content was flagged for possible cybersecurity risk on a security-hardening diff). → **park the PR for
+  the user** through the machine-blocker transition, with the refusal text verbatim in the reason. **Never
+  `fallback-native`, and never reword the intent to get past the filter.** A refusal is about what the
+  review must actually check, so the user decides: state the engineering goal and authorization plainly,
+  or select another reviewer. A silent native downgrade would hide the refusal and cost diversity on
+  exactly the diffs that most need a second engine, and a prompt reworded until the reviewer stops asking
+  about the defect is not a review that passed — it is a review that never happened.
+- **`transient` — everything else, INCLUDING everything unclear.** Timeouts, a killed or hung process, a
+  missing or malformed report, invalid artifacts, a dispatch fault such as a wrong working root or a
+  missing prompt-file stdin redirect, and any failure whose class is not positively evidenced. →
+  `retry-external` while an ordinary allocation would still remain for a later fallback, then
+  `fallback-native`. `unusable-engine` and `content-refusal` must each be **shown** by the attempt's
+  captured diagnostics; an unexplained failure is `transient`, because retrying the diverse engine costs
+  one allocation while a wrong fallback costs the diversity for the rest of the pass.
+
+Classification reads the failed attempt's captured stdout/stderr and exit status. That is the ONE decision
+provider output may inform, and it selects only the transition — the prompt profile still comes from
+`runtime-adapter.md`, "Review preparation mapping", and never from provider text.
+
+**Prepare every retry from `runtime-adapter.md`, "Review preparation mapping".** That profile mapping does
+not inspect provider error text: it assigns `codex-recovery` only to `retry-external` on `external-codex`, at
+every launch attempt, and assigns `standard` to every other `ReviewAction`. The failure class above is the
+only thing read from provider output, and it selects the transition, never the profile. The retry always starts a
 fresh process and never resumes the failed external session. The profile changes only the opening framing,
 does not require a model switch, and keeps the complete shared prompt contract, allocation journal,
 producer, and canonical argv. The shipped adapter has no trusted alternate-model mapping, so it passes no
@@ -150,4 +189,6 @@ within ~5 min of dispatch (launch evidence = any reviewer-written line after `pa
 a `plan_amendment_request`, not just a `progress` event). Settle it as `transport-failure`, then use
 `review-dispatch.py allocation-status` and `runtime-adapter.md`, **Review allocation journal**, to select
 the due fresh allocation into attempt-scoped artifacts. A missing or wrong prompt-file stdin redirect is a
-common cause, so re-check the command before relaunching: an identical relaunch hangs identically.
+common cause, so re-check the command before relaunching: an identical relaunch hangs identically. A
+reviewer that never started said nothing about the engine, so it is a `transient` failure — correct the
+launch and relaunch the same route rather than reading a dead process as an unusable reviewer.

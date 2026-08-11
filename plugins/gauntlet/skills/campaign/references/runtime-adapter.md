@@ -156,7 +156,8 @@ stronger-boundary claim. Both are available routes with the disclosed behavioral
 review_transition(
   capability: ReviewIsolationCapability,
   event: "selected" | "external-system-failure" | "native-system-failure",
-  external_retry_spent: Bool,
+  external_failure_class: "unusable-engine" | "content-refusal" | "transient" | null,
+  external_retry_available: Bool,
   final_review_available: Bool
 ) -> ReviewAction
 ```
@@ -166,16 +167,40 @@ This operation owns every route change:
 | Input | Action |
 |---|---|
 | selected cross-engine route, paired CLI available | `launch-external` at native-limitation level (no stronger-boundary claim) |
-| `external-system-failure`, external retry not spent | re-evaluate capability, then `retry-external` only if still available |
-| selected cross-engine route unavailable before launch (paired CLI absent), or `external-system-failure` after retry | report the failure, then `fallback-native` (disclosed) |
+| selected cross-engine route unavailable before launch (paired CLI absent) | report the failure, then `fallback-native` (disclosed) |
+| `external-system-failure`, class `unusable-engine` | report the failure, then `fallback-native` (disclosed) |
+| `external-system-failure`, class `content-refusal` | `park-machine-blocker`; **never** `fallback-native` |
+| `external-system-failure`, class `transient`, `external_retry_available` | re-evaluate capability, then `retry-external` only if still available |
+| `external-system-failure`, class `transient`, no external retry available | report the failure, then `fallback-native` (disclosed) |
 | native route/fallback can follow the installed contract | `launch-native` with the native limitations below |
 | native attempts cannot follow the installed contract or produce valid artifacts after the allocation journal reports no final review remains | `park-machine-blocker` |
 
+**The native fallback is for a reviewer that is genuinely UNUSABLE, never for one bad attempt.** Falling
+back trades away the engine diversity the default route exists to provide, so `fallback-native` is reached
+only by the three rows above that name it: the paired CLI is absent, the engine itself cannot produce a
+verdict (`unusable-engine`), or ordinary retries of a `transient` failure ran out. A `content-refusal`
+reaches it from **no** row.
+
+**`reviewer.md`, "External failure classes", OWNS `external_failure_class`.** It defines which observed
+failures are `unusable-engine`, which are `content-refusal`, and that everything else — including
+everything unclear — is `transient`. This table consumes that class and does not define it. Classifying is
+the one decision the failed attempt's captured diagnostics may inform, and it reaches only this
+transition: **Review preparation mapping** below still selects the prompt profile from its own table
+alone, never from provider output.
+
+`external_retry_available` is not a separate counter. Read it from **Review allocation journal**: it is
+true only while the pass still has at least TWO ordinary allocations, so the `fallback-native` that a
+failed retry may lead to still has one to launch on. Under the shipped three ordinary allocations that is
+the `initial` launch plus one `retry-external`, with the last ordinary allocation left for the fallback.
+An external retry never spends the allocation the fallback would need.
+
 A pre-launch cross-engine capability miss (the paired CLI is absent) has no process to relaunch, so it
 consumes no retry and takes the fresh native fallback immediately.
-Missing native OS/startup controls alone never select `park-machine-blocker`; only actual inability to
-complete the installed contract after the allocation journal reports no final review remains. This table
-owns the transition meaning; **Review allocation journal** owns allocation state.
+A `content-refusal` park is the ordinary `awaiting-user` machine-blocker class (`files-and-ledger.md`,
+`status`, `awaiting-user` class 2): campaign cannot move this PR without a human, so only the user's
+ruling resumes it. Missing native OS/startup controls alone never select `park-machine-blocker`; only
+actual inability to complete the installed contract after the allocation journal reports no final review
+remains. This table owns the transition meaning; **Review allocation journal** owns allocation state.
 
 ### Review preparation mapping
 
@@ -210,6 +235,11 @@ whose immediately preceding valid active artifact records a different immutable 
 first allocation of that post-repair pass. A provider, transport, or artifact failure alone leaves the final
 allocation reserved but does not make it due; take ordinary recovery while its capacity remains. Exhausted
 ordinary capacity without due history refuses rather than spending final.
+
+**An external retry may spend an ordinary allocation only while a later one would still remain.** That is
+what `external_retry_available` reads ("Review isolation capability and transition" above): a
+`retry-external` taken on the last ordinary allocation would leave the `fallback-native` it can lead to
+with nothing to launch on, turning a recoverable transient failure into a park.
 
 **Record every completed attempt through `review-dispatch.py result` before allocating another.** Its
 `provider-failure`, `transport-failure`, `malformed-output`, `incomplete-plan`, `amended`, `reviewed`,
