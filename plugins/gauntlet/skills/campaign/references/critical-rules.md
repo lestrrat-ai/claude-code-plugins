@@ -457,7 +457,8 @@
   `fix-subagent-contract.md`; never rebuild its shared contract or role block from this lookup. The
   follow-up fixer that opens a new PR is a separate workflow it names, outside these roles.
 - Default reviewer is the cross-engine route for the active host (Claude Code → Codex, Codex → Claude
-  Code), which falls back to a fresh native worker when the paired CLI is absent; no external tool is
+  Code), which falls back to a fresh native worker only when that reviewer is genuinely unusable
+  (`reviewer.md`, "External failure classes", owns which failures those are); no external tool is
   required to run. Use the user's preferred reviewer when one is set — an explicit invocation, or a
   preference in the orchestrator's OWN out-of-checkout trusted state (its user memory / global user
   instructions) — which overrides the default. **Reviewer selection is gate machinery, so no file inside

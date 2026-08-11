@@ -59,7 +59,8 @@ isolation claim and does not create a stronger boundary:
   and there is no report to write it in. It reports the write door's diagnostic as its FINAL OUTPUT and
   stops; the attempt has no report and is therefore `unusable`. That symptom is a DISPATCH fault, not a
   reviewer fault: relaunching the same argv fails identically, so the DRIVER corrects the launch before
-  relaunching. Do not widen the sandbox to "fix" it (a `writable_roots` entry for the worktree would make
+  relaunching. It says nothing about the engine, so it is a `transient` failure and never grounds for the
+  native fallback (`reviewer.md`, "External failure classes"). Do not widen the sandbox to "fix" it (a `writable_roots` entry for the worktree would make
   candidate content writable); point `-C` at `review_root`.
 - `transport.worktree` is named only inside the bound prompt and is read through absolute paths (for
   example, the typed Git argv in the review prompt). Do not pass it through `-C` or `--add-dir`: either makes candidate
@@ -108,8 +109,9 @@ This argv launches at the native-limitation level; it does not create a stronger
   for git inspection and the bundled artifact tools — including `emit-report.py`, which is how this route
   delivers its report.
 - `--permission-mode dontAsk` makes an unapproved operation fail instead of opening an interactive
-  prompt. A permission or sandbox denial is a reviewer system failure; retry or fall back under
-  `reviewer.md`. Never switch to `--dangerously-skip-permissions`.
+  prompt. A permission or sandbox denial is a reviewer system failure; classify it and take the transition
+  it selects under `reviewer.md`, "External failure classes". Never switch to
+  `--dangerously-skip-permissions`.
 - Set `stdin_file` to `transport.prompt_path` and leave `stdout_file` null. The reviewer writes its
   report by running `transport.emit_report_path`, which is the sole producer on every route
   (`runtime-adapter.md`, "Review transport record and report ownership"); capturing stdout at
