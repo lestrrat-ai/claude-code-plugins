@@ -34,8 +34,9 @@ an API behavior), you are NOT done until every place that RESTATES it is also co
 tree, not just the file you were sent to. Restatements hide in summaries, quick-reference bullets,
 cross-references, table rows, worked examples, and other copies of the same command. A summary that has
 drifted from its definition is worse than no summary because it is the version people actually read.
-Report every site you found and its disposition, including ones you deliberately left alone and why. If
-your fix is genuinely local and restates nothing, say so explicitly.
+Report every site you found in one compact structured line. Use `changed=<site>` for corrected sites and
+`left=<site>:<short reason>` for sites deliberately left alone. If your fix is genuinely local and restates
+nothing, write `none` instead of prose.
 
 This widening is bounded by the change you are making: sweep for what your own fix invalidated. It is not
 permission to re-derive the diff, re-review the PR, or fix defects nobody asked you to fix.
@@ -77,9 +78,9 @@ output must be reconciled against the semantic site list can fail and is the str
 
 [GAUNTLET_FIX_REPORT_V1]
 REPORT
-Report every sweep site and its disposition, including every site deliberately left alone and why. If the
-fix is local and restates nothing, say so. Report changed files, focused test evidence, broader checks,
-commit and push status, and any remaining blocker. Never defer an assigned issue as a follow-up.
+Start with one `SWEEP:` line using the structured disposition format above. Add a short deferred reason only
+for `left=` sites; do not repeat sweep rationale. Then report changed files, focused test evidence, broader
+checks, commit and push status, and any remaining blocker. Never defer an assigned issue as a follow-up.
 @@END COMMON@@
 @@BEGIN REVIEW@@
 [GAUNTLET_FIX_REVIEW_V1]
