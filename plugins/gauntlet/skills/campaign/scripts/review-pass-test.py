@@ -911,8 +911,8 @@ class Tables:
         self.EMPTY, self.DISPATCHED, self.BEGUN, self.FINISHED = EMPTY, DISPATCHED, BEGUN, FINISHED
 
         self.CLI_CASES = [
-            (["emit", "--unit", "u01", "--status", "started"], DISPATCHED, 0, '"status":"started"', "the call every reviewer prompt makes"),
-            (["emit", "--unit", "u01", "--status", "done", "--evidence", "f.py:1"], BEGUN, 0, '"evidence":"f.py:1"',
+            (["emit", "--unit", "u01", "--status", "started"], DISPATCHED, 0, "", "the call every reviewer prompt makes"),
+            (["emit", "--unit", "u01", "--status", "done", "--evidence", "f.py:1"], BEGUN, 0, "",
              "…and its done form, on the file that HAS the matching `started` — the only file the done form was ever meant to be run against"),
             (["emit", "--unit", "u01", "--status", "started"], EMPTY, 1, "NO `pass_identity`",
              "HEADLINE, WRITE DOOR: THE FILE THIS TOOL WROTE AND WOULD NOT READ. `emit` on an EMPTY progress file exited 0 — it never looked for the identity — and `verify` then called that same file `unusable: NO pass_identity`. The reviewer was told its work landed, and the pass could not count"),
@@ -932,9 +932,9 @@ class Tables:
              "HEADLINE, WRITE DOOR: THE FINDING. `plan-add --id ' u01 '` used to exit 0 while this door silently STRIPPED the padding — so the plan held a unit whose progress could never be recorded"),
             (["emit", "--unit", "u02", "--status", "started"], [ident(), '{"type":"progress","unit_id":"u01","status":"done","evidence":"x"}'], 1, "carries EXACTLY",
              "the file it is APPENDING TO is evidence too: a hand-written line already in it makes the pass unusable"),
-            (["identity", "--head-sha", SHA, "--dispatched-at", TS, "--default-non-goals", "[]"], EMPTY, 0, '"launch_attempt":"1"',
+            (["identity", "--head-sha", SHA, "--dispatched-at", TS, "--default-non-goals", "[]"], EMPTY, 0, "",
              "the line that was a `printf` — pr/pass/attempt now come from the FILENAME"),
-            (["identity", "--head-sha", SHA, "--dispatched-at", TS, "--default-non-goals", '["area X"]'], EMPTY, 0, '"default_non_goals":["area X"]',
+            (["identity", "--head-sha", SHA, "--dispatched-at", TS, "--default-non-goals", '["area X"]'], EMPTY, 0, "",
              "the dispatch-time scope binding is stored DIRECTLY as a JSON array — the immutable value the tally compares to the run's current defaults"),
             (["identity", "--head-sha", SHA, "--dispatched-at", TS, "--default-non-goals", "not-json"], EMPTY, 1, "canonical JSON array",
              "a malformed `--default-non-goals`: the run scope must decode through the ledger's ONE validator, or the binding names no scope"),
@@ -970,7 +970,7 @@ class Tables:
 
             # THE AMENDMENT WRITE DOOR — the one progress event a reviewer used to hand-write, now with a door.
             (["amend", "--reason", "no unit covers the harness", "--id", "u09", "--kind", "file",
-              "--target", "harness.py", "--check", "it runs"], DISPATCHED, 0, "plan_amendment_request",
+              "--target", "harness.py", "--check", "it runs"], DISPATCHED, 0, "# amendment raised",
              "**THE FIX, AT THE WRITE DOOR.** The dispatch prompt never stated the amendment's schema, so "
              "reviewers invented `{type, gap}` and `verify` refused the malformed line — taking the WHOLE "
              "pass down. Now the amendment goes through a door like every other event: the `ts` is "
@@ -1001,7 +1001,7 @@ class Tables:
         # repeatable `--check`; a seven-flag finding), and the ARTIFACT'S NAME is under test too.
         self.PLAN_CLI_CASES = [
             (PLAN_FILE, ["--id", "u03", "--kind", "cross-cutting", "--target", "both doors", "--check", "a", "--check", "b"],
-             0, '"checks":["a","b"]', "the plan stops being a shell heredoc"),
+             0, "", "the plan stops being a shell heredoc"),
             (PLAN_FILE, ["--id", "u01", "--kind", "file", "--target", "x.py", "--check", "a"], 1, "duplicate unit id",
              "a duplicate id — refused by the SAME statement `load_plan` refuses it with"),
             (PLAN_FILE, ["--id", "  ", "--kind", "file", "--target", "x.py", "--check", "a"], 1, "NOT AN ID", "a blank id"),
@@ -1021,7 +1021,7 @@ class Tables:
 
         # plan-waive: (plan name, argv, exit, needle, why) — the waiver's own write door.
         self.WAIVE_CLI_CASES = [
-            (PLAN_FILE, ["--dimension", "docs", "--reason", "internal-only change"], 0, '"dimension":"docs"',
+            (PLAN_FILE, ["--dimension", "docs", "--reason", "internal-only change"], 0, "",
              "the waiver door: a default dimension is dropped OUT LOUD, validated as it lands"),
             (PLAN_FILE, ["--dimension", "docs", "--reason", "   "], 1, "a waiver IS its reason",
              "the check argparse cannot make: a --reason that is present and BLANK"),
@@ -1063,11 +1063,11 @@ class Tables:
         REPORT_OK = ["--verdict", R.SATISFIED, "--deferred-reason", R.NO_DEFERRED_REASON,
                      "--summary", "Report body."]
         self.REPORT_CLI_CASES = [
-            (REPORT_FILE, None, REPORT_OK, 0, '"verdict":"satisfied"',
+            (REPORT_FILE, None, REPORT_OK, 0, "",
              "the call every reviewer prompt makes, on the file the orchestrator derived for it"),
             (REPORT_FILE, None, [*REPORT_OK[:4], "--summary", "Report body.",
                                  "--residual-risk", RESIDUAL_ONE],
-             0, '"residual_risk":["' + RESIDUAL_ONE[:12],
+             0, "",
              "…and the same call carrying one calibration record, which is OPTIONAL and does not weaken it"),
             # **THE NAME.** A report written where `verify` will never DERIVE it is a report nothing reads,
             # and the pass is then refused for having none while its verdict sits on disk one filename
@@ -1092,7 +1092,7 @@ class Tables:
         ]
 
         self.FINDING_CLI_CASES = [
-            (FINDINGS_FILE, FIND_OK, 0, '"writer":"network"',
+            (FINDINGS_FILE, FIND_OK, 0, "",
              "the call the reviewer prompt makes — a finding that DEFENDS a stated purpose and names a real actor"),
             (FINDINGS_FILE, FIND_OK, 0, "# GATING:",
              "**AND THE TOOL SAYS SO, AT THE WRITE DOOR.** The same call, and what the reviewer is TOLD: "

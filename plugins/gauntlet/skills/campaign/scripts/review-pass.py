@@ -2391,7 +2391,7 @@ def cmd_emit(args) -> int:
     check_progress(rec, units, announced, done, "the event you asked to emit")
     # …and the file it would PRODUCE, through that same function. `units` is already loaded, so the thunk
     # just hands it back; nothing is re-derived, and nothing is re-stated.
-    sys.stdout.write(write_line(path, text, rec, lambda after: check_progress_file(after, path, lambda: units)))
+    write_line(path, text, rec, lambda after: check_progress_file(after, path, lambda: units))
     return 0
 
 
@@ -2439,7 +2439,7 @@ def cmd_amend(args) -> int:
     # …and the file it would PRODUCE, through that same function — `units` is already loaded, so the thunk
     # just hands it back. An amendment names no planned unit itself (`walk_progress` skips it), so nothing is
     # re-derived; the readback is the whole-file guarantee, not a second copy of the amendment's own rules.
-    sys.stdout.write(write_line(path, text, rec, lambda after: check_progress_file(after, path, lambda: units)))
+    write_line(path, text, rec, lambda after: check_progress_file(after, path, lambda: units))
     # A short confirmation, naming the proposed unit — the mirror of `finding-add`'s note. The pass now
     # verifies `amended` until the orchestrator folds the unit into the plan and restarts the pass (or
     # records why not); the reviewer writes its report with `--verdict deferred`.
@@ -2498,7 +2498,7 @@ def cmd_identity(args) -> int:
     # also why `identity` does not require the plan to exist yet: the orchestrator writes both before
     # dispatch, and this door has no business imposing an order between them. (If the guard above is ever
     # weakened, this still refuses whatever was in the file: an event no plan names.)
-    sys.stdout.write(write_line(path, text, rec, lambda after: check_progress_file(after, path, dict)))
+    write_line(path, text, rec, lambda after: check_progress_file(after, path, dict))
     return 0
 
 
@@ -2518,7 +2518,7 @@ def cmd_plan_add(args) -> int:
     # The name is checked BEFORE the file is read, and by the same statement: a path that is not a plan's
     # name is not a file this tool reads at all, so `before_text` is not asked about it.
     text = before_text(path) if PLAN_NAME_RE.match(path.name) else ""
-    sys.stdout.write(write_line(path, text, rec, lambda after: check_plan_file(after, path)))
+    write_line(path, text, rec, lambda after: check_plan_file(after, path))
     return 0
 
 
@@ -2533,7 +2533,7 @@ def cmd_plan_waive(args) -> int:
     rec: "dict[str, object]" = {"type": WAIVER, "dimension": args.dimension, "reason": args.reason}
     check_waiver(rec, "the waiver you asked to record")
     text = before_text(path) if PLAN_NAME_RE.match(path.name) else ""
-    sys.stdout.write(write_line(path, text, rec, lambda after: check_plan_file(after, path)))
+    write_line(path, text, rec, lambda after: check_plan_file(after, path))
     return 0
 
 
@@ -2601,8 +2601,8 @@ def cmd_finding_add(args) -> int:
     # fifteen minutes later by a `verify` it never sees.
     check_finding(rec, "the finding you asked to record",
                   load_intent(intent_path(path.parent, pr))[PURPOSE_H])
-    sys.stdout.write(write_line(path, before_text(path), rec,
-                                lambda after: check_findings_file(after, path)))
+    write_line(path, before_text(path), rec,
+               lambda after: check_findings_file(after, path))
     # NEITHER of these is an error or a refusal — the finding is RECORDED either way. They are the tool
     # telling the reviewer WHAT IT JUST WROTE, because the verdict/findings rule is an IF AND ONLY IF and
     # a reviewer can get it wrong in BOTH directions: a NON-GATING finding turned into a NOT SATISFIED, or
@@ -2650,7 +2650,7 @@ def cmd_report_write(args) -> int:
     # The SAME function the read side runs — so a record this door writes is one `verify` can never call
     # malformed, and the verdict/reason/residual rules exist in exactly one place.
     check_report(rec, "the report you asked to write (--verdict/--deferred-reason/--residual-risk/--summary)")
-    sys.stdout.write(write_line(path, text, rec, lambda after: check_report_file(after, path)))
+    write_line(path, text, rec, lambda after: check_report_file(after, path))
     return 0
 
 
