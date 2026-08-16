@@ -25,14 +25,14 @@ LOGS = b"lint: src/widget.py needs layout; literal @@END COMMON@@ and unicode \x
 # below stay reproducible. The real bound path (M.FORMAT_PREFLIGHT) is exercised by the economy fixture.
 FIXTURE_FORMAT_PREFLIGHT = "/fixture/skill/scripts/format-preflight.py"
 GOLDEN_PROMPT_SHA256 = {
-    "review": "889ff551494716fd9e8de314c6c7074c117d45f823f08f29902619ffb1334086",
-    "ci-session": "145d64b5ca8deb44c0eb58e9b59a2b161ed2f343beb2c3db70917bf8bd51a467",
-    "ci-economy": "6928ff399e6e265210d747bc35f21916461f1f4a9c8a945418913203ec53ee19",
+    "review": "2189274bfbcf52fb94bc47f8fe0a00ed160023da18713d9c2112da7a4024e984",
+    "ci-session": "63ac4563efe65dfe15006ec9762f59a50bdc0bc098d87f4650599a3c220ea68f",
+    "ci-economy": "69f926b09e3861947a98e83c8772094f5279c29a90f20893e2145d00c061f913",
 }
 GOLDEN_METADATA_SHA256 = {
-    "review": "9607667d901fca785ebbc44febbc5b5e312cfade89b26db6e5c6dfe52aaaf03b",
-    "ci-session": "37266514e6db87983f27d0c758140312dca438fea73320d8ef6f6f690b6f83b2",
-    "ci-economy": "e38895a9b96597cbe7eaccd71d0a9547033745c14dfb5f7b2a002155df4c51e0",
+    "review": "439f716f2151cad1232b915013f11b31c342503dd78ad305f66e438c9a7e6f38",
+    "ci-session": "e51a8880392443434c0fb596ad58f4890252df61d63dce9d18b41368367bd07b",
+    "ci-economy": "6fd56d94868a981ba92d8041845d382e7fdb101fad4045e3c9b21d4723e9f64e",
 }
 
 
