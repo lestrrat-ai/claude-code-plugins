@@ -2609,31 +2609,11 @@ def cmd_finding_add(args) -> int:
     # a GATING one left out of the verdict. `verify` refuses the pass either way, fifteen minutes later,
     # by a tool the reviewer never sees; this is where it learns it, while it can still act.
     if not gating(rec):
-        why = (
-            f"the PR's BASE already does this, and you showed the run that proves it — so it is not this "
-            f"PR's bill"
-            if rec["base"] == PRE_EXISTING else
-            f"it anchors to no `{PURPOSE_H}` line and its writer is `{rec['writer']}` — nobody outside the "
-            f"machine can supply that input"
-        )
-        sys.stdout.write(
-            f"# NON-GATING: {why}. It is RECORDED as a follow-up and it MUST NOT produce NOT SATISFIED. If "
-            f"you believe it does gate, then it defends a stated purpose (quote that line in --purpose), or "
-            f"a real actor can write the input (name them in --writer), or this PR is what introduced it "
-            f"(--base {INTRODUCED}) — say which, do not simply re-file it.\n"
-        )
+        reason = ("the base already does this" if rec["base"] == PRE_EXISTING else
+                  "it has no purpose anchor or external writer")
+        sys.stdout.write(f"# NON-GATING: follow-up; {reason}. It cannot make the verdict NOT SATISFIED.\n")
     else:
-        sys.stdout.write(
-            f"# GATING: this finding ANCHORS — it defends a `{PURPOSE_H}` line, or `{rec['writer']}` can "
-            f"really write that input, and you said so when you recorded it. So it BLOCKS: your verdict "
-            f"MUST be NOT SATISFIED while it stands. A pass that records this and returns SATISFIED is "
-            f"UNUSABLE and gets thrown away — the rule is NOT SATISFIED if and ONLY if at least one GATING "
-            f"finding stands. If it does not really block, it is the ANCHOR that is wrong, not the verdict: "
-            f"a finding that serves no stated purpose and that nobody outside the machine can trigger is "
-            f"`--purpose -` with a `driver-only`/`hand-edit`/`dev-time` writer, and a defect the PR's BASE "
-            f"already has is `--purpose -` with `--base {PRE_EXISTING}` and the run that proves it. Either "
-            f"way it is recorded as a follow-up instead.\n"
-        )
+        sys.stdout.write("# GATING: finding anchors a purpose or writable input; verdict MUST be NOT SATISFIED.\n")
     return 0
 
 
