@@ -594,14 +594,14 @@ def t_truncation_is_display_only(L: ModuleType, tmp: Path) -> None:
 
 
 def t_table_missing_file(L: ModuleType, tmp: Path) -> None:
-    """A ledger that does not exist yet is a FRESH START, not an error: defaults, and no rows."""
+    """A ledger that does not exist yet is a FRESH START, not an error: brief defaults, and no rows."""
     code, out, err = cli(L, ["--file", str(tmp / "nope.jsonl"), "table"])
     check(code == 0, f"table on a missing file exited {code}: {err!r}")
-    config, _, cells = grid(L, out, L.TABLE_DEFAULT_FIELDS)
+    config, _, cells = grid(L, out, L.TABLE_DEFAULT_FIELDS, config_fields=())
     check(cells == [], f"a missing file produced rows: {cells!r}")
     check(out.rstrip().endswith(L.TABLE_EMPTY_MARKER),
           f"a missing file must still say {L.TABLE_EMPTY_MARKER!r}: {out!r}")
-    check(config[0] == "# run_id: -", f"a missing file must fall back to the defaults; got {config[0]!r}")
+    check(config == [], f"a missing file must use the brief default; got {config!r}")
 
 
 def t_table_no_rows(L: ModuleType, tmp: Path) -> None:
@@ -2780,10 +2780,10 @@ def t_pending_adoption_is_an_ordinary_field(L: ModuleType, tmp: Path) -> None:
 # the run-config block and NOTHING else — least of all the disclosure lines that say the view is a subset.
 
 def t_status_verbosity_defaults_to_full(L: ModuleType, tmp: Path) -> None:
-    """The default is `full`, so an existing run renders exactly as it did until the operator opts in.
+    """New runs default to `brief`; existing runs and old ledgers retain the `full` fallback.
 
-    Pinned on both sides: the stored default reads back `full`, and the table really does print the WHOLE
-    run-config block — one line per `TABLE_CONFIG_FIELDS` member, read from the accessor.
+    Pinned on both sides: existing stored ledgers read back `full`, new ledgers read back `brief`, and the
+    full table prints the WHOLE run-config block — one line per `TABLE_CONFIG_FIELDS` member.
 
     That oracle is DERIVED from the schema, so it proves the block is complete but can say NOTHING about
     which names belong in it: it would follow the tuple anywhere it moved. What the printed names must
@@ -2805,7 +2805,16 @@ def t_status_verbosity_defaults_to_full(L: ModuleType, tmp: Path) -> None:
         config, _, cells = grid(L, out, L.TABLE_DEFAULT_FIELDS)
         check(len(config) == len(L.TABLE_CONFIG_FIELDS),
               f"[{name}] the default view printed {len(config)} run-config lines, not one per printed field")
-        check(len(cells) == 1, f"[{name}] the row vanished from the default view: {out}")
+    check(len(cells) == 1, f"[{name}] the row vanished from the default view: {out}")
+
+    # A missing ledger is a new run. Its first write uses the quieter default without changing the legacy
+    # fallback for an existing ledger that predates this field.
+    new = tmp / "verb-new.jsonl"
+    check(not new.exists(), "the new-run fixture must start without a ledger")
+    code, _, err = cli(L, ["--file", str(new), "header", "set", "run_id", "new"])
+    check(code == 0, f"initializing a new ledger exited {code}: {err!r}")
+    check(header_field(L, new, "status_verbosity") == L.STATUS_VERBOSITY_BRIEF,
+          "a newly created ledger must default to brief")
 
 
 def t_legacy_config_block_is_unchanged(L: ModuleType, tmp: Path) -> None:
@@ -3314,7 +3323,7 @@ CASES = [
     ("watchdog-due-no-door", "`header set watchdog_due` is refused and writes nothing", t_watchdog_due_has_no_door),
     ("watchdog-interval", "watchdog interval prints the constant in minutes, reads no ledger", t_watchdog_interval_prints_the_constant),
     ("pending-adoption-ordinary", "pending_adoption is an ordinary settable field; setting it IS activity", t_pending_adoption_is_an_ordinary_field),
-    ("verbosity-defaults-full", "status_verbosity defaults to `full` — an existing run renders as it did", t_status_verbosity_defaults_to_full),
+    ("verbosity-defaults", "new status_verbosity runs use `brief`; existing ledgers keep the `full` fallback", t_status_verbosity_defaults_to_full),
     ("verbosity-legacy-block-frozen", "a pre-status_verbosity ledger prints the SAME block — pinned against a frozen, retyped list", t_legacy_config_block_is_unchanged),
     ("verbosity-refuses-unknown", "a value outside STATUS_VERBOSITIES is refused at the write door, store unchanged", t_status_verbosity_refuses_an_unknown_value),
     ("verbosity-brief-drops-config", "`brief` is the full render MINUS the run-config block, byte for byte", t_brief_drops_the_run_config_block_and_nothing_else),

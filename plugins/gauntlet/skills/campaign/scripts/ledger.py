@@ -179,12 +179,16 @@ HEADER_DEFAULTS = {
     # otherwise reprint on every wake. It drops NOTHING else: not a row, not an empty-grid marker, and
     # never the hidden-count disclosure line, which is what tells a reader the view is a SUBSET.
     #
-    # The default is `full`, and that is load-bearing rather than a taste: an existing run renders exactly
-    # as it did until the operator opts in. A stored value the validator refuses degrades to `full` on READ
+    # A new run starts with `brief`; an old ledger missing this field is back-filled from HEADER_DEFAULTS as
+    # `full`, preserving its existing render. A stored value the validator refuses degrades to `full` on READ
     # (`status_verbosity`) — the only thing this setting can do is HIDE output, so a setting nobody can read
     # must hide nothing.
     "status_verbosity": STATUS_VERBOSITY_FULL,
 }
+
+# A missing path is a new run. Existing ledgers still use HEADER_DEFAULTS when a field is absent, so the
+# legacy fallback above remains full while the first write for a new run starts with the quieter view.
+NEW_HEADER_DEFAULTS = {**HEADER_DEFAULTS, "status_verbosity": STATUS_VERBOSITY_BRIEF}
 
 ROW_FIELDS = (
     "id", "slug", "branch", "worktree", "worktree_owned", "branch_owned", "pr",
@@ -639,7 +643,7 @@ def load(path: Path) -> "tuple[dict, list[dict]]":
     # (a bare JSON `null` read as `None`, or a native array read as a `list`) so the fail-closed decode door
     # sees it un-healed. That transient non-str only lives here until `parse_default_non_goals` validates it;
     # every other field is still `_coerce_field`-d to `str`.
-    header: dict[str, object] = dict(HEADER_DEFAULTS)
+    header: dict[str, object] = dict(NEW_HEADER_DEFAULTS)
     rows: list[dict] = []
     if not path.exists():
         return header, rows
