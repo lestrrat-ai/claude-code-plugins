@@ -1998,9 +1998,10 @@ def build_parser() -> argparse.ArgumentParser:
     t = sub.add_parser(
         "table",
         help="print the run header and the live rows as an aligned table",
-        epilog=f"the header `status_verbosity` field ({'/'.join(STATUS_VERBOSITIES)}, default "
-               f"{STATUS_VERBOSITY_FULL}) decides whether the `# <field>: <value>` run-config block is "
-               f"printed above the grid; {STATUS_VERBOSITY_BRIEF} omits that block and nothing else — "
+        epilog=f"the header `status_verbosity` field ({'/'.join(STATUS_VERBOSITIES)}) decides whether the "
+               f"`# <field>: <value>` run-config block is printed above the grid; new runs default to "
+               f"{STATUS_VERBOSITY_BRIEF}, while existing ledgers without the field use the legacy "
+               f"{STATUS_VERBOSITY_FULL} fallback; {STATUS_VERBOSITY_BRIEF} omits that block and nothing else — "
                f"never a row, a marker, or the hidden-count line",
     )
     t.add_argument("--fields", help=f"comma-separated row fields to show (default: {','.join(TABLE_DEFAULT_FIELDS)})")

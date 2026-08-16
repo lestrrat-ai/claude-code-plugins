@@ -2817,6 +2817,17 @@ def t_status_verbosity_defaults_to_full(L: ModuleType, tmp: Path) -> None:
           "a newly created ledger must default to brief")
 
 
+def t_table_help_describes_verbosity_defaults(L: ModuleType, tmp: Path) -> None:
+    """`table --help` identifies both the new-run default and the legacy existing-ledger fallback."""
+    code, out, err = cli(L, ["--file", str(tmp / "help.jsonl"), "table", "--help"])
+    check(code == 0, f"table --help exited {code}: {err!r}")
+    help_text = " ".join(out.split())
+    check("new runs default to brief" in help_text,
+          f"table --help omitted the new-run brief default: {out!r}")
+    check("existing ledgers without the field use the legacy full fallback" in help_text,
+          f"table --help omitted the existing-ledger full fallback: {out!r}")
+
+
 def t_legacy_config_block_is_unchanged(L: ModuleType, tmp: Path) -> None:
     """A ledger written before `status_verbosity` existed prints the SAME run-config block it always did.
 
@@ -3324,6 +3335,7 @@ CASES = [
     ("watchdog-interval", "watchdog interval prints the constant in minutes, reads no ledger", t_watchdog_interval_prints_the_constant),
     ("pending-adoption-ordinary", "pending_adoption is an ordinary settable field; setting it IS activity", t_pending_adoption_is_an_ordinary_field),
     ("verbosity-defaults", "new status_verbosity runs use `brief`; existing ledgers keep the `full` fallback", t_status_verbosity_defaults_to_full),
+    ("verbosity-help-defaults", "table help names the new-run `brief` default and existing-ledger `full` fallback", t_table_help_describes_verbosity_defaults),
     ("verbosity-legacy-block-frozen", "a pre-status_verbosity ledger prints the SAME block — pinned against a frozen, retyped list", t_legacy_config_block_is_unchanged),
     ("verbosity-refuses-unknown", "a value outside STATUS_VERBOSITIES is refused at the write door, store unchanged", t_status_verbosity_refuses_an_unknown_value),
     ("verbosity-brief-drops-config", "`brief` is the full render MINUS the run-config block, byte for byte", t_brief_drops_the_run_config_block_and_nothing_else),
