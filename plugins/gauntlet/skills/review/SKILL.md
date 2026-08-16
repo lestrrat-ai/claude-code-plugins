@@ -363,31 +363,26 @@ Past failures:
 
 ## Final Report
 
-Merge phase 1 findings with phase 2 verdicts. Group by verdict, not by lens:
+Merge phase 1 findings with phase 2 verdicts. Group by verdict, not by lens. Keep the default report to one
+complete line per finding; the scratch findings and verdict files retain the detail for an on-request
+expansion.
 
 ```
 ## Confirmed (N)
-[SEC-1] [HIGH] path/file.go:42 — <defect>
-  Trigger: ...
-  Impact: ...
-  Fix: ...
-  Audit: confirmed — <one-line why audit agreed>
+[SEC-1] [HIGH] path/file.go:42 — <defect>; audit: confirmed — <why>
 
 ## Adjusted (N)
-[API-2] [was MEDIUM, now LOW] path/file.go:88 — <defect>
-  ...
-  Audit: <what changed and why>
+[API-2] [was MEDIUM, now LOW] path/file.go:88 — <defect>; audit: adjusted — <what changed>
 
 ## Refuted (N)
-[UX-3] path/file.go:120 — <original claim>
-  Audit: refuted — <validator/guarantee that invalidates it, file:line>
+[UX-3] path/file.go:120 — <original claim>; audit: refuted — <guarantee, file:line>
 
 ## Uncertain (N)
-[SEC-5] path/file.go:200 — <defect>
-  Audit: cannot verify — <what info would resolve it>
+[SEC-5] path/file.go:200 — <defect>; audit: uncertain — <what would resolve it>
 ```
 
-End with:
+Add `Trigger`, `Impact`, or `Fix` detail only when the one-line entry would not let the reader act or when the
+user asks for the expanded report. End with:
 
 - **Summary**: counts per verdict + per severity (confirmed + adjusted only).
 - **Top 3**: highest-leverage confirmed fixes if author has limited time.
