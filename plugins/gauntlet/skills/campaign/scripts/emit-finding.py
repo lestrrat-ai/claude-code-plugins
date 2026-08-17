@@ -47,12 +47,14 @@ identically on the base, which the new loop had copied faithfully. All three gat
 no version of that code had ever had, and the PR died at the round cap. Being true was never the question.
 
 **A finding that anchors to NEITHER is NON-GATING.** So is one whose mechanism the base already has. It is
-still RECORDED — as a follow-up, for a human — and the tool says so on stdout when you write it. What it may not do is produce NOT SATISFIED, and no fix is
+still RECORDED — as a follow-up, for a human — but successful writes are silent; invalid calls report
+diagnostics on stderr and return non-zero. What it may not do is produce NOT SATISFIED, and no fix is
 dispatched for it. That is not a loophole and it is not a licence to lower your bar: it is the difference
 between the findings that were worth 21 rounds and the ones that were not, and it is the only reason this
 gate can ever finish.
 
-**AND A FINDING THAT DOES ANCHOR — GATES. The tool says that too, on the same stdout.** The rule is an IF
+**AND A FINDING THAT DOES ANCHOR — GATES. Successful writes are silent; invalid calls report diagnostics
+on stderr and return non-zero.** The rule is an IF
 AND ONLY IF: **NOT SATISFIED exactly when at least one GATING finding stands.** So the anchor you type here
 IS your verdict — record a gating finding and return SATISFIED anyway and the pass is UNUSABLE and gets
 thrown away, because a finding cannot read as blocking in the artifact and as ignorable in the verdict. If

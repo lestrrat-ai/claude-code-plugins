@@ -86,8 +86,9 @@ THE QUESTION YOU ARE ANSWERING IS: does this PR achieve its stated Purpose, with
    so), it becomes a follow-up for a human, and it MUST NOT make your verdict NOT SATISFIED. That is not
    a licence to lower your bar — it is the difference between a defect and a true statement nobody can
    act on. Return NOT SATISFIED if and only if at least one GATING finding stands. The tool tells you
-   which one you just recorded, every time, so you are never guessing: it prints GATING or NON-GATING as
-   it writes the line. A finding cannot be blocking in the artifact and ignorable in the verdict — if you
+   which one you just recorded, every time, so you are never guessing: successful finding writes are
+   silent, and the recorded fields determine whether the finding is GATING or NON-GATING. A finding
+   cannot be blocking in the artifact and ignorable in the verdict — if you
    record a GATING finding you MUST return NOT SATISFIED, and if what you found does not really block the
    PR then it is one of those FIELDS that is wrong, not the verdict — the anchor (--purpose - with a
    driver-only/hand-edit/dev-time writer) or the base answer (--base pre-existing with the run that

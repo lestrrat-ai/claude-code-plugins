@@ -29,8 +29,9 @@ or writing that path by hand, produces NO report — and a pass with no report c
 The flags:
 
   * `--verdict` — `satisfied` or `not-satisfied`. The rule is an IF AND ONLY IF: **`not-satisfied` exactly
-    when at least one GATING finding stands.** `emit-finding.py` tells you which kind each finding was as
-    it wrote it, so you are never guessing. `deferred` is NOT a verdict — it says you rendered none because
+    when at least one GATING finding stands.** The recorded fields and validation rules determine each
+    finding's kind; successful writes are silent, so read those fields rather than a success message.
+    `deferred` is NOT a verdict — it says you rendered none because
     you raised a request the orchestrator must handle first (a plan amendment, or a broken dispatch you are
     stopping on).
   * `--deferred-reason` — the one line the orchestrator routes a `deferred` result on, and the literal `-`
