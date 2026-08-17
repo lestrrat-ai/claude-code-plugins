@@ -761,9 +761,9 @@ not retell it. The verifier still **cannot raise `reviews_ok`** or judge whether
 **THE VERDICT/FINDINGS RULE IS AN IF AND ONLY IF, AND BOTH HALVES ARE ENFORCED: `NOT SATISFIED` exactly
 when at least one GATING finding stands.** The reviewer decided the finding gates **when it chose that
 `writer`, that `purpose` and that `base`**; the verdict may not then ignore it. A finding the reviewer does
-**not** intend to block on is said so where it is **said**, in those fields — and `emit-finding.py` prints
-`GATING` or `NON-GATING` when it writes the line, so the reviewer learns which it recorded in time to act. A `SATISFIED` pass carrying only non-gating findings is the ordinary, intended
-shape and passes untouched.
+**not** intend to block on is said so where it is **said**, in those fields. A `SATISFIED` pass carrying only
+non-gating findings is the ordinary, intended shape and passes untouched. Successful finding writes produce
+no stdout; invalid calls still report their diagnostics on stderr.
 
 **AND THE INTENT IS CHECKED FOR EVERY PASS — whatever it found, and even when it found nothing.** A
 guard whose input can be absent never fires, and the pass with no findings is precisely the ordinary

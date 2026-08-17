@@ -1985,9 +1985,9 @@ def decide(events: "list[dict]", units: "dict[str, dict]", ruled: int,
         contract was enforced and this half was not, so exactly that pass verified `ok`: the finding is
         real, it gates by the rule the reviewer itself applied when it recorded it, and the gate waved it
         through. If the reviewer believes it does NOT gate, the fix is to say so where it is SAID — a
-        finding that anchors to nothing is `purpose = -` and a no-adversary `writer`, and `finding-add`
-        prints NON-GATING when it writes one. What may never happen is a finding that reads as gating in
-        the artifact and as ignorable in the verdict.
+        finding that anchors to nothing is `purpose = -` and a no-adversary `writer`, and those fields make
+        it NON-GATING. What may never happen is a finding that reads as gating in the artifact and as
+        ignorable in the verdict.
 
     Note which direction EITHER half can move a pass — both can only ever REFUSE one. Nothing here can turn
     a NOT SATISFIED into a pass, raise `reviews_ok`, or merge anything; a tool that could accept would merge
@@ -2440,14 +2440,6 @@ def cmd_amend(args) -> int:
     # just hands it back. An amendment names no planned unit itself (`walk_progress` skips it), so nothing is
     # re-derived; the readback is the whole-file guarantee, not a second copy of the amendment's own rules.
     write_line(path, text, rec, lambda after: check_progress_file(after, path, lambda: units))
-    # A short confirmation, naming the proposed unit — the mirror of `finding-add`'s note. The pass now
-    # verifies `amended` until the orchestrator folds the unit into the plan and restarts the pass (or
-    # records why not); the reviewer writes its report with `--verdict deferred`.
-    sys.stdout.write(
-        f"# amendment raised: the plan is missing {args.id!r} ({args.kind} / {args.target}). This pass now "
-        f"verifies `amended` until the orchestrator rules on it — folds the unit into the plan and restarts "
-        f"the pass, or records why not. Write your report with `--verdict deferred`.\n"
-    )
     return 0
 
 
@@ -2603,17 +2595,6 @@ def cmd_finding_add(args) -> int:
                   load_intent(intent_path(path.parent, pr))[PURPOSE_H])
     write_line(path, before_text(path), rec,
                lambda after: check_findings_file(after, path))
-    # NEITHER of these is an error or a refusal — the finding is RECORDED either way. They are the tool
-    # telling the reviewer WHAT IT JUST WROTE, because the verdict/findings rule is an IF AND ONLY IF and
-    # a reviewer can get it wrong in BOTH directions: a NON-GATING finding turned into a NOT SATISFIED, or
-    # a GATING one left out of the verdict. `verify` refuses the pass either way, fifteen minutes later,
-    # by a tool the reviewer never sees; this is where it learns it, while it can still act.
-    if not gating(rec):
-        reason = ("the base already does this" if rec["base"] == PRE_EXISTING else
-                  "it has no purpose anchor or external writer")
-        sys.stdout.write(f"# NON-GATING: follow-up; {reason}. It cannot make the verdict NOT SATISFIED.\n")
-    else:
-        sys.stdout.write("# GATING: finding anchors a purpose or writable input; verdict MUST be NOT SATISFIED.\n")
     return 0
 
 

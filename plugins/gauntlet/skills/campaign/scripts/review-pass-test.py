@@ -970,7 +970,7 @@ class Tables:
 
             # THE AMENDMENT WRITE DOOR — the one progress event a reviewer used to hand-write, now with a door.
             (["amend", "--reason", "no unit covers the harness", "--id", "u09", "--kind", "file",
-              "--target", "harness.py", "--check", "it runs"], DISPATCHED, 0, "# amendment raised",
+              "--target", "harness.py", "--check", "it runs"], DISPATCHED, 0, "",
              "**THE FIX, AT THE WRITE DOOR.** The dispatch prompt never stated the amendment's schema, so "
              "reviewers invented `{type, gap}` and `verify` refused the malformed line — taking the WHOLE "
              "pass down. Now the amendment goes through a door like every other event: the `ts` is "
@@ -1094,19 +1094,15 @@ class Tables:
         self.FINDING_CLI_CASES = [
             (FINDINGS_FILE, FIND_OK, 0, "",
              "the call the reviewer prompt makes — a finding that DEFENDS a stated purpose and names a real actor"),
-            (FINDINGS_FILE, FIND_OK, 0, "# GATING:",
-             "**AND THE TOOL SAYS SO, AT THE WRITE DOOR.** The same call, and what the reviewer is TOLD: "
-             "this finding ANCHORS, so it BLOCKS, so the verdict must be NOT SATISFIED while it stands. The "
-             "NON-GATING notice below has always existed so a follow-up could not become a block by "
-             "accident; this is its mirror, and the direction that actually merged a PR over a recorded "
-             "defect — `verify` refuses that pass, and this is where the reviewer learns the rule instead "
-             "of losing the pass to it fifteen minutes later"),
+            (FINDINGS_FILE, FIND_OK, 0, "",
+             "the same anchored finding is recorded without success chatter; its fields still require a "
+             "NOT SATISFIED verdict while it stands"),
             (FINDINGS_FILE, ["--path", "scripts/followups.py", "--line", "1815", "--writer", "dev-time",
                              "--purpose", "-", "--repro", "I mutated EXCEPTIONS in memory and self_test() still exited 0",
                              "--fix", "bound the exception table",
                              "--base", R.INTRODUCED, "--base-repro", R.NO_BASE_REPRO],
-             0, "NON-GATING",
-             "**THE SPIRAL FINDING, RECORDED AND DISCHARGED.** It is WRITTEN — this is not censorship, and the reviewer is not told to stop looking. The tool tells it, on stdout, that the finding anchors to nothing and MUST NOT produce NOT SATISFIED. It becomes a follow-up"),
+             0, "",
+             "**THE SPIRAL FINDING, RECORDED AND DISCHARGED.** It is WRITTEN and becomes a follow-up without success chatter"),
             (FINDINGS_FILE, [*FIND_OK[:6], "--purpose", "-", *FIND_OK[8:12],
                              "--base", R.PRE_EXISTING,
                              # An INVENTED base sha and an INVENTED output line. Neither exists anywhere in
@@ -1115,7 +1111,7 @@ class Tables:
                              # reader who greps for it and lands on the live site that prints it.
                              "--base-repro", "checked out the base at 0000000 and ran the same probe: "
                                              "it printed `all 1 probes agree` and exited 0 there too"],
-             0, "NON-GATING",
+             0, "",
              "**THE PR-207 FINDING, RECORDED AND DISCHARGED.** True, reproduced, `writer=repo-content` — "
              "and the BASE does exactly the same thing. Under the old two-question rule this GATED, and a "
              "refactor was made to pay for main's history: the fix added detection no version of that code "
@@ -1134,7 +1130,7 @@ class Tables:
              "reader cannot tell which half to believe, so neither is accepted"),
             (FINDINGS_FILE, [*FIND_OK[:12], "--base", R.PRE_EXISTING,
                              "--base-repro", "the base prints the same thing at 0000000"],
-             0, "# GATING:",
+             0, "",
              "**THE BOUND ON THE WHOLE RULE.** Pre-existing, measured, and it STILL gates — because this "
              "one anchors to a `## Purpose` line. A PR that promised to fix the thing cannot plead that "
              "the thing was already broken"),
@@ -1616,16 +1612,21 @@ def check(cond: bool, msg: str) -> None:
         raise SelfTestFailure(msg)
 
 
-def run_cli(mod: types.ModuleType, argv: "list[str]") -> "tuple[int, str]":
-    """Drive the REAL CLI in-process: (exit code, stdout+stderr). Never the internals — so argparse, the
-    `Defect`/`OperatorError` -> exit-code mapping, and `main()`'s wiring are all under test too."""
+def run_cli_streams(mod: types.ModuleType, argv: "list[str]") -> "tuple[int, str, str]":
+    """Drive the REAL CLI in-process: (exit code, stdout, stderr), never its internals."""
     out, err = io.StringIO(), io.StringIO()
     try:
         with redirect_stdout(out), redirect_stderr(err):
             code = mod.main(argv)
     except SystemExit as exc:  # argparse -> 2
         code = exc.code if isinstance(exc.code, int) else 1
-    return code, out.getvalue() + err.getvalue()
+    return code, out.getvalue(), err.getvalue()
+
+
+def run_cli(mod: types.ModuleType, argv: "list[str]") -> "tuple[int, str]":
+    """Drive the REAL CLI in-process and return combined output for existing diagnostics."""
+    code, stdout, stderr = run_cli_streams(mod, argv)
+    return code, stdout + stderr
 
 
 def write_intent(d: Path, text: "str | None" = INTENT) -> None:
@@ -1836,7 +1837,11 @@ def run_cases(mod: types.ModuleType, T: Tables, tmp: Path) -> "dict[str, tuple[s
         if argv[0] == "verify" and "--ledger" not in argv[1:]:
             extra = ["--ledger", str(_write_ledger(path.parent / "state.jsonl", []))]
         try:
-            code, text = run_cli(mod, [argv[0], "--file", str(path), *argv[1:], *extra])
+            code, stdout, stderr = run_cli_streams(mod, [argv[0], "--file", str(path), *argv[1:], *extra])
+            text = stdout + stderr
+            if argv[0] == "amend" and code == 0 and stdout:
+                got[cli_key(i, argv)] = ("non-empty success stdout", text)
+                continue
             got[cli_key(i, argv)] = (f"exit{code}", text)
         except Exception as exc:  # noqa: BLE001
             got[cli_key(i, argv)] = (f"crash:{type(exc).__name__}", str(exc))
@@ -1864,7 +1869,11 @@ def run_cases(mod: types.ModuleType, T: Tables, tmp: Path) -> "dict[str, tuple[s
     for i, (fname, argv, _, _, _) in enumerate(T.FINDING_CLI_CASES):  # drops want, needle, why
         d = build(tmp, f"find-cli-{i}", T.PLAN, T.DISPATCHED, None, INTENT).parent
         try:
-            code, text = run_cli(mod, ["finding-add", "--file", str(d / fname), *argv])
+            code, stdout, stderr = run_cli_streams(mod, ["finding-add", "--file", str(d / fname), *argv])
+            text = stdout + stderr
+            if code == 0 and stdout:
+                got[find_key(i, fname)] = ("non-empty success stdout", text)
+                continue
             got[find_key(i, fname)] = (f"exit{code}", text)
         except Exception as exc:  # noqa: BLE001
             got[find_key(i, fname)] = (f"crash:{type(exc).__name__}", str(exc))
@@ -2708,10 +2717,11 @@ def check_amendment_door(R: types.ModuleType, tmp: Path) -> int:
     d = seed("owner")
     progress = d / PROGRESS_FILE
     run_cli(R, ["identity", "--file", str(progress), "--head-sha", SHA, "--dispatched-at", TS, "--default-non-goals", "[]"])
-    code, out = run_cli(R, ["amend", "--file", str(progress), "--reason", "no unit covers the harness",
-                            "--id", "u09", "--kind", "file", "--target", "harness.py", "--check", "it runs"])
-    if code != 0 or "u09" not in out:
-        print(f"FAIL     [amend] the owner's door refused a valid amendment (exit {code}): {out.strip()}")
+    code, stdout, stderr = run_cli_streams(R, ["amend", "--file", str(progress), "--reason", "no unit covers the harness",
+                                               "--id", "u09", "--kind", "file", "--target", "harness.py", "--check", "it runs"])
+    if code != 0 or stdout:
+        print(f"FAIL     [amend] the owner's valid door was not quiet (exit {code}, stdout={stdout!r}): "
+              f"{stderr.strip()}")
         failures += 1
     (d / REPORT_FILE).write_text(DEFERRED_REPORT, encoding="utf-8")
     # `verify --ledger` is REQUIRED (F2); the identity above is bound to [], so a same-dir []-defaults ledger
@@ -2747,9 +2757,9 @@ def check_amendment_door(R: types.ModuleType, tmp: Path) -> int:
         [sys.executable, str(AMENDMENT_WRAPPER), "--file", str(progress), "--reason", "harness gap",
          "--id", "u09", "--kind", "docs", "--target", "y.md", "--check", "b"],
         capture_output=True, text=True, check=False)
-    if run.returncode != 0:
-        print(f"FAIL     [amend] the `emit-amendment.py` shim refused a valid amendment "
-              f"(exit {run.returncode}): {(run.stdout + run.stderr).strip()}")
+    if run.returncode != 0 or run.stdout:
+        print(f"FAIL     [amend] the `emit-amendment.py` shim was not quiet for a valid amendment "
+              f"(exit {run.returncode}, stdout={run.stdout!r}): {run.stderr.strip()}")
         failures += 1
     (d / REPORT_FILE).write_text(DEFERRED_REPORT, encoding="utf-8")
     ledger = _write_ledger(d / "state.jsonl", [])  # in-sync []-scope ledger for the now-required --ledger (F2)
