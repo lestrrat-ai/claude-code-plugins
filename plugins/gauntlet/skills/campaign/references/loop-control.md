@@ -732,7 +732,7 @@ resume. This block OWNS when the loop continues; every other site points here, n
 
      **HOW MUCH OF THAT RENDER PRINTS IS THE OPERATOR'S SETTING — the ledger header field
      `status_verbosity`** (`files-and-ledger.md` owns the field, its vocabulary and its validation;
-     `full` is the default, `brief` the opt-in). Re-read it from the header every heartbeat like any other
+     new runs use `brief`, while old ledgers without the field use the legacy `full` fallback). Re-read it from the header every heartbeat like any other
      header field, never from memory. Under `full`, render exactly as above. Under `brief`, drop the
      **SET-ONCE RUN CONFIGURATION**: `table` omits its `# <field>: <value>` block for you, and you
      likewise stop restating those same header fields in prose. Keep the prose you write to **what moved

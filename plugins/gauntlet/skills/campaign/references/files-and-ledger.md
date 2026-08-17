@@ -258,8 +258,9 @@ the operator's own display setting. Unlike `watchdog_due` it is an **ORDINARY, h
 (`header set status_verbosity brief`): it has a real door, and **writing it IS meaningful activity** (no
 exemption — it is not a sensor). `ledger.py`'s `parse_status_verbosity` is the **ONE validator** and
 `status_verbosity(header)` the **ONE read door**; a value outside the vocabulary is **REFUSED without
-mutating the ledger** (fail closed). It **defaults to `full`**, and that default is load-bearing rather
-than a taste: an existing run renders exactly as it did until the operator opts in.
+mutating the ledger** (fail closed). New runs **default to `brief`** so each heartbeat omits the set-once
+run configuration. An existing ledger that predates this field reads the legacy `full` fallback and renders
+exactly as it did.
 
 **It is PRESENTATION and nothing else.** No verdict, CI derivation, cap, park, label or merge
 precondition reads it, and no stored value changes with it — `header get` and `list` still return every
@@ -269,8 +270,8 @@ omit and what it must always print.** Inside `table` it decides exactly one thin
 lines.** The printed block is `ledger.py`'s `TABLE_CONFIG_FIELDS` — the header fields minus the
 presentation ones (`HEADER_PRESENTATION_FIELDS`), declared in the schema rather than at the render site —
 so a **PRESENTATION** field is stored, gettable and settable like any other and simply never printed
-there. That exclusion is what makes the `full` default a true no-op: a ledger written before this field
-existed back-fills the default and still prints the block it always printed, byte for byte. Under `brief`
+there. That exclusion is what makes the legacy `full` fallback a true no-op: a ledger written before this
+field existed back-fills the fallback and still prints the block it always printed, byte for byte. Under `brief`
 the block is gone entirely, so printing the setting inside it could never have explained a missing
 preamble either. `brief` drops that block — set-once
 configuration a heartbeat would otherwise reprint every time — **and drops nothing else. It never removes
