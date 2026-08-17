@@ -2058,6 +2058,25 @@ def check_docs(R: types.ModuleType) -> int:
     return failures
 
 
+def check_quiet_finding_docs() -> int:
+    """The reviewer-facing finding docs must match the silent write door and its recorded fields."""
+    cases = (
+        ("review-prompt.txt", HERE / "review-prompt.txt",
+         "successful finding writes are silent"),
+        ("emit-report.py", REPORT_WRAPPER,
+         "recorded fields and validation rules determine each finding's kind; successful writes are silent"),
+    )
+    failures = 0
+    for name, path, current in cases:
+        text = " ".join(path.read_text(encoding="utf-8").split())
+        if current in text:
+            print(f"ok       [quiet-finding] {name:24} documents silent successful writes")
+        else:
+            print(f"FAIL     [quiet-finding] {name} still promises a success verdict message")
+            failures += 1
+    return failures
+
+
 # --- EVERY DOOR'S HELP: what it SAYS must be what the tool TAKES ---------------------------------
 #
 # `emit-progress.py --help` printed `usage: emit-progress.py emit [-h] --file …`, and running that exact
@@ -3022,6 +3041,8 @@ def run(R: types.ModuleType, tmp: Path) -> int:
     failures += check_boundaries(R, T)
     print()
     failures += check_docs(R)
+    print()
+    failures += check_quiet_finding_docs()
     print()
     failures += check_residual_records(R, T, tmp)
     print()
