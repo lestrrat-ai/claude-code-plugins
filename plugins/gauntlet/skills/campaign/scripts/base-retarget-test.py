@@ -7,8 +7,9 @@ EVERY FIXTURE HAS TEETH, and the ones that matter most are the PARKS. This tool 
 campaign that can rewrite a live row's base without a human, so a fixture suite that only proved the happy
 path would certify exactly the wrong half. Each park fixture is one shape that LOOKS like the stacked-PR
 merge and is not — a base whose PR is still open, one closed unmerged, one that merged somewhere else, a
-deleted branch with no PR at all, a FORK branch that merely shares the name, and a merge of that name from
-BEFORE this PR existed — and each asserts that the recorded base SURVIVES.
+deleted branch with no PR at all, a FORK branch that merely shares the name, a merge of that name from
+BEFORE this PR existed, and one stamped at the very SECOND this PR was created — and each asserts that the
+recorded base SURVIVES.
 
 The `resolve` fixtures drive the real CLI against a REAL ledger built through `ledger.py` itself, with both
 `gh` reads replaced by recorded responses (`--candidates-json`, `--pr-created-at`). What they assert is the
@@ -36,7 +37,8 @@ check = checker(M.SelfTestFailure)
 
 # The PR under decision was created BEFORE every fixture merge below, so a fixture says nothing about the
 # recency bound unless it sets its own instant. `t_history_before_this_pr_parks` is where that bound is
-# pinned, and `pr_entry`'s default merge is deliberately later than this.
+# pinned and `t_merge_in_the_creation_second_parks` is where its STRICT edge is, and `pr_entry`'s default
+# merge is deliberately later than this.
 CREATED = "2025-12-31T00:00:00Z"
 
 
@@ -176,14 +178,26 @@ def t_history_before_this_pr_parks():
     this PR is history, not the cause of where it now points."""
     old = [pr_entry(7, "fix-a", "main", merged_at="2019-01-02T03:04:05Z")]
     got = expect("fix-a", "main", old, M.PARK, created="2026-05-01T00:00:00Z")
-    check("BEFORE this PR was created" in got["reason"] and "2026-05-01" in got["reason"],
+    check("strictly AFTER this PR" in got["reason"] and "2026-05-01" in got["reason"],
           f"the park must name the bound it applied, got {got['reason']!r}")
     check(got["evidence"]["stale_parent_prs"] == [7], f"the merge it refused to use must be named, got {got!r}")
     # The SAME shape with the merge after this PR was created is the ordinary stacked-PR migrate.
     expect("fix-a", "main", old, M.MIGRATE, created="2018-01-01T00:00:00Z")
-    # A merge at the same instant as the creation is not history — the PR existed for it.
-    expect("fix-a", "main", [pr_entry(7, "fix-a", "main", merged_at="2026-05-01T00:00:00Z")], M.MIGRATE,
-           created="2026-05-01T00:00:00Z")
+
+
+def t_merge_in_the_creation_second_parks():
+    """THE BOUND IS STRICT. `gh` truncates both `mergedAt` and `createdAt` to whole SECONDS, so an EQUAL pair
+    is consistent with the parent merging FIRST and this PR being opened later inside that same second — the
+    hand-retarget shape, which GitHub moved nothing for. Equality therefore cannot establish that this PR was
+    OPEN for the merge, and a bound that cannot be applied parks instead of rewriting a live row's base."""
+    same = "2026-05-01T00:00:00Z"
+    got = expect("fix-a", "main", [pr_entry(7, "fix-a", "main", merged_at=same)], M.PARK, created=same)
+    check("same SECOND" in got["reason"], f"the park must name why equality decides nothing, got {got!r}")
+    check(got["evidence"]["stale_parent_prs"] == [7], f"the merge it refused to use must be named, got {got!r}")
+    # ONE second later is the ordinary stacked-PR migrate: the orderings no longer collide.
+    got = expect("fix-a", "main", [pr_entry(7, "fix-a", "main", merged_at="2026-05-01T00:00:01Z")], M.MIGRATE,
+                 created=same)
+    check(got["evidence"]["parent_prs"] == [7], f"the eligible parent must decide, got {got!r}")
 
 
 def t_older_merge_cannot_shadow_a_recent_one():
@@ -495,6 +509,8 @@ CASES = [
     ("fork-parent-parks", "a merged FORK PR sharing the branch name is never a parent", t_fork_parent_parks),
     ("history-before-pr-parks", "a merge older than the PR itself cannot have retargeted it",
      t_history_before_this_pr_parks),
+    ("same-second-merge-parks", "a merge stamped in the PR's own creation second cannot have retargeted it",
+     t_merge_in_the_creation_second_parks),
     ("recent-parent-still-decides", "a stale merge does not shadow the parent that merged after the PR",
      t_older_merge_cannot_shadow_a_recent_one),
     ("unanchored-instants-park", "a createdAt or mergedAt this tool cannot order parks",

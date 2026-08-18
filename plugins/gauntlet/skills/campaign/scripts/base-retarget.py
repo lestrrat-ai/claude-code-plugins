@@ -38,10 +38,10 @@ neither re-opens which of the RUN's PRs are live (repo `CLAUDE.md` owns why the 
 `--state open`).
 
 FAIL CLOSED, ALWAYS TOWARDS THE PARK. A fetch that fails, a malformed candidate, no merged PR from THIS
-REPOSITORY's recorded branch, one that merged BEFORE this PR existed, several with contradictory bases, or a
-merged PR whose own base is NOT where this PR now points — each is a divergence this tool cannot explain,
-and an unexplained divergence is the park the user already knows how to answer. Only the exact GitHub shape
-migrates.
+REPOSITORY's recorded branch, one whose merge is not stamped strictly AFTER this PR was created, several
+with contradictory bases, or a merged PR whose own base is NOT where this PR now points — each is a
+divergence this tool cannot explain, and an unexplained divergence is the park the user already knows how to
+answer. Only the exact GitHub shape migrates.
 
 TWO BOUNDS KEEP A BRANCH NAME FROM STANDING IN FOR THE MERGE THAT MOVED THIS PR. A head branch NAME is
 neither unique nor single-use, so a name match alone is not the event:
@@ -50,8 +50,10 @@ neither unique nor single-use, so a name match alone is not the event:
     of this repository. Merging a fork's `v3` retargets nothing based on THIS repository's `v3`, so a
     cross-repository candidate is never a parent (`isCrossRepository`);
   * a branch name can be RECREATED after an earlier merge of the same name. GitHub retargets the PRs that
-    are OPEN at the instant of the merge, so a merge that predates this PR's own `createdAt` cannot have
-    moved it — the merge is history, not the cause, and the row parks.
+    are OPEN at the instant of the merge, so a merge that does not postdate this PR's own `createdAt` cannot
+    be shown to have moved it — the merge is history, not the cause, and the row parks. That bound is STRICT
+    because `gh` stamps both instants at SECOND precision: an EQUAL pair is consistent with the parent
+    merging FIRST and this PR being opened later in the same second, which GitHub retargets nothing for.
 
 The verdict is printed as JSON on stdout and the EXIT CODE gates a caller's `$?`: 0 when the row now matches
 its live base (`migrate`, or `no-change` when it already did), non-zero when it does not (`park`, or a write
@@ -180,8 +182,8 @@ def decide(recorded: str, live: str, candidates: object, created: object) -> dic
 
     PURE — no I/O, no raising. The ONE shape that migrates is GitHub's own retarget:
 
-        the most recently merged SAME-REPOSITORY PR whose HEAD was `recorded`, merged after this PR was
-        created, has `baseRefName == live`.
+        the most recently merged SAME-REPOSITORY PR whose HEAD was `recorded`, merged STRICTLY after
+        this PR was created, has `baseRefName == live`.
 
     Both bounds on the parent are there because a head branch NAME identifies neither one repository nor one
     branch instance: `--head` also matches FORK branches of the same name, and a name can be recreated after
@@ -200,9 +202,11 @@ def decide(recorded: str, live: str, candidates: object, created: object) -> dic
       * no merged SAME-REPOSITORY PR from the recorded branch at all: the branch was deleted, its PR is still
         open or was closed unmerged, or every match was a fork's like-named branch. GitHub retargets on the
         MERGE of THIS repository's branch, so none of those explain where this PR now points;
-      * every such merge PREDATING this PR: GitHub retargets the PRs that are OPEN when the merge happens, so
-        a merge older than this PR is history that cannot have moved it. This is the recreated-branch shape —
-        a name merged long ago, recreated, and hand-retargeted since;
+      * every such merge stamped NO LATER than this PR's creation: GitHub retargets the PRs that are OPEN
+        when the merge happens, so a merge older than this PR is history that cannot have moved it, and a
+        merge stamped at the very same SECOND cannot show this PR was open for it either (see the strict
+        bound below). This is the recreated-branch shape — a name merged long ago, recreated, and
+        hand-retargeted since;
       * several merged PRs from that branch whose newest merge is AMBIGUOUS — two merged at the same instant
         and they disagree about their own base, so "the base GitHub moved this PR to" has no single answer;
       * a newest merged parent whose own base is NOT `live`: GitHub would have moved this PR to the parent's
@@ -237,12 +241,19 @@ def decide(recorded: str, live: str, candidates: object, created: object) -> dic
                             recorded=recorded, live=live)
         timed.append((entry, moment))
     # Paired with its entry rather than keyed by PR number: a payload is not trusted to hold each number once.
-    recent = [entry for entry, moment in timed if moment >= born]
+    # THE BOUND IS STRICT, and the equal case is REACHABLE, not theoretical: `gh` reports both `mergedAt`
+    # and `createdAt` truncated to whole SECONDS, and PRs opened by one script share a stamp routinely. An
+    # EQUAL pair therefore cannot separate "this PR was already open when the parent merged" (GitHub
+    # retargeted it) from "the parent merged first and this PR was created later in that same second"
+    # (GitHub retargeted nothing, so the divergence is a hand-retarget). A bound that cannot be applied is
+    # not a passed one, and this tool parks rather than migrating a live row on a coin flip.
+    recent = [entry for entry, moment in timed if moment > born]
     if not recent:
         stale = sorted(entry["number"] for entry in parents)
-        return _verdict(PARK, f"every merged PR from {recorded!r} ({stale}) merged BEFORE this PR was "
-                              f"created ({created}), and GitHub retargets the PRs that are OPEN when a "
-                              f"merge happens — so that history did not move this one",
+        return _verdict(PARK, f"no merged PR from {recorded!r} ({stale}) is stamped strictly AFTER this PR "
+                              f"was created ({created}), and GitHub retargets the PRs that are OPEN when a "
+                              f"merge happens — an older merge is history that did not move this one, and a "
+                              f"merge stamped in the same SECOND cannot show this PR was open for it",
                         recorded=recorded, live=live,
                         evidence={"stale_parent_prs": stale, "pr_created_at": created})
     newest = max(entry["mergedAt"] for entry in recent)
