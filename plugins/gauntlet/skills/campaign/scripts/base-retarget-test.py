@@ -70,8 +70,10 @@ def hand_move(old: str, new: str, *, at: str = MOVED) -> dict:
 
 
 def failed_move(old: str, new: str, *, at: str = MOVED) -> dict:
-    """GitHub TRIED to retarget this PR and could not — so this item did not move it anywhere."""
-    return {"__typename": "AutomaticBaseChangeFailedEvent", "createdAt": at, "oldBase": old, "newBase": new}
+    """GitHub TRIED to retarget this PR and could not — so this item did not move it anywhere, and the
+    base-move read never asks for its type (`BASE_MOVE_NON_MOVE`). Handing one in is how the fixtures pin
+    BOTH halves of that: it can never migrate, and it must never be able to occupy the newest-move window."""
+    return {"__typename": M.BASE_MOVE_NON_MOVE, "createdAt": at, "oldBase": old, "newBase": new}
 
 
 def _run_ledger(ledger: Path, *argv: str) -> subprocess.CompletedProcess:
@@ -347,12 +349,38 @@ def t_hand_retarget_before_the_parent_merge_parks():
 
 
 def t_failed_automatic_retarget_parks():
-    """GitHub TRIED to retarget this PR and could not, so that item moved it nowhere. Whatever put it on
-    the live base, GitHub is not claiming it did."""
+    """GitHub TRIED to retarget this PR and could not, so that item moved it nowhere. It is not a type the
+    read asks for, so one arriving anyway is a payload this tool did not request — and an unrequested type
+    is refused by NAME, never mistaken for the retarget that migrates."""
     got = expect("fix-a", "main", [pr_entry(35, "fix-a", "main")], M.PARK,
                  moves=[failed_move("fix-a", "main")])
-    check("AutomaticBaseChangeFailedEvent" in got["reason"],
+    check(M.BASE_MOVE_NON_MOVE in got["reason"],
           f"the park must name the item it refused, got {got['reason']!r}")
+    check("not one this tool asked" in got["reason"],
+          f"the park must say the type was never requested, got {got['reason']!r}")
+
+
+def t_failed_attempt_cannot_hide_the_retarget():
+    """THE TWO-DEEP STACK, and the reason `BASE_MOVE_NON_MOVE` may never join `BASE_MOVE_TYPES`. This PR is
+    opened on `v3`; PR 100 merges `v3` into `v2` and GitHub retargets this PR `v3` -> `v2`; `v2` then merges
+    into `main` and GitHub's NEXT attempt on this PR FAILS. A failed attempt moves nothing, so the live base
+    is still `v2` and GitHub's own succeeded event explains it exactly — a migrate.
+
+    The read asks for the newest `BASE_MOVE_LIMIT` items across EVERY type it names, so naming the failed
+    type would let that later attempt occupy the whole window and suppress the succeeded event below it,
+    parking a row GitHub really did retarget. The assertions are on the QUERY because that is where the
+    suppression would happen: `decide` never sees the item the window dropped."""
+    check(M.BASE_MOVE_NON_MOVE not in M.BASE_MOVE_TYPES,
+          f"{M.BASE_MOVE_NON_MOVE} moved nothing and must not be a base-move type, got {M.BASE_MOVE_TYPES!r}")
+    check(M.BASE_MOVE_NON_MOVE not in M.BASE_MOVE_QUERY,
+          f"the read must not select {M.BASE_MOVE_NON_MOVE}, got {M.BASE_MOVE_QUERY!r}")
+    check(M._timeline_enum(M.BASE_MOVE_NON_MOVE) not in M.BASE_MOVE_QUERY,
+          f"the itemTypes filter must not name {M.BASE_MOVE_NON_MOVE}, got {M.BASE_MOVE_QUERY!r}")
+    # The stack itself: with the succeeded event — the item a window naming the failed type would have
+    # dropped — this is the ordinary stacked-PR migrate.
+    parent = [pr_entry(100, "v3", "v2", merged_at="2026-08-02T00:00:00Z")]
+    expect("v3", "v2", parent, M.MIGRATE, created="2026-08-01T00:00:00Z",
+           moves=[auto_move("v3", "v2", at="2026-08-02T00:00:02Z")])
 
 
 def t_no_base_move_parks():
@@ -742,6 +770,9 @@ CASES = [
      t_hand_retarget_before_the_parent_merge_parks),
     ("failed-auto-retarget-parks", "an automatic retarget GitHub could not complete moved nothing",
      t_failed_automatic_retarget_parks),
+    ("failed-attempt-cannot-hide-the-retarget",
+     "a failed attempt is never read, so it cannot suppress the succeeded retarget below it",
+     t_failed_attempt_cannot_hide_the_retarget),
     ("no-base-move-parks", "an absent base-move event cannot show the merge moved this PR", t_no_base_move_parks),
     ("retarget-other-refs-parks", "GitHub's retarget of a DIFFERENT pair of refs is not this move",
      t_retarget_of_other_refs_parks),

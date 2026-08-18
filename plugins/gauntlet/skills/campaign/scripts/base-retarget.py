@@ -71,10 +71,12 @@ matches, and that merge still moved nothing, because GitHub retargets the PRs wh
 MERGE INSTANT and this one's base was already `main`. So the CAUSAL EVENT is read directly, from THIS PR's
 own timeline. GitHub records its own retarget as an `AutomaticBaseChangeSucceededEvent` carrying the
 `oldBase`/`newBase` it moved and the instant it moved them, and a person's retarget as a
-`BaseRefChangedEvent` instead. The NEWEST of those items is what put this PR on its live base, and it
-migrates only when it is GitHub's OWN, moved `recorded` -> `live`, and is stamped NO EARLIER than the merge
-that explains it. The hand-retarget above is then the wrong item TYPE, and an older automatic retarget the
-wrong REFS or the wrong INSTANT.
+`BaseRefChangedEvent` instead. ONLY items that MOVED the base are read: GitHub also records an attempt it
+could NOT complete (`AutomaticBaseChangeFailedEvent`), which moved nothing and is deliberately never asked
+for, so it can never displace the move that did (`BASE_MOVE_TYPES` owns why). The NEWEST of the items read
+is therefore what put this PR on its live base, and it migrates only when it is GitHub's OWN, moved
+`recorded` -> `live`, and is stamped NO EARLIER than the merge that explains it. The hand-retarget above is
+then the wrong item TYPE, and an older automatic retarget the wrong REFS or the wrong INSTANT.
 
 The verdict is printed as JSON on stdout and the EXIT CODE gates a caller's `$?`: 0 when the row now matches
 its live base (`migrate`, or `no-change` when it already did), non-zero when it does not (`park`, or a write
@@ -127,26 +129,42 @@ CANDIDATE_LIMIT = 50
 # onto a base that contains its parent's work — that is a user change, and it parks.
 MERGED_STATE = "MERGED"
 
-# WHAT MOVED THIS PR'S BASE — the GraphQL timeline item types that move (or try to move) a pull request's
-# `baseRefName`, each mapped to the field names IT spells its from/to refs in. This is the COMPLETE set:
-# nothing else changes a PR's base, so the NEWEST of these items is the event that put this PR where it now
-# points. The `gh api graphql` request is BUILT from this mapping (`BASE_MOVE_QUERY`), so a type added here
-# is requested AND understood, and the two can never drift.
+# WHAT MOVED THIS PR'S BASE — the GraphQL timeline item types that MOVE a pull request's `baseRefName`,
+# each mapped to the field names IT spells its from/to refs in. This is the COMPLETE set of MOVES: nothing
+# else changes a PR's base, so the NEWEST of these items is the event that put this PR where it now points.
+# The `gh api graphql` request is BUILT from this mapping (`BASE_MOVE_QUERY`), so a type added here is
+# requested AND understood, and the two can never drift.
+#
+# ONLY A TYPE THAT MOVED THE BASE MAY BE LISTED HERE (`BASE_MOVE_NON_MOVE` is the one that must never come
+# back): the read is `last:BASE_MOVE_LIMIT` across every type named here, so a type that moved NOTHING
+# would occupy the newest-item window and HIDE the move that did. That is not hypothetical — a two-deep
+# stack produces it. This PR sits on `v3`; `v3` merges into `v2` and GitHub retargets this PR `v3` -> `v2`
+# (succeeded); `v2` then merges into `main` and GitHub's next attempt on this PR FAILS. The live base is
+# still `v2`, GitHub's own succeeded event says exactly that, and a window holding the failed attempt would
+# park a row GitHub really did retarget. Dropping the failed attempt loses no evidence, because it carries
+# no base change: whatever the previous real move set is still the live base, and that move is still the
+# newest item read.
 BASE_MOVE_TYPES = {
     # GitHub's OWN retarget, fired when the base branch's PR merges. THE ONLY ONE THAT EXPLAINS A MIGRATE.
     "AutomaticBaseChangeSucceededEvent": ("oldBase", "newBase"),
-    # GitHub TRIED to retarget this PR and could not, so this item did NOT move it — whatever did, GitHub
-    # is not claiming it.
-    "AutomaticBaseChangeFailedEvent": ("oldBase", "newBase"),
     # A person (or a token acting as one) set the base by hand. That is user intent this pipeline cannot
     # interpret, and it is exactly the sequence a merged parent alone cannot be told apart from.
     "BaseRefChangedEvent": ("previousRefName", "currentRefName"),
 }
 GITHUB_RETARGET = "AutomaticBaseChangeSucceededEvent"
 
+# The timeline item type this read must NEVER ask for — GitHub emits it when its retarget attempt FAILED,
+# so it moved nothing (see `BASE_MOVE_TYPES`). It is named here so the fixture suite can assert its ABSENCE
+# from the mapping and from the query MECHANICALLY, instead of trusting the comment above to be obeyed. It
+# is not a `BASE_MOVE_TYPES` key, so should one ever reach `base_move` anyway it is refused as a type this
+# tool never asked for, and the row parks.
+BASE_MOVE_NON_MOVE = "AutomaticBaseChangeFailedEvent"
+
 # How many timeline items the base-move read asks for. ONE: only the NEWEST base move can be what put this
-# PR on its live base, and an older one is a move that something later overwrote. A payload carrying more
-# than this is not the read this tool made, so it decides nothing (see `base_move`).
+# PR on its live base, and an older one is a move that something later overwrote. ONE is sound ONLY because
+# every type in `BASE_MOVE_TYPES` MOVED the base — a non-move in that set would consume this single slot
+# and hide the move beneath it. A payload carrying more than this is not the read this tool made, so it
+# decides nothing (see `base_move`).
 BASE_MOVE_LIMIT = 1
 
 
@@ -224,8 +242,8 @@ def base_move(events: object) -> "tuple[dict | None, str | None]":
     """The newest event that moved this PR's base, as `(move, problem)` — a malformed payload yields a
     problem and no move, an EMPTY payload yields neither. PURE — no I/O, no raising.
 
-    The move comes back NORMALIZED — `{"type", "from", "to", "at"}` — because the three item types spell the
-    same two refs under different names (`BASE_MOVE_TYPES` owns which). The `type` is kept verbatim so the
+    The move comes back NORMALIZED — `{"type", "from", "to", "at"}` — because the item types spell the same
+    two refs under different names (`BASE_MOVE_TYPES` owns which). The `type` is kept verbatim so the
     caller can say WHICH event it refused, and `at` is the payload's own stamp so the reason quotes what
     GitHub said.
 
@@ -311,9 +329,11 @@ def decide(recorded: str, live: str, candidates: object, created: object, events
         an unorderable `createdAt`, or more items than the newest-only read asks for;
       * NO base-move item at all: something put this PR on a base it was not opened with, and GitHub's own
         timeline does not say what, so nothing shows the merge above did it;
-      * a newest base move that is a HAND retarget, or an automatic one that FAILED: the eligible merge is
-        then a coincidence beside a move somebody else made, which is precisely the sequence the two bounds
-        on the parent cannot separate on their own;
+      * a newest base move that is a HAND retarget: the eligible merge is then a coincidence beside a move
+        somebody else made, which is precisely the sequence the two bounds on the parent cannot separate on
+        their own. GitHub's own FAILED attempt is not among the items read at all — it moved nothing, so it
+        must never displace the move that did (`BASE_MOVE_TYPES`), and one handed in anyway is refused by
+        the malformed-payload rule above as a type this tool never asked for;
       * a newest automatic retarget whose own `oldBase`/`newBase` are not `recorded` -> `live`, or that is
         stamped BEFORE the deciding merge: that is some OTHER retarget, and this merge is not what moved it.
     """
