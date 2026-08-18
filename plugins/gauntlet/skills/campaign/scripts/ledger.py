@@ -78,7 +78,7 @@ TABLE_CONFIG_FIELDS = tuple(f for f in HEADER_FIELDS if f not in HEADER_PRESENTA
 HEADER_DEFAULTS = {
     "run_id": "-",
     # LEGACY FALLBACK for the base branch. The base a PR merges into is now ROW state (`base_branch` in
-    # ROW_FIELDS), written once at row creation. This header field is only what a row with NO explicit base
+    # ROW_FIELDS), recorded on the row at adoption. This header field is only what a row with NO explicit base
     # inherits, through `effective_base` — the schema-owned resolver, the sanctioned door for base
     # consumers. Per-row base resolution is LIVE: adoption records each row's base and every consumer
     # resolves through the accessor, never this header directly. Mixed-base ADMISSION is ENABLED: adoption

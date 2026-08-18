@@ -22,9 +22,9 @@ also stored once because it is derived from that base. Admission therefore rejec
 the otherwise per-PR pipeline can run.
 
 This feature supports static mixed bases only. A new row records the PR's live `baseRefName` once during
-adoption. The campaign does not change that recorded base later. If the live target changes during the
-run, the campaign parks the row for the user instead of updating it or automatically running the gate
-again.
+adoption. **SUPERSEDED IN PART (see the note at the top):** the campaign changes that recorded base later
+for GitHub's own retarget alone. If the live target changes for any other reason, the campaign parks the
+row for the user instead of updating it or automatically running the gate again.
 
 The design preserves these guarantees:
 
@@ -179,11 +179,16 @@ no host-specific command, environment variable, typed transport revision, or hea
 ### Core invariants
 
 1. Every nonterminal PR row has one effective base branch.
-2. A new row stores the live `baseRefName` observed during adoption. That stored value never changes.
+2. A new row stores the live `baseRefName` observed during adoption. **SUPERSEDED IN PART (see the note at
+   the top):** that stored value is closed to every driver door, and exactly one transition rewrites it on a
+   live row — the explained retarget (`ledger.py retarget`, decided by `base-retarget.py`).
 3. Reconciliation compares the stored value with live `baseRefName` before dispatching work. A mismatch
-   parks the row for the user; a row already held parks when its hold clears through its own exit.
-4. The campaign never updates a row to a new base and never automatically runs the gate again because a
-   live base changed.
+   goes to `base-retarget.py`, which migrates the row on the one explained divergence and otherwise parks it
+   for the user; a row already held parks when its hold clears through its own exit.
+4. **SUPERSEDED IN PART (see the note at the top):** the campaign updates a row to a new base for ONE
+   divergence — GitHub's own retarget, when the recorded base's PR merged — and the row then keeps going on
+   the base it actually targets. Every other live base change parks the row, and none re-runs the gate on
+   its own.
 5. Required checks are stored per row. The grouped refresh keeps the existing settle-once CI
    procedure per distinct effective base: at most one successful GitHub read per base per run.
 6. One run may contain any number of distinct bases, but merging remains serialized.
@@ -303,8 +308,9 @@ base-ref/base-SHA checks; those checks validate the recorded base locally and do
 mismatch is handled at the repair's exit (see Unsupported base changes park the row).
 
 Review pass identities, fix completion records, repair records, and typed runtime transports do not gain
-new version or revision fields. Base changes are unsupported and park the row instead of making evidence
-portable to another target.
+new version or revision fields. An unexplained base change parks the row, and the explained retarget voids
+the evidence the old base authorized (`ledger.py retarget`); neither makes evidence portable to another
+target.
 
 ### Required checks and CI
 
@@ -415,11 +421,15 @@ host-only tool, plugin-root environment variable, or new heartbeat mechanism ent
 
 ### Fields
 
+**SUPERSEDED IN PART (see the note at the top).** The row `base_branch` entry below no longer says the value
+is fixed after row creation: the explained-retarget transition rewrites it on a live row. Every other field
+and default in this section is as written.
+
 | Record | Field | Meaning | Default and compatibility behavior |
 | --- | --- | --- | --- |
 | Header | `base_branch` | Legacy base fallback only | Keep existing field. Old value remains usable; new runs write `-`. |
 | Header | `required_set` | Legacy required-set fallback only | Keep existing field. Old value remains usable; new runs write `unknown`. |
-| Row | `base_branch` | Target recorded from live `baseRefName` at adoption | `-` means inherit the legacy header. New rows must write an explicit value. Tool-owned and immutable after row creation. |
+| Row | `base_branch` | Target recorded from live `baseRefName` at adoption | `-` means inherit the legacy header. New rows must write an explicit value. Tool-owned and closed to every driver door; exactly two doors write it — `add-row` at row creation, and the explained-retarget transition `ledger.py retarget` (decided by `base-retarget.py`) on a live row. |
 | Row | `required_set` | Canonical requirements for the row's effective base | `-` means inherit the legacy header. New rows start `unknown`; grouped refresh writes the canonical value. |
 | Row | `base_ok_sha` | Head cleared by base preflight | Existing field, unchanged. Preflight also performs a live base comparison before `proceed`. |
 
@@ -483,8 +493,8 @@ only run-state file that gains fields, and those fields are per PR.
 | Area | Main files | Change needed |
 | --- | --- | --- |
 | Run contract and orchestration | `SKILL.md`, `references/run-identity-and-lease.md`, `references/loop-control.md`, `references/pr-adoption.md` | Remove common-base admission; record one live base per new row; resolve row bases on every action; park live mismatches. |
-| Ledger ownership | `references/files-and-ledger.md`, `scripts/ledger.py` | Add row `base_branch` and `required_set`; own both effective-value accessors; make row base creation-only; keep header fallback and existing park/unpark transitions. |
-| Adoption and reconciliation | `scripts/pr-adopt.py`, `scripts/reconcile.py` | Persist each new row's planned base; fetch distinct bases; compare each existing row with live `baseRefName`; park instead of changing row base, deferring an already-held row to its hold's exit. |
+| Ledger ownership | `references/files-and-ledger.md`, `scripts/ledger.py` | Add row `base_branch` and `required_set`; own both effective-value accessors; close row base to every driver door (written by `add-row` at creation and by the explained-retarget transition on a live row); keep header fallback and existing park/unpark transitions. |
+| Adoption and reconciliation | `scripts/pr-adopt.py`, `scripts/reconcile.py` | Persist each new row's planned base; fetch distinct bases; compare each existing row with live `baseRefName`; route a divergence to `base-retarget.py` and park every one it cannot explain, deferring an already-held row to its hold's exit. |
 | Review and repair path | `references/reviewer.md`, `references/stage-2-review-gate.md`, `scripts/triage.py`, `scripts/base-preflight.py`, `scripts/clean-rebase.py`, `scripts/review-dispatch.py`, `scripts/worker-prompt.py`, `scripts/repair-pass.py` | Supply `effective_base`; assert retained `--base` values; make preflight compare live and recorded bases. Keep existing artifact identities. |
 | CI policy | `references/stage-2-ci.md`, `references/ci-derivation-spec.md`, `scripts/ci-status.py`, `scripts/ci-snapshot.py` | Store required sets per row; group live reads by distinct effective base; derive each row with `effective_required_set`; update header-owned wording. |
 | Merge | `references/stage-3-merge.md`, `scripts/merge-check.py`, `scripts/merge.py` | Use the selected row base for ancestry, readiness, merge, and local sync; compare live and recorded bases at both merge doors. |
@@ -521,8 +531,9 @@ for every search result.
 
 ### Edge cases that must be handled
 
-- **Live base differs from the recorded base:** park with the exact recorded and live names. Do not change
-  row base or gate state.
+- **Live base differs from the recorded base:** hand it to `base-retarget.py` (see the note at the top).
+  An explained retarget migrates the row; every other divergence parks with the exact recorded and live
+  names and changes neither row base nor gate state.
 - **Base and head differ in one snapshot:** park on the base mismatch first. After the user restores the
   base and retries, normal head reconciliation processes the current head.
 - **Required rules differ across bases:** derive one canonical set per distinct base and copy it to that
@@ -570,12 +581,18 @@ affecting anything else in this design.
 
 ## Staged implementation plan
 
+**SUPERSEDED IN PART (see the note at the top).** This plan describes the three PRs that shipped mixed-base
+support. The explained-retarget transition landed afterwards, in a PR of its own, so stage 1's row base is
+closed to every DRIVER door rather than never rewritten. The staging and every other item below are as
+executed.
+
 Keep mixed-base admission disabled until every base consumer resolves row state. Three implementation PRs
 are enough:
 
-1. **Add row ownership and compatibility accessors.** Add row `base_branch` and `required_set`, immutable
-   base creation, effective-value fallback, table output, and legacy-ledger tests. Keep common-base
-   admission and current consumers unchanged.
+1. **Add row ownership and compatibility accessors.** Add row `base_branch` and `required_set`, a row base
+   closed to every driver door (`add-row` writes it at creation; the later explained-retarget transition is
+   the only other writer), effective-value fallback, table output, and legacy-ledger tests. Keep
+   common-base admission and current consumers unchanged.
    <!-- "Table output" here enacts the Resolved question above, which itself directs "an unconditional
         column added with the row field in PR 1" — the plan and the decision give one answer, not two.
         The same decision pre-authorizes dropping or deferring the column without affecting anything

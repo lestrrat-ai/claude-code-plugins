@@ -7,12 +7,13 @@ EVERY FIXTURE HAS TEETH, and the ones that matter most are the PARKS. This tool 
 campaign that can rewrite a live row's base without a human, so a fixture suite that only proved the happy
 path would certify exactly the wrong half. Each park fixture is one shape that LOOKS like the stacked-PR
 merge and is not — a base whose PR is still open, one closed unmerged, one that merged somewhere else, a
-deleted branch with no PR at all — and each asserts that the recorded base SURVIVES.
+deleted branch with no PR at all, a FORK branch that merely shares the name, and a merge of that name from
+BEFORE this PR existed — and each asserts that the recorded base SURVIVES.
 
-The `resolve` fixtures drive the real CLI against a REAL ledger built through `ledger.py` itself, with the
-`gh` read replaced by a recorded response (`--candidates-json`). What they assert is the ledger AFTER the
-call, through the accessor — not the tool's own JSON, which would let a decider that printed `migrate` and
-wrote nothing pass.
+The `resolve` fixtures drive the real CLI against a REAL ledger built through `ledger.py` itself, with both
+`gh` reads replaced by recorded responses (`--candidates-json`, `--pr-created-at`). What they assert is the
+ledger AFTER the call, through the accessor — not the tool's own JSON, which would let a decider that
+printed `migrate` and wrote nothing pass.
 """
 
 from __future__ import annotations
@@ -33,11 +34,17 @@ M = load_sibling("base_retarget_owner", OWNER.parent, OWNER.name)
 check = checker(M.SelfTestFailure)
 
 
+# The PR under decision was created BEFORE every fixture merge below, so a fixture says nothing about the
+# recency bound unless it sets its own instant. `t_history_before_this_pr_parks` is where that bound is
+# pinned, and `pr_entry`'s default merge is deliberately later than this.
+CREATED = "2025-12-31T00:00:00Z"
+
+
 def pr_entry(number: int, head: str, base: str, *, state: str = "MERGED",
-             merged_at: str = "2026-08-18T10:00:00Z") -> dict:
-    """One `gh pr list --json number,headRefName,baseRefName,state,mergedAt` entry."""
+             merged_at: str = "2026-08-18T10:00:00Z", cross_repo: bool = False) -> dict:
+    """One `gh pr list --json <CANDIDATE_FIELDS>` entry — same-repository unless `cross_repo` says otherwise."""
     return {"number": number, "headRefName": head, "baseRefName": base, "state": state,
-            "mergedAt": merged_at}
+            "mergedAt": merged_at, "isCrossRepository": cross_repo}
 
 
 def _run_ledger(ledger: Path, *argv: str) -> subprocess.CompletedProcess:
@@ -64,8 +71,8 @@ def _candidates(root: Path, entries: "list[dict]") -> str:
     return str(path)
 
 
-def expect(recorded: str, live: str, candidates: object, decision: str) -> dict:
-    got = M.decide(recorded, live, candidates)
+def expect(recorded: str, live: str, candidates: object, decision: str, *, created: str = CREATED) -> dict:
+    got = M.decide(recorded, live, candidates, created)
     check(got["decision"] == decision, f"expected {decision!r} for {recorded!r} -> {live!r}, got {got!r}")
     return got
 
@@ -94,6 +101,16 @@ def t_unrelated_entries_are_filtered():
            [pr_entry(35, "fix-a", "main"), pr_entry(34, "other", "release")], M.MIGRATE)
     # The same response WITHOUT the matching entry explains nothing.
     expect("fix-a", "main", [pr_entry(34, "other", "main")], M.PARK)
+
+
+def t_requested_fields_are_the_validated_fields():
+    """The fetch and the per-candidate check read ONE field list, so a field can never be requested without
+    being validated (or validated without being requested)."""
+    requested = M.CANDIDATE_FIELDS.split(",")
+    named = [*M.CANDIDATE_NUMBERS, *M.CANDIDATE_STRINGS, *M.CANDIDATE_BOOLS]
+    check(requested == named, f"CANDIDATE_FIELDS must be derived from the typed field lists, got {requested!r}")
+    check("isCrossRepository" in M.CANDIDATE_BOOLS,
+          "the fork bound needs the head repository identity in the request")
 
 
 def t_same_base_is_no_change():
@@ -140,6 +157,55 @@ def t_identical_simultaneous_merges_still_migrate():
     expect("fix-a", "main", [pr_entry(35, "fix-a", "main"), pr_entry(36, "fix-a", "main")], M.MIGRATE)
 
 
+def t_fork_parent_parks():
+    """A FORK PR whose head branch is NAMED like the recorded base is not a parent. `gh pr list --head`
+    matches the branch NAME across repositories, and merging a fork's `fix-a` retargets nothing that is based
+    on THIS repository's `fix-a` — so a merged fork PR alone explains nothing, and anyone may open one."""
+    got = expect("fix-a", "main", [pr_entry(35, "fix-a", "main", cross_repo=True)], M.PARK)
+    check("THIS repository" in got["reason"],
+          f"the park must say the merge was not this repository's branch, got {got['reason']!r}")
+    # The same fork PR alongside a REAL same-repo parent decides normally: the fork is dropped, not poison.
+    got = expect("fix-a", "main",
+                 [pr_entry(35, "fix-a", "main", cross_repo=True), pr_entry(36, "fix-a", "main")], M.MIGRATE)
+    check(got["evidence"]["parent_prs"] == [36], f"only the same-repo parent may decide, got {got!r}")
+
+
+def t_history_before_this_pr_parks():
+    """A RECREATED branch: `fix-a` merged into `main` long ago, was recreated, and this PR was later
+    hand-retargeted. GitHub retargets the PRs that are OPEN when a merge happens, so a merge that predates
+    this PR is history, not the cause of where it now points."""
+    old = [pr_entry(7, "fix-a", "main", merged_at="2019-01-02T03:04:05Z")]
+    got = expect("fix-a", "main", old, M.PARK, created="2026-05-01T00:00:00Z")
+    check("BEFORE this PR was created" in got["reason"] and "2026-05-01" in got["reason"],
+          f"the park must name the bound it applied, got {got['reason']!r}")
+    check(got["evidence"]["stale_parent_prs"] == [7], f"the merge it refused to use must be named, got {got!r}")
+    # The SAME shape with the merge after this PR was created is the ordinary stacked-PR migrate.
+    expect("fix-a", "main", old, M.MIGRATE, created="2018-01-01T00:00:00Z")
+    # A merge at the same instant as the creation is not history — the PR existed for it.
+    expect("fix-a", "main", [pr_entry(7, "fix-a", "main", merged_at="2026-05-01T00:00:00Z")], M.MIGRATE,
+           created="2026-05-01T00:00:00Z")
+
+
+def t_older_merge_cannot_shadow_a_recent_one():
+    """A stale merge of a recreated name does not suppress the REAL parent that merged after this PR."""
+    got = expect("fix-a", "main",
+                 [pr_entry(7, "fix-a", "main", merged_at="2019-01-02T03:04:05Z"),
+                  pr_entry(35, "fix-a", "main", merged_at="2026-06-01T00:00:00Z")], M.MIGRATE,
+                 created="2026-05-01T00:00:00Z")
+    check(got["evidence"]["parent_prs"] == [35], f"the eligible parent must decide, got {got!r}")
+
+
+def t_unanchored_instants_park():
+    """An instant this tool cannot order is a bound it cannot apply, and an unapplied bound is not a passed
+    one: an unparseable or OFFSET-LESS `createdAt`, and the same for a candidate's `mergedAt`."""
+    for created in ("not-a-time", "2026-05-01T00:00:00", "", "-"):
+        got = expect("fix-a", "main", [pr_entry(35, "fix-a", "main")], M.PARK, created=created)
+        check("creation instant" in got["reason"], f"the park must name the unusable instant, got {got!r}")
+    for merged_at in ("yesterday", "2026-08-18T10:00:00"):
+        got = expect("fix-a", "main", [pr_entry(35, "fix-a", "main", merged_at=merged_at)], M.PARK)
+        check("malformed" in got["reason"], f"an unorderable mergedAt is malformed evidence, got {got!r}")
+
+
 def t_full_page_parks():
     """A FULL page means the newest merge may be outside the window, so the deciding row may not be here."""
     entries = [pr_entry(n, "fix-a", "main") for n in range(M.CANDIDATE_LIMIT)]
@@ -157,7 +223,15 @@ def t_malformed_evidence_parks():
                        [{"number": 35, "headRefName": "fix-a", "baseRefName": "main",
                          "state": "MERGED", "mergedAt": 17}],
                        [{"number": True, "headRefName": "fix-a", "baseRefName": "main",
-                         "state": "MERGED", "mergedAt": "2026-08-18T10:00:00Z"}]):
+                         "state": "MERGED", "mergedAt": "2026-08-18T10:00:00Z",
+                         "isCrossRepository": False}],
+                       # The head-repository identity is part of the shape: absent, or a STRING that merely
+                       # reads like a bool, is a payload whose fork bound cannot be applied.
+                       [{"number": 35, "headRefName": "fix-a", "baseRefName": "main",
+                         "state": "MERGED", "mergedAt": "2026-08-18T10:00:00Z"}],
+                       [{"number": 35, "headRefName": "fix-a", "baseRefName": "main",
+                         "state": "MERGED", "mergedAt": "2026-08-18T10:00:00Z",
+                         "isCrossRepository": "false"}]):
         got = expect("fix-a", "main", candidates, M.PARK)
         check("malformed" in got["reason"], f"a malformed payload must say so, got {got['reason']!r}")
 
@@ -188,7 +262,7 @@ def t_resolve_migrates_the_row():
                     "--required-set", "declared:[\"build\"]", "--settled-strikes", "3")
         code, out, err = capture_cli(M.main, ["resolve", "--pr", "36", "--live", "main",
                                               "--file", str(ledger),
-                                              "--candidates-json",
+                                              "--pr-created-at", CREATED, "--candidates-json",
                                               _candidates(root, [pr_entry(35, "fix-a", "main")])])
         check(code == 0, f"a migrate must exit 0 so the caller continues (stderr: {err})")
         result = json.loads(out)
@@ -216,7 +290,7 @@ def t_resolve_releases_a_park_for_this_base_change():
                     M.L.BASE_CHANGE_PARK_REASON.format(recorded="fix-a", live="main"))
         code, out, err = capture_cli(M.main, ["resolve", "--pr", "36", "--live", "main",
                                               "--file", str(ledger),
-                                              "--candidates-json",
+                                              "--pr-created-at", CREATED, "--candidates-json",
                                               _candidates(root, [pr_entry(35, "fix-a", "main")])])
         check(code == 0, f"a migrate over an explained park must exit 0 (stderr: {err})")
         check(json.loads(out)["wrote"] == "retarget", "the release happens through the retarget transition")
@@ -233,7 +307,7 @@ def t_resolve_parks_an_unexplained_retarget():
         ledger = root / "state.jsonl"
         _row(ledger)
         code, out, err = capture_cli(M.main, ["resolve", "--pr", "36", "--live", "main",
-                                              "--file", str(ledger),
+                                              "--file", str(ledger), "--pr-created-at", CREATED,
                                               "--candidates-json", _candidates(root, [])])
         check(code != 0, f"an unexplained retarget must gate the caller closed (stderr: {err})")
         result = json.loads(out)
@@ -254,7 +328,7 @@ def t_resolve_keeps_an_open_question_it_did_not_ask():
         _run_ledger(ledger, "park", "--pr", "36", "--reason", "CI has been stalled for 3 refetches")
         code, out, err = capture_cli(M.main, ["resolve", "--pr", "36", "--live", "main",
                                               "--file", str(ledger),
-                                              "--candidates-json",
+                                              "--pr-created-at", CREATED, "--candidates-json",
                                               _candidates(root, [pr_entry(35, "fix-a", "main")])])
         check(code != 0, f"a row held on another question must gate closed (stderr: {err})")
         check("ledger_refusal" in json.loads(out) or json.loads(out).get("already_held") is True,
@@ -262,6 +336,45 @@ def t_resolve_keeps_an_open_question_it_did_not_ask():
         check(_field(ledger, "36", "ci_reason") == "CI has been stalled for 3 refetches",
               "the OPEN question must survive untouched")
         check(_field(ledger, "36", "base_branch") == "fix-a", "and no base may be written underneath it")
+
+
+def t_resolve_parks_a_fork_named_parent():
+    """END TO END through the real ledger: a merged FORK PR whose head branch is named like the recorded base
+    parks the row and leaves the recorded base standing. Anyone can open that PR from a fork, so a migrate on
+    it would put a row's base under an outside writer's control."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        ledger = root / "state.jsonl"
+        _row(ledger)
+        code, out, err = capture_cli(M.main, ["resolve", "--pr", "36", "--live", "main",
+                                              "--file", str(ledger), "--pr-created-at", CREATED,
+                                              "--candidates-json",
+                                              _candidates(root, [pr_entry(35, "fix-a", "main",
+                                                                          cross_repo=True)])])
+        check(code != 0, f"a fork-named parent must gate the caller closed (stderr: {err})")
+        check(json.loads(out)["wrote"] == "park", f"the row must be parked on the user, got {out!r}")
+        check(_field(ledger, "36", "base_branch") == "fix-a", "and the recorded base must SURVIVE")
+
+
+def t_resolve_parks_a_recreated_branch_hand_retarget():
+    """END TO END through the real ledger: `fix-a` merged into `main` years ago, the branch was recreated,
+    this row was adopted on it, and the PR was HAND-retargeted to `main`. The historical merge still carries
+    the matching name, and the row must park on the user rather than migrate on it."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        ledger = root / "state.jsonl"
+        _row(ledger)
+        code, out, err = capture_cli(M.main, ["resolve", "--pr", "36", "--live", "main",
+                                              "--file", str(ledger),
+                                              "--pr-created-at", "2026-05-01T00:00:00Z",
+                                              "--candidates-json",
+                                              _candidates(root, [pr_entry(7, "fix-a", "main",
+                                                                          merged_at="2019-01-02T03:04:05Z")])])
+        check(code != 0, f"a merge older than the PR must gate the caller closed (stderr: {err})")
+        check(json.loads(out)["wrote"] == "park", f"the row must be parked on the user, got {out!r}")
+        check(_field(ledger, "36", "ci_reason") == "base changed from fix-a to main; not supported mid-run",
+              "the park must record the shared machine-blocker wording")
+        check(_field(ledger, "36", "base_branch") == "fix-a", "and the recorded base must SURVIVE")
 
 
 def t_resolve_refuses_a_terminal_row():
@@ -273,7 +386,7 @@ def t_resolve_refuses_a_terminal_row():
         _run_ledger(ledger, "set", "--pr", "36", "--status", "merged")
         code, out, err = capture_cli(M.main, ["resolve", "--pr", "36", "--live", "main",
                                               "--file", str(ledger),
-                                              "--candidates-json",
+                                              "--pr-created-at", CREATED, "--candidates-json",
                                               _candidates(root, [pr_entry(35, "fix-a", "main")])])
         check(code != 0, f"a terminal row must gate closed (stderr: {err})")
         check("ledger_refusal" in json.loads(out), "the transition's refusal must be reported, not swallowed")
@@ -306,7 +419,7 @@ def t_resolve_parks_a_legacy_row_by_its_inherited_base():
         _run_ledger(ledger, "header", "set", "base_branch", "v3")
         _run_ledger(ledger, "add-row", "--pr", "36", "--head-sha", "a" * 40)
         code, _, err = capture_cli(M.main, ["resolve", "--pr", "36", "--live", "main",
-                                            "--file", str(ledger),
+                                            "--file", str(ledger), "--pr-created-at", CREATED,
                                             "--candidates-json", _candidates(root, [])])
         check(code != 0, f"an unexplained retarget of a legacy row parks (stderr: {err})")
         check(_field(ledger, "36", "ci_reason") == "base changed from v3 to main; not supported mid-run",
@@ -355,10 +468,10 @@ def t_decide_cli_is_pure():
         root = Path(d)
         path = _candidates(root, [pr_entry(35, "fix-a", "main")])
         code, out, _ = capture_cli(M.main, ["decide", "--recorded", "fix-a", "--live", "main",
-                                            "--candidates-json", path])
+                                            "--pr-created-at", CREATED, "--candidates-json", path])
         check(code == 0 and json.loads(out)["decision"] == M.MIGRATE, f"expected a migrate, got {out!r}")
         code, out, _ = capture_cli(M.main, ["decide", "--recorded", "fix-a", "--live", "v9",
-                                            "--candidates-json", path])
+                                            "--pr-created-at", CREATED, "--candidates-json", path])
         check(code != 0 and json.loads(out)["decision"] == M.PARK, f"expected a park, got {out!r}")
 
 
@@ -377,6 +490,15 @@ CASES = [
     ("filters-other-branches", "entries for another head branch cannot decide this row",
      t_unrelated_entries_are_filtered),
     ("same-base-no-change", "a live base equal to the recorded one reads no evidence", t_same_base_is_no_change),
+    ("request-matches-validation", "the requested candidate fields are the validated ones",
+     t_requested_fields_are_the_validated_fields),
+    ("fork-parent-parks", "a merged FORK PR sharing the branch name is never a parent", t_fork_parent_parks),
+    ("history-before-pr-parks", "a merge older than the PR itself cannot have retargeted it",
+     t_history_before_this_pr_parks),
+    ("recent-parent-still-decides", "a stale merge does not shadow the parent that merged after the PR",
+     t_older_merge_cannot_shadow_a_recent_one),
+    ("unanchored-instants-park", "a createdAt or mergedAt this tool cannot order parks",
+     t_unanchored_instants_park),
     ("open-parent-parks", "a base branch whose PR is still open parks", t_open_parent_parks),
     ("closed-parent-parks", "a base branch whose PR was closed unmerged parks", t_closed_unmerged_parent_parks),
     ("no-pr-parks", "a vanished base branch with no PR parks", t_deleted_base_with_no_pr_parks),
@@ -396,6 +518,10 @@ CASES = [
      t_resolve_parks_an_unexplained_retarget),
     ("resolve-keeps-other-question", "a row held on another question keeps it and moves no base",
      t_resolve_keeps_an_open_question_it_did_not_ask),
+    ("resolve-fork-parent", "a merged fork PR sharing the branch name parks the row",
+     t_resolve_parks_a_fork_named_parent),
+    ("resolve-recreated-branch", "a recreated branch's historical merge parks the row",
+     t_resolve_parks_a_recreated_branch_hand_retarget),
     ("resolve-terminal-refused", "a terminal row is neither retargeted nor parked",
      t_resolve_refuses_a_terminal_row),
     ("resolve-reads-recorded-base", "the recorded base comes from the ledger, never from the caller",

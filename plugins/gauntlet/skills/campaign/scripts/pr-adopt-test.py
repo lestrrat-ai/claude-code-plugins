@@ -271,10 +271,14 @@ class Recorder:
     def __init__(self, *, view, worktree_head=None, local_branch_exists=False,
                  checkouts=None, dirty=False, ff_fails=False, candidates=None, root=None):
         self.view = view
-        # The merged-PR evidence the base-retarget decider reads when a live base diverges. It is a FIXTURE
-        # INPUT because the decision belongs to that tool, not to this one: adoption is pinned here for both
+        # The evidence the base-retarget decider reads when a live base diverges: the merged PRs from the
+        # recorded branch, and the adopted PR's own creation instant (its recency bound). Both are FIXTURE
+        # INPUTS because the decision belongs to that tool, not to this one: adoption is pinned here for both
         # answers it can get back, and the decision's own rules are pinned in `base-retarget-test.py`.
         self.candidates = list(candidates or [])
+        # Earlier than every candidate merge below, so a fixture that hands in a parent gets that parent's
+        # answer. `base-retarget-test.py` owns what the bound itself refuses.
+        self.pr_created_at = "2025-12-31T00:00:00Z"
         self.root = root
         self.calls: list = []
         self.worktree_head = worktree_head if worktree_head is not None else view["headRefOid"]
@@ -294,13 +298,14 @@ class Recorder:
                 return CompletedProcess(argv, 0, json.dumps(self.view), "")
             return CompletedProcess(argv, 0, "", "")  # label create / pr edit
         if prog == "python3" and argv[1].endswith("base-retarget.py"):
-            # The base-retarget decider — run the REAL tool in-process against the temp store, with its one
-            # `gh pr list` read replaced by this fixture's recorded response. Only the network read is
+            # The base-retarget decider — run the REAL tool in-process against the temp store, with BOTH of
+            # its `gh` reads replaced by this fixture's recorded responses. Only the network reads are
             # stubbed: the decision, the ledger transition it performs, and its exit code are all real.
             feed = Path(self.root or ".") / "candidates.json"
             feed.write_text(json.dumps(self.candidates), encoding="utf-8")
             code, out, err = capture_cli(_sibling("pr_adopt_base_retarget", "base-retarget.py").main,
-                                         list(argv[2:]) + ["--candidates-json", str(feed)])
+                                         list(argv[2:]) + ["--candidates-json", str(feed),
+                                                           "--pr-created-at", self.pr_created_at])
             return CompletedProcess(argv, code, out, err)
         if prog == "python3":  # the ledger subprocess — run it for real against the temp store
             try:
@@ -900,7 +905,7 @@ def t_readopt_explained_retarget_migrates_and_continues():
         _add_row(ledger, 12, head_sha=sha, base_branch="v3", status="in_review", tier="HIGH")
         _record_verdict(ledger, 12, sha)                # reviews_ok -> 1 (a retarget moves no content)
         parent = {"number": 11, "headRefName": "v3", "baseRefName": "main", "state": "MERGED",
-                  "mergedAt": "2026-08-18T10:00:00Z"}
+                  "mergedAt": "2026-08-18T10:00:00Z", "isCrossRepository": False}
         code, _, err, rec = _adopt(d, ledger, view(headRefOid=sha, baseRefName="main"),
                                    wroot=wroot, worktree_head=sha, candidates=[parent])
         check(code == 0, f"an explained retarget adopts normally (got {code}: {err})")
