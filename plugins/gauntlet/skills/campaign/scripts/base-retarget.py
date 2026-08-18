@@ -208,7 +208,8 @@ def decide(recorded: str, live: str, candidates: object, created: object) -> dic
         bound below). This is the recreated-branch shape — a name merged long ago, recreated, and
         hand-retargeted since;
       * several merged PRs from that branch whose newest merge is AMBIGUOUS — two merged at the same instant
-        and they disagree about their own base, so "the base GitHub moved this PR to" has no single answer;
+        (the same MOMENT, however each stamp is spelled) and they disagree about their own base, so "the base
+        GitHub moved this PR to" has no single answer;
       * a newest merged parent whose own base is NOT `live`: GitHub would have moved this PR to the parent's
         base, so wherever it points came from somewhere else.
     """
@@ -247,7 +248,7 @@ def decide(recorded: str, live: str, candidates: object, created: object) -> dic
     # retargeted it) from "the parent merged first and this PR was created later in that same second"
     # (GitHub retargeted nothing, so the divergence is a hand-retarget). A bound that cannot be applied is
     # not a passed one, and this tool parks rather than migrating a live row on a coin flip.
-    recent = [entry for entry, moment in timed if moment > born]
+    recent = [(entry, moment) for entry, moment in timed if moment > born]
     if not recent:
         stale = sorted(entry["number"] for entry in parents)
         return _verdict(PARK, f"no merged PR from {recorded!r} ({stale}) is stamped strictly AFTER this PR "
@@ -256,11 +257,19 @@ def decide(recorded: str, live: str, candidates: object, created: object) -> dic
                               f"merge stamped in the same SECOND cannot show this PR was open for it",
                         recorded=recorded, live=live,
                         evidence={"stale_parent_prs": stale, "pr_created_at": created})
-    newest = max(entry["mergedAt"] for entry in recent)
-    latest = [entry for entry in recent if entry["mergedAt"] == newest]
+    # THE NEWEST MERGE AND ITS TIE-GROUP ARE CHOSEN ON THE PARSED INSTANTS, NEVER ON THE `mergedAt` TEXT.
+    # `instant()` accepts ANY offset, so ONE moment has many spellings: `2026-01-01T01:00:00Z` and
+    # `2026-01-01T00:00:00-01:00` name the same instant, and `2026-01-01T00:30:00Z` sorts above BOTH as text
+    # while being the older merge. Ordering the strings would therefore hand the decision to a merge that is
+    # not the newest, and split a tie-group that is really one instant — both of which decide a live row's
+    # base on an ordering this tool does not hold. The datetimes built above are the ordering.
+    newest = max(moment for _, moment in recent)
+    latest = sorted((entry for entry, moment in recent if moment == newest),
+                    key=lambda entry: entry["number"])
     bases = {entry["baseRefName"] for entry in latest}
-    numbers = sorted(entry["number"] for entry in latest)
-    evidence = {"parent_prs": numbers, "merged_at": newest, "parent_bases": sorted(bases),
+    numbers = [entry["number"] for entry in latest]
+    # The stamp is reported as the deciding parent SPELLED it, so the evidence quotes the payload verbatim.
+    evidence = {"parent_prs": numbers, "merged_at": latest[0]["mergedAt"], "parent_bases": sorted(bases),
                 "pr_created_at": created}
     if len(bases) > 1:
         return _verdict(PARK, f"PRs {numbers} from {recorded!r} merged at the same instant onto different "

@@ -8,8 +8,8 @@ campaign that can rewrite a live row's base without a human, so a fixture suite 
 path would certify exactly the wrong half. Each park fixture is one shape that LOOKS like the stacked-PR
 merge and is not — a base whose PR is still open, one closed unmerged, one that merged somewhere else, a
 deleted branch with no PR at all, a FORK branch that merely shares the name, a merge of that name from
-BEFORE this PR existed, and one stamped at the very SECOND this PR was created — and each asserts that the
-recorded base SURVIVES.
+BEFORE this PR existed, one stamped at the very SECOND this PR was created, and one whose stamp is the
+NEWEST only once the offsets are read as instants — and each asserts that the recorded base SURVIVES.
 
 The `resolve` fixtures drive the real CLI against a REAL ledger built through `ledger.py` itself, with both
 `gh` reads replaced by recorded responses (`--candidates-json`, `--pr-created-at`). What they assert is the
@@ -157,6 +157,38 @@ def t_ambiguous_simultaneous_merges_park():
 def t_identical_simultaneous_merges_still_migrate():
     """The same instant is only ambiguous when the bases DISAGREE — two merges onto one base still decide."""
     expect("fix-a", "main", [pr_entry(35, "fix-a", "main"), pr_entry(36, "fix-a", "main")], M.MIGRATE)
+
+
+def t_mixed_offset_stamps_are_ordered_as_instants():
+    """ONE INSTANT HAS MANY SPELLINGS, and both the newest-merge choice and its tie-group are over the
+    INSTANTS, never over the stamp text. `instant()` accepts any offset, so `2026-01-01T00:00:00-01:00` IS
+    `2026-01-01T01:00:00Z` — while as text `2026-01-01T00:30:00Z` sorts above them both. Ordering the raw
+    stamps hands the decision to a merge that is NOT the newest, and splits a tie-group that is really one
+    moment; either way a live row's base would move on an ordering this tool does not hold."""
+    created = "2026-01-01T00:00:00Z"
+    # The newest merge is PR 1 (01:00Z, spelled with a -01:00 offset) and it went to `release`, so `main` is
+    # unexplained. As text, PR 2's `00:30` stamp would win and migrate this row onto `main`.
+    got = expect("feature-a", "main",
+                 [pr_entry(1, "feature-a", "release", merged_at="2026-01-01T00:00:00-01:00"),
+                  pr_entry(2, "feature-a", "main", merged_at="2026-01-01T00:30:00Z")], M.PARK,
+                 created=created)
+    check(got["evidence"]["parent_prs"] == [1] and "release" in got["reason"],
+          f"the newest merge BY INSTANT must decide, got {got!r}")
+    # The same two merges with the offset-spelled one going to `main` is the ordinary stacked-PR migrate —
+    # the bound orders instants, it does not distrust an offset.
+    got = expect("feature-a", "main",
+                 [pr_entry(1, "feature-a", "main", merged_at="2026-01-01T00:00:00-01:00"),
+                  pr_entry(2, "feature-a", "release", merged_at="2026-01-01T00:30:00Z")], M.MIGRATE,
+                 created=created)
+    check(got["evidence"]["parent_prs"] == [1], f"the newest merge BY INSTANT must decide, got {got!r}")
+    # Two SPELLINGS of the same instant are ONE tie-group, so disagreeing bases are the ambiguity park.
+    got = expect("feature-a", "main",
+                 [pr_entry(1, "feature-a", "main", merged_at="2026-01-01T01:00:00Z"),
+                  pr_entry(2, "feature-a", "release", merged_at="2026-01-01T00:00:00-01:00")], M.PARK,
+                 created=created)
+    check(got["evidence"]["parent_prs"] == [1, 2] and got["evidence"]["parent_bases"] == ["main", "release"],
+          f"one instant spelled two ways is ONE tie-group, got {got!r}")
+    check("ambiguous" in got["reason"], f"the park must name the ambiguity, got {got['reason']!r}")
 
 
 def t_fork_parent_parks():
@@ -523,6 +555,8 @@ CASES = [
     ("ambiguous-parks", "simultaneous merges onto different bases park", t_ambiguous_simultaneous_merges_park),
     ("ambiguous-only-when-bases-differ", "simultaneous merges onto ONE base still migrate",
      t_identical_simultaneous_merges_still_migrate),
+    ("mixed-offset-instants", "stamps spelled with different offsets order and tie-group as INSTANTS",
+     t_mixed_offset_stamps_are_ordered_as_instants),
     ("full-page-parks", "a full candidate page parks; one below the cap decides", t_full_page_parks),
     ("malformed-parks", "every malformed candidate payload parks", t_malformed_evidence_parks),
     ("bad-entry-poisons", "a malformed entry is never skipped past a good one", t_one_bad_entry_poisons_the_list),
