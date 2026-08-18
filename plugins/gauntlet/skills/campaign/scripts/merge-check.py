@@ -59,10 +59,11 @@ SIBLING = _HERE / "merge-check-test.py"     # the fixture suite — this tool's 
 L = load_sibling("merge_check_ledger", _HERE, "ledger.py")
 HELD_STATUSES = L.HELD_STATUSES
 B = load_sibling("merge_check_base_preflight", _HERE, "base-preflight.py")
-# pr-adopt.py OWNS `BASE_CHANGE_PARK_REASON` — the EXACT machine-blocker wording a re-adoption / reconcile /
-# preflight park records. Both merge doors reuse that one owner so a live-base retarget reads identically
-# everywhere; never a second copy of the string here.
-PA = load_sibling("merge_check_pr_adopt", _HERE, "pr-adopt.py")
+# `ledger.py` (loaded as `L` above) OWNS `BASE_CHANGE_PARK_REASON` — the EXACT machine-blocker wording every
+# base-change park in the campaign records, and the wording `ledger.py retarget` matches to RELEASE such a
+# park once `base-retarget.py` establishes what moved the base. Both merge doors reuse that one owner so a
+# live-base retarget reads identically everywhere; never a second copy of the string here.
+BASE_CHANGE_PARK_REASON = L.BASE_CHANGE_PARK_REASON
 
 # `required(tier)` — 1 if TRIVIAL else 2 — is REUSED, never retyped. The rule already lives in `nudge.py`
 # (and `review-pass.py`); a third copy here would be the drift this repo keeps killing. So merge-check
@@ -150,14 +151,15 @@ def decide(row: dict, view: dict, *, required, effective_base: str) -> dict:
     if state != "OPEN":
         return _not_yet(f"pr is {state}, not open")
 
-    # 2b. BASE RETARGET — the live target no longer matches the row's recorded (effective) base. The recorded
-    #     base is IMMUTABLE, and a retarget is an unsupported mid-run change: fail closed with the SAME
-    #     machine-blocker wording a re-adoption / reconcile / preflight park records, so the driver parks the
-    #     row. (A base that merely ADVANCED — same NAME, new commits — is NOT this; that is the ancestry probe
-    #     in `check`, which routes a behind-base candidate to a rebase.)
+    # 2b. BASE RETARGET — the live target no longer matches the row's recorded (effective) base. This door
+    #     never decides WHY it moved and never migrates a row: it fails closed with the SAME machine-blocker
+    #     wording every base-change park records, so the driver parks the row. `base-retarget.py` is the one
+    #     decider, and it RELEASES that park when GitHub's own retarget explains the move — which is what
+    #     lets this stay a flat refusal. (A base that merely ADVANCED — same NAME, new commits — is NOT this;
+    #     that is the ancestry probe in `check`, which routes a behind-base candidate to a rebase.)
     base_now = view["baseRefName"]
     if base_now != effective_base:
-        return _not_yet(PA.BASE_CHANGE_PARK_REASON.format(recorded=effective_base, live=base_now))
+        return _not_yet(BASE_CHANGE_PARK_REASON.format(recorded=effective_base, live=base_now))
 
     # 3. DRAFT — GitHub blocks the merge regardless of CI.
     if view["isDraft"]:

@@ -19,9 +19,11 @@ When `--file <ledger>` is given, the ledger ROW owns the base: this resolves the
 `effective_base` (its explicit `base_branch`, else the legacy header fallback, through `ledger.py`), and any
 `--base` argument becomes an ASSERTION that must equal it — not an independent base source. It also compares
 the live PR view's `baseRefName` with that effective base and REFUSES `proceed` when they differ: the PR was
-retargeted to a different branch NAME, an unsupported mid-run change, so it fails closed to `recheck` with the
-same `BASE_CHANGE_PARK_REASON` wording a re-adoption/reconcile park records and the driver parks the row. (A
-base that merely ADVANCED — same branch, new commits — is NOT a retarget; that stays the ancestry
+retargeted to a different branch NAME, so it fails closed to `recheck` with the same `BASE_CHANGE_PARK_REASON`
+wording every base-change park records. This tool never decides WHY the base moved and never migrates a row —
+that is `base-retarget.py`, which the heartbeat runs first and which releases the park when GitHub's own
+retarget explains the move; this stays a pure fail-closed refusal so a divergence can never be reviewed past.
+(A base that merely ADVANCED — same branch, new commits — is NOT a retarget; that stays the ancestry
 `rebase-first` below.)
 
 With `--file <ledger>`, a final `proceed` records that base check through `ledger.py base-ok`, while `park`
@@ -49,7 +51,7 @@ from typing import cast
 from _gauntlet.argv import bind_separate_option_value
 from _gauntlet.gh import pr_view_json
 from _gauntlet.git_refs import select_base_fetch_refs
-from _gauntlet.modules import load_module_from_path, load_sibling
+from _gauntlet.modules import load_sibling
 from _gauntlet.repository import repo_problem
 from _gauntlet.testing import run_sibling_suite
 from _gauntlet.view import field_problem
@@ -57,25 +59,16 @@ from _gauntlet.view import field_problem
 _HERE = Path(__file__).resolve().parent
 SIBLING = _HERE / "base-preflight-test.py"     # the fixture suite — this tool's executable contract
 LEDGER = _HERE / "ledger.py"                   # the sibling that owns base_ok_sha; `base-ok` is its only writer
-PR_ADOPT = _HERE / "pr-adopt.py"               # owns BASE_CHANGE_PARK_REASON — reused, never re-spelt here
 
 
 L = load_sibling("base_preflight_ledger", _HERE, "ledger.py")
 
-# Loaded LAZILY (only when a live retarget is found) so the pure decider and self-test never pull the
-# adoption module chain: pr-adopt.py OWNS `BASE_CHANGE_PARK_REASON`, the EXACT machine-blocker wording a
-# re-adoption/reconcile park records. A preflight retarget-refusal reuses that one owner so the reason reads
-# identically everywhere — never a second copy of the string here.
-_PA = None
-
-
+# `ledger.py` OWNS `BASE_CHANGE_PARK_REASON`, the EXACT machine-blocker wording every base-change park in
+# the campaign records — and the wording `ledger.py retarget` matches to release such a park once the
+# divergence is explained. A preflight retarget-refusal reuses that one owner so the reason reads identically
+# everywhere; never a second copy of the string here.
 def _base_change_reason(recorded: str, live: str) -> str:
-    global _PA
-    if _PA is None:
-        _PA = load_module_from_path("base_preflight_pr_adopt", PR_ADOPT)
-        if _PA is None:
-            raise RuntimeError(f"cannot load pr-adopt.py for the base-change reason at {PR_ADOPT}")
-    return _PA.BASE_CHANGE_PARK_REASON.format(recorded=recorded, live=live)
+    return L.BASE_CHANGE_PARK_REASON.format(recorded=recorded, live=live)
 
 
 # --- the verdicts -------------------------------------------------------------

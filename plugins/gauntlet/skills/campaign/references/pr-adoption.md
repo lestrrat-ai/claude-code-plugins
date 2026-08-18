@@ -19,9 +19,11 @@ Two entry paths feed it (see "Run identity and concurrency" for the full grammar
   reported blocker before adoption.
 
 Each adopted PR **records its own live `baseRefName`** on its ledger row — the row's `base_branch`, written
-**once at creation** by `pr-adopt.py` (`add-row --base-branch`) and **never retargeted** afterward (`files-and-ledger.md`,
-the row `base_branch` field). Resolve a row's base through `ledger.py`'s `effective_base` (an explicit row
-value, else the legacy header fallback), never the raw header field. **Adopting several PRs at once does
+**once at creation** by `pr-adopt.py` (`add-row --base-branch`) and rewritten afterward by **one** tool, on
+**one** kind of evidence: `base-retarget.py`, when GitHub itself moved the PR because the recorded base's
+own PR merged (`files-and-ledger.md`, the row `base_branch` field). Resolve a row's base through
+`ledger.py`'s `effective_base` (an explicit row value, else the legacy header fallback), never the raw
+header field. **Adopting several PRs at once does
 NOT require their bases to agree** — one run may hold PRs targeting different bases (some on `v3`, others on
 `main`), each driven against its own recorded base (`run-identity-and-lease.md`, "Base branch"). The header
 `base_branch` is only the legacy fallback a row with no explicit base inherits.
@@ -131,25 +133,28 @@ For each `#PR` to adopt:
    one: the schema lives in the script, and a copy of it retyped here would be stale the next time a row
    field is added.
 
-   **Re-adoption base gate — AFTER the terminal-row refusal and BEFORE any refresh write.** The recorded
-   row `base_branch` is never retargeted, and
-   the campaign never migrates a row to a new base. On a re-adoption, `pr-adopt.py` first compares the PR's
-   live `baseRefName` with the row's `effective_base`; **if they differ it PARKS the row** (machine-blocker,
-   `status = awaiting-user`, `ci_reason` = `base changed from <recorded> to <live>; not supported mid-run`,
-   `blocker_ruling` cleared — the same reason and park the reconcile `base_changed` route uses) and STOPS,
-   refreshing no evidence, rewriting no base, and applying no label. An already-held row keeps its open
-   question. Only a matching (or brand-new) base proceeds to the refresh below.
+   **Re-adoption base gate — AFTER the terminal-row refusal and BEFORE any refresh write.** No driver door
+   rewrites the recorded row `base_branch`. On a re-adoption, `pr-adopt.py` first compares the PR's live
+   `baseRefName` with the row's `effective_base`; **if they differ it hands the divergence to
+   `base-retarget.py resolve`** — the one decider — and acts on its answer. A **migrate** rewrites the row's
+   base to the live one and the adoption **continues normally** against it. Anything else **PARKS the row**
+   (machine-blocker, `status = awaiting-user`, `ci_reason` = `base changed from <recorded> to <live>; not
+   supported mid-run`, `blocker_ruling` cleared — the same reason and park the reconcile `base_changed`
+   route uses) and STOPS, refreshing no evidence, rewriting no base, and applying no label. An already-held
+   row keeps its open question. Only a matching, migrated, or brand-new base proceeds to the refresh below.
 
-   ##### Base-gone recovery
+   ##### Stacked-PR base moves are migrated, not retired
 
-   A stack gate can make the recorded base branch disappear: merging the lower PR removes its branch and
-   GitHub retargets the upper PR. Retire the parked row and re-adopt the PR into a fresh run. The new row
-   records its live base at creation, and its gate restarts against that base.
+   A stack gate makes the recorded base branch disappear: merging the lower PR removes its branch and GitHub
+   retargets the upper PR onto the lower PR's own base. That is the ONE divergence the campaign can explain
+   without asking, so it **migrates the row in place** and keeps going — the row records the new base, the
+   review tally survives (a retarget moves no content), and the base-preflight rebase onto the new base is
+   the ordinary next step. `base-retarget.py` establishes the merged parent and performs the write through
+   `ledger.py retarget`; nothing here is a user decision.
 
-   No door repairs the row in place. `base_branch` is CREATE_ONLY, `ledger.py set` has no flag for it, and
-   `clean-rebase.py` asserts `--base` against the recorded value and refuses a different base. The shared
-   park reason deliberately does not identify a disappeared base: an absent ref cannot establish why it is
-   absent, and the recovery is identical either way.
+   A divergence it CANNOT explain still parks, and a parked row is answered by the user through the ordinary
+   ruling path — not by retiring it. Retiring the row and re-adopting the PR into a fresh run remains
+   available and costs the gate from scratch, so it is the fallback, never the routine recovery.
 
    - `id` = `pr<N>`; `slug` = slugified PR title; `branch` = the PR's **own** `headRefName` (adopted PRs
      keep their branch — do NOT mint a `fix-<run-id>-...` branch); `worktree` = `-`,
@@ -161,8 +166,8 @@ For each `#PR` to adopt:
      it reused a pre-existing local branch or checkout;
      `pr` = `<N>`; `head_sha` = `headRefOid`.
    - **On a NEW row only, initialize:** `base_branch` = the PR's live `baseRefName` (recorded ONCE through
-     `add-row --base-branch`, never retargeted after — this is the per-row base every later action resolves through
-     `effective_base`); `reviews_ok` = `0` (no verdicts yet); `ci` = `pending`;
+     `add-row --base-branch`, rewritten afterward only by `base-retarget.py` on an explained retarget — this
+     is the per-row base every later action resolves through `effective_base`); `reviews_ok` = `0` (no verdicts yet); `ci` = `pending`;
      `tier` = bootstrap `STANDARD`; after step 5 follow `stage-2-review-gate.md`, "2a-triage", for the
      complete procedure;
      `attempts` = `0` (no attempt has run yet —

@@ -66,14 +66,7 @@ RUN_LABEL_COLOR = "5319E7"
 # it opens). It is the ONLY thing that makes `pr_origin` = `gauntlet`; a driver cannot assert it by flag.
 GAUNTLET_AUTHORED_LABEL = "gauntlet-authored"
 
-# The EXACT durable reason recorded in `ci_reason` when a re-adoption sees the PR's live base diverge from
-# its recorded base. The campaign does NOT migrate a row to a new base; the mismatch is an unsupported user
-# change that PARKS the row through the existing machine-blocker transition (design:
-# campaign-mixed-base-branches.md, "Unsupported base changes park the row"). The reconcile→loop-control
-# routing parks with this SAME wording built from the `base_changed` fact, so the string is a shared
-# contract — search `not supported mid-run` to reconcile every site. `{recorded}` is the row's
-# `effective_base`, `{live}` the live `baseRefName`.
-BASE_CHANGE_PARK_REASON = "base changed from {recorded} to {live}; not supported mid-run"
+BASE_RETARGET_PY = _HERE / "base-retarget.py"   # the ONE decider of what a live base divergence means
 
 
 L = load_sibling("pr_adopt_ledger", _HERE, "ledger.py")
@@ -86,6 +79,12 @@ RP = load_sibling("pr_adopt_review_pass", _HERE, "review-pass.py")
 # `apply_head_sha`; stage-2-ci.md, "THE LIVENESS COUNTERS"). This name survives only for readers/tests that
 # ask pr-adopt which fields the set is.
 LIVENESS_COUNTERS = L.LIVENESS_COUNTERS
+
+# THE BASE-CHANGE PARK WORDING — RE-EXPORTED from ledger.py, never a second copy of the string. It is the
+# question every base-change park in the campaign records, and `ledger.py retarget` matches against it to
+# release a park the evidence has answered, so a second spelling here would silently stop that release from
+# recognising the park this tool opened. Search `not supported mid-run` to reach every site.
+BASE_CHANGE_PARK_REASON = L.BASE_CHANGE_PARK_REASON
 
 
 # --- pure decision surface ----------------------------------------------------
@@ -226,27 +225,43 @@ def cmd_plan(args) -> int:
     return 0
 
 
-def _park_base_mismatch(args, pr: str, recorded: str, live: str) -> int:
-    """A re-adoption saw the PR's live base diverge from its recorded base. PARK the row on the user through
-    the existing machine-blocker transition (`ledger.py park`) with the design's exact reason, and STOP —
-    no refresh, no relabel, no base rewrite. The park is the ONE mechanism; this reuses it rather than adding
-    a transition. An ALREADY-held row keeps its open question: `park` returns `EXIT_STOP` and leaves the
-    existing `ci_reason` untouched (design: "An already-held row keeps its open question")."""
-    reason = BASE_CHANGE_PARK_REASON.format(recorded=recorded, live=live)
-    park_argv = ["python3", str(LEDGER_PY), "--file", args.file, "park", "--pr", pr, "--reason", reason]
-    proc = _run(park_argv, cwd=args.project_root)
-    mismatch = {"recorded": recorded, "live": live}
-    if proc.returncode == L.EXIT_STOP:
-        # Already awaiting-user — a park is open and its question is preserved. Nothing to do but report it.
-        print(json.dumps({"pr": pr, "run_id": args.run_id, "parked": False,
-                          "already_held": True, "base_mismatch": mismatch}))
-        return 0
-    if proc.returncode != 0:
-        # A terminal row (or other park refusal) — parking does not apply; surface it fail-closed.
-        return _refuse(f"PR {pr} base changed (recorded {recorded}, live {live}) but the row could NOT be "
-                       f"parked: {proc.stderr.strip()}")
-    print(json.dumps({"pr": pr, "run_id": args.run_id, "parked": True,
-                      "reason": reason, "base_mismatch": mismatch}))
+def _resolve_base_mismatch(args, pr: str, recorded: str, live: str) -> "int | None":
+    """A re-adoption saw the PR's live base diverge from its recorded base. Hand the divergence to
+    `base-retarget.py resolve`, the ONE decider of what a live base change means, and let it perform the
+    single ledger write that follows.
+
+    Returns `None` when the row now records the LIVE base — the divergence was GitHub's own retarget after
+    the old base's PR merged, the row was migrated, and this adoption CONTINUES normally against the base the
+    PR actually targets. Returns an EXIT CODE when it did not: the decider parked the row on the user with
+    the shared machine-blocker reason (or its write was refused), and adoption STOPS here — no refresh, no
+    relabel, no base rewrite. An ALREADY-held row keeps its open question; `park` never overwrites one.
+
+    This tool does NOT decide the question itself. Adoption is one of four places a divergence surfaces, and
+    a second copy of the decision here is how three of them would end up disagreeing about the same PR.
+    """
+    argv = ["python3", str(BASE_RETARGET_PY), "resolve", "--pr", pr, "--live", live,
+            "--file", args.file]
+    if args.repo:
+        argv += ["--repo", args.repo]
+    if args.project_root:
+        argv += ["--project-root", args.project_root]
+    proc = _run(argv, cwd=args.project_root)
+    try:
+        result = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return _refuse(f"PR {pr} base changed (recorded {recorded}, live {live}) and the base-retarget "
+                       f"decider returned no verdict: {proc.stderr.strip() or proc.stdout.strip()}")
+    if proc.returncode == 0 and result.get("decision") == "migrate":
+        return None
+    # The summary keeps the shape a parked adoption always printed — `parked` and `already_held` at the top
+    # level — and carries the decider's own verdict under `resolved` so the transcript says WHY it parked.
+    parked = result.get("wrote") == "park"
+    already_held = bool(result.get("already_held"))
+    print(json.dumps({"pr": pr, "run_id": args.run_id, "parked": parked, "already_held": already_held,
+                      "base_mismatch": {"recorded": recorded, "live": live}, "resolved": result}))
+    if not parked and not already_held:
+        return _refuse(f"PR {pr} base changed (recorded {recorded}, live {live}) and the row could NOT be "
+                       f"parked: {result.get('ledger_refusal') or result.get('reason')}")
     return 0
 
 
@@ -370,16 +385,19 @@ def cmd_adopt(args) -> int:
         return _refuse(f"PR {pr} already has terminal ledger status {status}; terminal rows are not "
                        f"re-adoptable")
 
-    # RE-ADOPTION BASE GATE — runs BEFORE any write. The recorded row base is IMMUTABLE (ledger CREATE_ONLY),
-    # and the campaign never migrates a row to a new base. If the PR's live base no longer matches the row's
-    # `effective_base` (its explicit base, else the legacy header), PARK the row on the user through the
-    # existing machine-blocker transition and STOP — refresh no evidence, rewrite no base, apply no label
-    # (design: "Unsupported base changes park the row"). A NEW row (existing is None) has no recorded base to
-    # diverge from; it records the live base in step 4.
+    # RE-ADOPTION BASE GATE — runs BEFORE any write. No driver door rewrites the recorded row base (ledger
+    # CREATE_ONLY), so a live base that no longer matches the row's `effective_base` (its explicit base, else
+    # the legacy header) is handed to `base-retarget.py resolve`. It MIGRATES the row when GitHub's own
+    # retarget explains the divergence — the old base's PR merged — and adoption continues against the new
+    # base; anything else PARKS the row on the user and adoption STOPS here, refreshing no evidence,
+    # rewriting no base, applying no label. A NEW row (existing is None) has no recorded base to diverge
+    # from; it records the live base in step 4.
     if existing is not None:
         recorded_base = L.effective_base(header, existing)
         if recorded_base != base:
-            return _park_base_mismatch(args, pr, recorded_base, base)
+            outcome = _resolve_base_mismatch(args, pr, recorded_base, base)
+            if outcome is not None:
+                return outcome
 
     # 3. Ensure the run owner label exists (idempotent — `--force` creates or updates).
     label_argv = ["gh", "label", "create", run_label, "--color", RUN_LABEL_COLOR,
@@ -404,8 +422,10 @@ def cmd_adopt(args) -> int:
     #   * UNCHANGED head on an existing row: name none of the SHA-bound fields — the accumulated verdicts,
     #     ci and liveness state all describe content that is still there and are preserved (the accessor's
     #     same-value `--head-sha` write is a no-op, so the counters are untouched).
-    # `existing`/`rows` were loaded above (the re-adoption base gate needs them); nothing has written the
-    # ledger since, so they are still current.
+    # `existing`/`rows` were loaded above (the re-adoption base gate needs them). The ONE write that can have
+    # landed since is a base-gate MIGRATE, and what it writes (`base_branch`, `required_set`, `base_ok_sha`,
+    # `ci`, the liveness counters, and a released park's `status`/`ci_reason`) is disjoint from what this
+    # refresh reads back out of `existing`: `head_sha` below, and the worktree ownership fields in step 5.
     #
     if not recorded_run or recorded_run == "-":
         proc = _run(["python3", str(LEDGER_PY), "--file", args.file, "header", "set",
@@ -423,7 +443,8 @@ def cmd_adopt(args) -> int:
     if existing is None:
         # A NEW row RECORDS its live base once, through the CREATE_ONLY `--base-branch` door. Every new row
         # carries an explicit base — even in a single-base run — so the base is per-row from creation. `set`
-        # has no `--base-branch` flag, so a re-adoption can never rewrite it (the gate above parks instead).
+        # has no `--base-branch` flag, so this refresh can never rewrite it: the gate above already migrated
+        # the row (through `ledger.py retarget`) or parked it.
         ledger_argv += ["--base-branch", base,
                         "--tier", str(row["tier"]),
                         "--ci", str(row["ci"]),

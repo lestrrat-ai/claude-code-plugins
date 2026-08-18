@@ -276,10 +276,11 @@ def _validate_state(header: dict, row: dict, pr: str, root: Path, view: dict,
             raise Refusal(
                 f"live head branch {view['headRefName']!r} differs from ledger branch {branch!r}")
         if view["baseRefName"] != base:
-            # A live retarget away from the recorded base is an unsupported mid-run change — fail closed with
-            # the SAME machine-blocker wording every other base door records (pr-adopt.py owns it, via
-            # merge-check). A base that merely ADVANCED (same name) is handled by _base_is_current, not here.
-            raise Refusal(MC.PA.BASE_CHANGE_PARK_REASON.format(recorded=base, live=view["baseRefName"]))
+            # A live retarget away from the recorded base fails closed here with the SAME machine-blocker
+            # wording every other base door records (ledger.py owns it, reached via merge-check). Whether
+            # the move was GitHub's own retarget is `base-retarget.py`'s call, made at the heartbeat, never
+            # inside the merge. A base that merely ADVANCED (same name) is handled by _base_is_current.
+            raise Refusal(MC.BASE_CHANGE_PARK_REASON.format(recorded=base, live=view["baseRefName"]))
     labels, _ = _labels(view)
     ours = f"{RUN_LABEL_PREFIX}{run_id}"
     run_labels = [name for name in labels if name.startswith(RUN_LABEL_PREFIX)]

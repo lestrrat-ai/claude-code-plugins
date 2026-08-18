@@ -269,8 +269,13 @@ def _labelset(argv, flag):
 
 class Recorder:
     def __init__(self, *, view, worktree_head=None, local_branch_exists=False,
-                 checkouts=None, dirty=False, ff_fails=False):
+                 checkouts=None, dirty=False, ff_fails=False, candidates=None, root=None):
         self.view = view
+        # The merged-PR evidence the base-retarget decider reads when a live base diverges. It is a FIXTURE
+        # INPUT because the decision belongs to that tool, not to this one: adoption is pinned here for both
+        # answers it can get back, and the decision's own rules are pinned in `base-retarget-test.py`.
+        self.candidates = list(candidates or [])
+        self.root = root
         self.calls: list = []
         self.worktree_head = worktree_head if worktree_head is not None else view["headRefOid"]
         self.local_branch_exists = local_branch_exists
@@ -288,6 +293,15 @@ class Recorder:
             if argv[1:3] == ["pr", "view"]:
                 return CompletedProcess(argv, 0, json.dumps(self.view), "")
             return CompletedProcess(argv, 0, "", "")  # label create / pr edit
+        if prog == "python3" and argv[1].endswith("base-retarget.py"):
+            # The base-retarget decider — run the REAL tool in-process against the temp store, with its one
+            # `gh pr list` read replaced by this fixture's recorded response. Only the network read is
+            # stubbed: the decision, the ledger transition it performs, and its exit code are all real.
+            feed = Path(self.root or ".") / "candidates.json"
+            feed.write_text(json.dumps(self.candidates), encoding="utf-8")
+            code, out, err = capture_cli(_sibling("pr_adopt_base_retarget", "base-retarget.py").main,
+                                         list(argv[2:]) + ["--candidates-json", str(feed)])
+            return CompletedProcess(argv, code, out, err)
         if prog == "python3":  # the ledger subprocess — run it for real against the temp store
             try:
                 code = _ledger(*argv[2:])
@@ -334,9 +348,9 @@ class Recorder:
 
 def _adopt(d: Path, ledger: Path, v: dict, *, wroot: Path, worktree_head=None,
            local_branch_exists=False, checkouts=None, dirty=False, ff_fails=False,
-           tier="HIGH", run_id="g1", repo=None):
+           tier="HIGH", run_id="g1", repo=None, candidates=None):
     rec = Recorder(view=v, worktree_head=worktree_head, local_branch_exists=local_branch_exists,
-                   checkouts=checkouts, dirty=dirty, ff_fails=ff_fails)
+                   checkouts=checkouts, dirty=dirty, ff_fails=ff_fails, candidates=candidates, root=d)
     argv = ["adopt", "--pr", str(v["number"]), "--run-id", run_id, "--file", str(ledger),
             "--tier", tier, "--worktrees-root", str(wroot), "--project-root", str(d)]
     if repo:
@@ -809,10 +823,11 @@ def t_adopt_records_row_base():
 
 
 def t_readopt_base_mismatch_parks():
-    """A re-adoption whose live base no longer matches the row's effective_base PARKS the row and stops.
+    """A re-adoption whose live base diverged for a reason NOTHING explains PARKS the row and stops.
 
-    The recorded base is immutable; the campaign does not migrate it. pr-adopt parks through the existing
-    machine-blocker transition with the EXACT reason, rewrites no base, and refreshes no SHA-bound evidence.
+    Here the recorded base `v3` has no merged PR behind it, so GitHub's own retarget cannot account for the
+    move. pr-adopt parks through the existing machine-blocker transition with the EXACT reason, rewrites no
+    base, and refreshes no SHA-bound evidence. The explained case migrates instead — pinned below.
     """
     with tempfile.TemporaryDirectory() as dd:
         d = Path(dd)
@@ -833,7 +848,7 @@ def t_readopt_base_mismatch_parks():
               f"the durable park reason must be EXACT; got {_field(ledger, 12, 'ci_reason')!r}")
         check(_field(ledger, 12, "blocker_ruling") == "-", "the park clears blocker_ruling (park contract)")
         # The recorded base is NOT rewritten, and SHA-bound evidence is NOT refreshed.
-        check(_field(ledger, 12, "base_branch") == "v3", "the recorded row base is immutable — never rewritten")
+        check(_field(ledger, 12, "base_branch") == "v3", "an unexplained retarget never rewrites the base")
         check(_field(ledger, 12, "reviews_ok") == "1", "a parked mismatch refreshes no review evidence")
         # It stopped BEFORE touching any label — only the `gh pr view` (step 1) ran, no create/edit.
         ghs = [c["argv"][:3] for c in rec.gh_calls()]
@@ -867,6 +882,34 @@ def t_readopt_base_mismatch_already_held_keeps_question():
               "the existing open question must be PRESERVED, not overwritten by the base mismatch")
         check(_field(ledger, 12, "blocker_ruling") == "retry@2026-01-01T00:00:00Z",
               "the pending ruling on the open park is untouched")
+
+
+def t_readopt_explained_retarget_migrates_and_continues():
+    """A re-adoption whose divergence GitHub itself caused MIGRATES the row and adoption CONTINUES.
+
+    The stacked-PR case: PR 11 merged `v3` into `main`, so GitHub moved this PR onto `main`. Adoption does
+    not stop, does not park, and does not ask: the row records the base the PR actually targets and the rest
+    of the adoption — labels, evidence refresh — runs exactly as it does for any matching base.
+    """
+    with tempfile.TemporaryDirectory() as dd:
+        d = Path(dd)
+        wroot = d / "wt"
+        sha = "a" * 40
+        ledger = d / "state.jsonl"
+        _init_ledger(ledger, base_branch="main")
+        _add_row(ledger, 12, head_sha=sha, base_branch="v3", status="in_review", tier="HIGH")
+        _record_verdict(ledger, 12, sha)                # reviews_ok -> 1 (a retarget moves no content)
+        parent = {"number": 11, "headRefName": "v3", "baseRefName": "main", "state": "MERGED",
+                  "mergedAt": "2026-08-18T10:00:00Z"}
+        code, _, err, rec = _adopt(d, ledger, view(headRefOid=sha, baseRefName="main"),
+                                   wroot=wroot, worktree_head=sha, candidates=[parent])
+        check(code == 0, f"an explained retarget adopts normally (got {code}: {err})")
+        check(_field(ledger, 12, "base_branch") == "main", "the row must record the base the PR now targets")
+        check(_field(ledger, 12, "status") == "in_review", "and it must NOT be parked on the user")
+        check(_field(ledger, 12, "reviews_ok") == "1", "a retarget moves no content — the tally survives")
+        # Adoption CONTINUED: it reached the label work, which a parked mismatch never does.
+        ghs = [c["argv"][:3] for c in rec.gh_calls()]
+        check(["gh", "label", "create"] in ghs, f"the adoption must continue past the gate; got {ghs!r}")
 
 
 # --- CROSS-SCRIPT: one mixed-base run walks the real tools end to end -----------------------------------
@@ -981,7 +1024,7 @@ def t_mixed_base_end_to_end():
         check(_field(ledger, 41, "ci_reason") == "base changed from v3 to main; not supported mid-run",
               f"the durable park reason is EXACT; got {_field(ledger, 41, 'ci_reason')!r}")
         check(_field(ledger, 41, "base_branch") == "v3",
-              "the recorded base is immutable — a park never rewrites it")
+              "a park never rewrites the recorded base")
 
         # 5. DISTILL (carryover v2): each terminal object carries its OWN base; metadata lists both, sorted.
         _set_row(ledger, 41, status="aborted")
@@ -1362,6 +1405,7 @@ CASES = [
     ("adopt_records_row_base", "a fresh adoption records the live base on the new row (add-row --base-branch)", t_adopt_records_row_base),
     ("readopt_base_mismatch_parks", "a re-adoption whose live base diverges from effective_base parks the row, exact reason, no rewrite", t_readopt_base_mismatch_parks),
     ("readopt_base_mismatch_already_held", "an already-held row keeps its open question on a base mismatch", t_readopt_base_mismatch_already_held_keeps_question),
+    ("readopt_explained_retarget_migrates", "a re-adoption whose retarget GitHub caused migrates the row and continues", t_readopt_explained_retarget_migrates_and_continues),
     ("intent_sync_inserts_and_preserves", "intent-sync folds all run defaults in, preserving PR-specific Non-goals (fu61)", t_intent_sync_inserts_and_preserves),
     ("intent_sync_dedup", "a default already stated as a PR-specific Non-goal is not duplicated (fu61)", t_intent_sync_dedup),
     ("intent_sync_idempotent", "a second intent-sync is byte-identical and reports unchanged (fu61)", t_intent_sync_idempotent),

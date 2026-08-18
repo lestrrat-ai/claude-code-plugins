@@ -1,0 +1,414 @@
+#!/usr/bin/env python3
+"""Fixtures for `base-retarget.py` — the decider that separates GitHub's own retarget from every other one.
+
+They live in a SIBLING file, and `base-retarget.py self-test` FAILS LOUDLY if it cannot load them.
+
+EVERY FIXTURE HAS TEETH, and the ones that matter most are the PARKS. This tool is the only thing in the
+campaign that can rewrite a live row's base without a human, so a fixture suite that only proved the happy
+path would certify exactly the wrong half. Each park fixture is one shape that LOOKS like the stacked-PR
+merge and is not — a base whose PR is still open, one closed unmerged, one that merged somewhere else, a
+deleted branch with no PR at all — and each asserts that the recorded base SURVIVES.
+
+The `resolve` fixtures drive the real CLI against a REAL ledger built through `ledger.py` itself, with the
+`gh` read replaced by a recorded response (`--candidates-json`). What they assert is the ledger AFTER the
+call, through the accessor — not the tool's own JSON, which would let a decider that printed `migrate` and
+wrote nothing pass.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+from _gauntlet.modules import load_sibling
+from _gauntlet.testing import capture_cli, checker
+
+OWNER = Path(__file__).resolve().parent / "base-retarget.py"
+
+M = load_sibling("base_retarget_owner", OWNER.parent, OWNER.name)
+
+check = checker(M.SelfTestFailure)
+
+
+def pr_entry(number: int, head: str, base: str, *, state: str = "MERGED",
+             merged_at: str = "2026-08-18T10:00:00Z") -> dict:
+    """One `gh pr list --json number,headRefName,baseRefName,state,mergedAt` entry."""
+    return {"number": number, "headRefName": head, "baseRefName": base, "state": state,
+            "mergedAt": merged_at}
+
+
+def _run_ledger(ledger: Path, *argv: str) -> subprocess.CompletedProcess:
+    proc = subprocess.run([sys.executable, str(M.LEDGER), "--file", str(ledger), *argv],
+                          capture_output=True, text=True, check=False)
+    check(proc.returncode == 0, f"ledger {' '.join(argv)} failed: {proc.stderr.strip()}")
+    return proc
+
+
+def _field(ledger: Path, pr: str, field: str) -> str:
+    return _run_ledger(ledger, "get", "--pr", pr, "--field", field).stdout.strip()
+
+
+def _row(ledger: Path, pr: str = "36", *, base: str = "fix-a", status: str = "in_review") -> None:
+    """A live row for `pr` on `base`, built through the REAL accessor — the shape adoption writes."""
+    _run_ledger(ledger, "header", "set", "run_id", "t")
+    _run_ledger(ledger, "add-row", "--pr", pr, "--head-sha", "a" * 40, "--base-branch", base)
+    _run_ledger(ledger, "set", "--pr", pr, "--status", status)
+
+
+def _candidates(root: Path, entries: "list[dict]") -> str:
+    path = root / "candidates.json"
+    path.write_text(json.dumps(entries), encoding="utf-8")
+    return str(path)
+
+
+def expect(recorded: str, live: str, candidates: object, decision: str) -> dict:
+    got = M.decide(recorded, live, candidates)
+    check(got["decision"] == decision, f"expected {decision!r} for {recorded!r} -> {live!r}, got {got!r}")
+    return got
+
+
+# --- the ONE shape that migrates -----------------------------------------------
+
+def t_merged_parent_migrates():
+    """The stacked-PR case: PR 35 merged `fix-a` into `main`, so GitHub moved this PR onto `main`."""
+    got = expect("fix-a", "main", [pr_entry(35, "fix-a", "main")], M.MIGRATE)
+    check(got["evidence"]["parent_prs"] == [35], f"the deciding parent PR must be named, got {got!r}")
+    check("35" in got["reason"] and "main" in got["reason"],
+          f"the reason must name the parent PR and the new base, got {got['reason']!r}")
+
+
+def t_newest_merge_decides():
+    """A reused branch: the NEWEST merge from it is the one GitHub retargeted against, not the older one."""
+    got = expect("fix-a", "v4",
+                 [pr_entry(10, "fix-a", "main", merged_at="2026-01-01T00:00:00Z"),
+                  pr_entry(35, "fix-a", "v4", merged_at="2026-08-18T10:00:00Z")], M.MIGRATE)
+    check(got["evidence"]["parent_prs"] == [35], f"the NEWEST merge must decide, got {got!r}")
+
+
+def t_unrelated_entries_are_filtered():
+    """`--head` is a filter, not a guarantee: entries for another branch cannot decide this row's base."""
+    expect("fix-a", "main",
+           [pr_entry(35, "fix-a", "main"), pr_entry(34, "other", "release")], M.MIGRATE)
+    # The same response WITHOUT the matching entry explains nothing.
+    expect("fix-a", "main", [pr_entry(34, "other", "main")], M.PARK)
+
+
+def t_same_base_is_no_change():
+    """A live base equal to the recorded one is decided BEFORE any evidence is read — nothing moved."""
+    got = expect("main", "main", "not even a list", M.NO_CHANGE)
+    check(got["evidence"] == {}, f"a no-change decision reads no evidence, got {got!r}")
+
+
+# --- everything else PARKS ------------------------------------------------------
+
+def t_open_parent_parks():
+    """The base branch's PR is still OPEN: GitHub retargets on MERGE, so nothing explains the move."""
+    got = expect("fix-a", "main", [pr_entry(35, "fix-a", "main", state="OPEN")], M.PARK)
+    check("no merged PR" in got["reason"], f"the park must say the evidence was absent, got {got['reason']!r}")
+
+
+def t_closed_unmerged_parent_parks():
+    """The base branch's PR was CLOSED without merging: its content is nowhere, so this is a user change."""
+    expect("fix-a", "main", [pr_entry(35, "fix-a", "main", state="CLOSED")], M.PARK)
+
+
+def t_deleted_base_with_no_pr_parks():
+    """The base branch simply vanished — no PR at all. An absent ref cannot establish WHY it is absent."""
+    expect("fix-a", "main", [], M.PARK)
+
+
+def t_parent_merged_elsewhere_parks():
+    """The parent merged into `v3`, but this PR now targets `main`. GitHub would have moved it to `v3`, so
+    wherever it points came from somewhere else — the one shape most likely to be waved through."""
+    got = expect("fix-a", "main", [pr_entry(35, "fix-a", "v3")], M.PARK)
+    check("v3" in got["reason"] and "main" in got["reason"],
+          f"the park must name both bases so the user can see the mismatch, got {got['reason']!r}")
+
+
+def t_ambiguous_simultaneous_merges_park():
+    """Two merges of the same branch at the SAME instant onto different bases: no single retarget target."""
+    got = expect("fix-a", "main",
+                 [pr_entry(35, "fix-a", "main"), pr_entry(36, "fix-a", "v3")], M.PARK)
+    check(got["evidence"]["parent_bases"] == ["main", "v3"], f"both bases must be reported, got {got!r}")
+
+
+def t_identical_simultaneous_merges_still_migrate():
+    """The same instant is only ambiguous when the bases DISAGREE — two merges onto one base still decide."""
+    expect("fix-a", "main", [pr_entry(35, "fix-a", "main"), pr_entry(36, "fix-a", "main")], M.MIGRATE)
+
+
+def t_full_page_parks():
+    """A FULL page means the newest merge may be outside the window, so the deciding row may not be here."""
+    entries = [pr_entry(n, "fix-a", "main") for n in range(M.CANDIDATE_LIMIT)]
+    got = expect("fix-a", "main", entries, M.PARK)
+    check(str(M.CANDIDATE_LIMIT) in got["reason"], f"the park must name the window, got {got['reason']!r}")
+    # One below the cap is a complete answer and decides normally.
+    expect("fix-a", "main", entries[:-1], M.MIGRATE)
+
+
+def t_malformed_evidence_parks():
+    """A payload this tool does not understand is not evidence — every malformation parks, none is skipped."""
+    for candidates in ({"not": "a list"},
+                       ["not an object"],
+                       [{"headRefName": "fix-a", "baseRefName": "main", "state": "MERGED"}],
+                       [{"number": 35, "headRefName": "fix-a", "baseRefName": "main",
+                         "state": "MERGED", "mergedAt": 17}],
+                       [{"number": True, "headRefName": "fix-a", "baseRefName": "main",
+                         "state": "MERGED", "mergedAt": "2026-08-18T10:00:00Z"}]):
+        got = expect("fix-a", "main", candidates, M.PARK)
+        check("malformed" in got["reason"], f"a malformed payload must say so, got {got['reason']!r}")
+
+
+def t_one_bad_entry_poisons_the_list():
+    """A malformed entry does NOT get skipped past a good one: dropping it silently is how a fail-closed
+    check becomes a guess about the entry it could not read."""
+    expect("fix-a", "main", [pr_entry(35, "fix-a", "main"), {"number": 36}], M.PARK)
+
+
+# --- `resolve`: the decision, the ledger write, and the exit code ----------------
+
+def t_resolve_migrates_the_row():
+    """A migrate REWRITES the recorded base and voids everything the old base authorized, through the real
+    ledger: `required_set` and `base_ok_sha` back to their defaults, `ci` back to pending — while the review
+    tally SURVIVES, because a retarget moves no content."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        ledger = root / "state.jsonl"
+        _row(ledger)
+        # The gate state a live row accumulates, EARNED through the real doors: a base-preflight stamp for
+        # the head, two landed verdicts on it (a hand-raised tally is refused), a green ci and a read
+        # required set. All of it describes the OLD base.
+        _run_ledger(ledger, "base-ok", "--pr", "36", "--head-sha", "a" * 40)
+        for _ in range(2):
+            _run_ledger(ledger, "verdict", "--pr", "36", "--head-sha", "a" * 40, "--verdict", "satisfied")
+        _run_ledger(ledger, "set", "--pr", "36", "--ci", "green",
+                    "--required-set", "declared:[\"build\"]", "--settled-strikes", "3")
+        code, out, err = capture_cli(M.main, ["resolve", "--pr", "36", "--live", "main",
+                                              "--file", str(ledger),
+                                              "--candidates-json",
+                                              _candidates(root, [pr_entry(35, "fix-a", "main")])])
+        check(code == 0, f"a migrate must exit 0 so the caller continues (stderr: {err})")
+        result = json.loads(out)
+        check(result["decision"] == M.MIGRATE and result["wrote"] == "retarget",
+              f"resolve must report the write it performed, got {result!r}")
+        check(_field(ledger, "36", "base_branch") == "main", "the recorded base must move to the live base")
+        check(_field(ledger, "36", "reviews_ok") == "2",
+              "a retarget moves no content, so the review tally must SURVIVE it")
+        check(_field(ledger, "36", "required_set") == "-",
+              "the required-check set is derived from the base and must be re-read for the new one")
+        check(_field(ledger, "36", "base_ok_sha") == "-",
+              "the base-preflight proceed was decided against the OLD base and must be voided")
+        check(_field(ledger, "36", "ci") == "pending", "ci must be re-derived against the new required set")
+        check(_field(ledger, "36", "settled_strikes") == "0", "the liveness counters must reset with the ci")
+
+
+def t_resolve_releases_a_park_for_this_base_change():
+    """The whole point of the transition: a row a fail-closed consumer PARKED on this exact base change is
+    released by the migrate, so the user is never asked a question the evidence already answered."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        ledger = root / "state.jsonl"
+        _row(ledger)
+        _run_ledger(ledger, "park", "--pr", "36", "--reason",
+                    M.L.BASE_CHANGE_PARK_REASON.format(recorded="fix-a", live="main"))
+        code, out, err = capture_cli(M.main, ["resolve", "--pr", "36", "--live", "main",
+                                              "--file", str(ledger),
+                                              "--candidates-json",
+                                              _candidates(root, [pr_entry(35, "fix-a", "main")])])
+        check(code == 0, f"a migrate over an explained park must exit 0 (stderr: {err})")
+        check(json.loads(out)["wrote"] == "retarget", "the release happens through the retarget transition")
+        check(_field(ledger, "36", "status") == "in_review", "the row must be released back to the live status")
+        check(_field(ledger, "36", "ci_reason") == "-", "the answered question must be cleared")
+        check(_field(ledger, "36", "base_branch") == "main", "and the base must have moved")
+
+
+def t_resolve_parks_an_unexplained_retarget():
+    """An unexplained retarget parks with the SHARED machine-blocker wording — the same question the user
+    already knows how to rule on — and exits non-zero so the caller acts on nothing else this pass."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        ledger = root / "state.jsonl"
+        _row(ledger)
+        code, out, err = capture_cli(M.main, ["resolve", "--pr", "36", "--live", "main",
+                                              "--file", str(ledger),
+                                              "--candidates-json", _candidates(root, [])])
+        check(code != 0, f"an unexplained retarget must gate the caller closed (stderr: {err})")
+        result = json.loads(out)
+        check(result["wrote"] == "park", f"resolve must record the park, got {result!r}")
+        check(_field(ledger, "36", "status") == "awaiting-user", "the row must be parked on the user")
+        check(_field(ledger, "36", "ci_reason") == "base changed from fix-a to main; not supported mid-run",
+              "the park must record the EXACT shared wording every base-change park uses")
+        check(_field(ledger, "36", "base_branch") == "fix-a", "and the recorded base must SURVIVE the park")
+
+
+def t_resolve_keeps_an_open_question_it_did_not_ask():
+    """A row already parked on a DIFFERENT question keeps it: `park` never overwrites an open question, and
+    a retarget may not answer one."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        ledger = root / "state.jsonl"
+        _row(ledger)
+        _run_ledger(ledger, "park", "--pr", "36", "--reason", "CI has been stalled for 3 refetches")
+        code, out, err = capture_cli(M.main, ["resolve", "--pr", "36", "--live", "main",
+                                              "--file", str(ledger),
+                                              "--candidates-json",
+                                              _candidates(root, [pr_entry(35, "fix-a", "main")])])
+        check(code != 0, f"a row held on another question must gate closed (stderr: {err})")
+        check("ledger_refusal" in json.loads(out) or json.loads(out).get("already_held") is True,
+              f"the refusal to answer another question must be reported, got {out!r}")
+        check(_field(ledger, "36", "ci_reason") == "CI has been stalled for 3 refetches",
+              "the OPEN question must survive untouched")
+        check(_field(ledger, "36", "base_branch") == "fix-a", "and no base may be written underneath it")
+
+
+def t_resolve_refuses_a_terminal_row():
+    """A merged row's base records what it merged INTO; nothing retargets it, and the tool must not park it."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        ledger = root / "state.jsonl"
+        _row(ledger)
+        _run_ledger(ledger, "set", "--pr", "36", "--status", "merged")
+        code, out, err = capture_cli(M.main, ["resolve", "--pr", "36", "--live", "main",
+                                              "--file", str(ledger),
+                                              "--candidates-json",
+                                              _candidates(root, [pr_entry(35, "fix-a", "main")])])
+        check(code != 0, f"a terminal row must gate closed (stderr: {err})")
+        check("ledger_refusal" in json.loads(out), "the transition's refusal must be reported, not swallowed")
+        check(_field(ledger, "36", "base_branch") == "fix-a", "a terminal row's base must not move")
+        check(_field(ledger, "36", "status") == "merged", "and its status must not move either")
+
+
+def t_resolve_reads_the_recorded_base_from_the_ledger():
+    """A caller passes only the LIVE base. A row whose live base already matches is `no-change`: no evidence
+    is read, nothing is written, and the caller continues."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        ledger = root / "state.jsonl"
+        _row(ledger, base="main")
+        code, out, err = capture_cli(M.main, ["resolve", "--pr", "36", "--live", "main",
+                                              "--file", str(ledger)])
+        check(code == 0, f"a row already on its live base must continue (stderr: {err})")
+        result = json.loads(out)
+        check(result["decision"] == M.NO_CHANGE and result["wrote"] is None,
+              f"no divergence means no write, got {result!r}")
+
+
+def t_resolve_parks_a_legacy_row_by_its_inherited_base():
+    """An OLD row carries no explicit base and inherits the legacy header. The comparison — and the recorded
+    park wording — must use THAT inherited base, resolved through the accessor."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        ledger = root / "state.jsonl"
+        _run_ledger(ledger, "header", "set", "run_id", "t")
+        _run_ledger(ledger, "header", "set", "base_branch", "v3")
+        _run_ledger(ledger, "add-row", "--pr", "36", "--head-sha", "a" * 40)
+        code, _, err = capture_cli(M.main, ["resolve", "--pr", "36", "--live", "main",
+                                            "--file", str(ledger),
+                                            "--candidates-json", _candidates(root, [])])
+        check(code != 0, f"an unexplained retarget of a legacy row parks (stderr: {err})")
+        check(_field(ledger, "36", "ci_reason") == "base changed from v3 to main; not supported mid-run",
+              "the inherited header base must be the one named in the park")
+
+
+def t_resolve_fails_closed_on_unreadable_evidence():
+    """Evidence that could not be read is not evidence FOR a retarget, and only evidence FOR one migrates."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        ledger = root / "state.jsonl"
+        _row(ledger)
+        code, out, err = capture_cli(M.main, ["resolve", "--pr", "36", "--live", "main",
+                                              "--file", str(ledger),
+                                              "--candidates-json", str(root / "absent.json")])
+        check(code != 0, f"an unreadable read must gate closed (stderr: {err})")
+        check(json.loads(out)["decision"] == M.PARK, "an unreadable read parks, never migrates")
+        check(_field(ledger, "36", "base_branch") == "fix-a", "and the recorded base survives")
+
+
+def t_resolve_refuses_an_unnamed_live_base():
+    """A `-` or empty `--live` names no branch, so no divergence can be judged — and nothing is written."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        ledger = root / "state.jsonl"
+        _row(ledger)
+        for live in ("-", "  "):
+            code, out, _ = capture_cli(M.main, ["resolve", "--pr", "36", "--live", live,
+                                                "--file", str(ledger)])
+            check(code != 0, f"--live {live!r} must fail closed")
+            check(json.loads(out)["decision"] == M.PARK, f"--live {live!r} must not migrate")
+        check(_field(ledger, "36", "status") == "in_review", "and no ledger write may have happened")
+
+
+def t_resolve_refuses_a_malformed_repo():
+    """An explicit `--repo` is interpolated into the `gh` argv, so it is checked at the CLI boundary."""
+    code, out, _ = capture_cli(M.main, ["resolve", "--pr", "36", "--live", "main", "--file", "/nonexistent",
+                                        "--repo", "not a repo"])
+    check(code != 0, "a malformed --repo must fail closed")
+    check("--repo" in json.loads(out)["reason"], "the refusal must name the flag it rejected")
+
+
+def t_decide_cli_is_pure():
+    """`decide` is the pure surface: it reads a recorded response, writes no ledger, and gates on `$?`."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        path = _candidates(root, [pr_entry(35, "fix-a", "main")])
+        code, out, _ = capture_cli(M.main, ["decide", "--recorded", "fix-a", "--live", "main",
+                                            "--candidates-json", path])
+        check(code == 0 and json.loads(out)["decision"] == M.MIGRATE, f"expected a migrate, got {out!r}")
+        code, out, _ = capture_cli(M.main, ["decide", "--recorded", "fix-a", "--live", "v9",
+                                            "--candidates-json", path])
+        check(code != 0 and json.loads(out)["decision"] == M.PARK, f"expected a park, got {out!r}")
+
+
+def t_park_wording_is_the_shared_constant():
+    """The park wording is the LEDGER's constant, not a second spelling of it: every base-change park in the
+    campaign records the same question, and `retarget`'s release matches against that same string."""
+    check(M.L.BASE_CHANGE_PARK_REASON.format(recorded="a", live="b")
+          == "base changed from a to b; not supported mid-run",
+          "the shared park wording changed — every site that routes on it must be swept with it")
+
+
+CASES = [
+    ("merged-parent-migrates", "a parent PR that merged the recorded base into the live base migrates",
+     t_merged_parent_migrates),
+    ("newest-merge-decides", "a reused branch is decided by its NEWEST merge", t_newest_merge_decides),
+    ("filters-other-branches", "entries for another head branch cannot decide this row",
+     t_unrelated_entries_are_filtered),
+    ("same-base-no-change", "a live base equal to the recorded one reads no evidence", t_same_base_is_no_change),
+    ("open-parent-parks", "a base branch whose PR is still open parks", t_open_parent_parks),
+    ("closed-parent-parks", "a base branch whose PR was closed unmerged parks", t_closed_unmerged_parent_parks),
+    ("no-pr-parks", "a vanished base branch with no PR parks", t_deleted_base_with_no_pr_parks),
+    ("merged-elsewhere-parks", "a parent that merged into a DIFFERENT base parks",
+     t_parent_merged_elsewhere_parks),
+    ("ambiguous-parks", "simultaneous merges onto different bases park", t_ambiguous_simultaneous_merges_park),
+    ("ambiguous-only-when-bases-differ", "simultaneous merges onto ONE base still migrate",
+     t_identical_simultaneous_merges_still_migrate),
+    ("full-page-parks", "a full candidate page parks; one below the cap decides", t_full_page_parks),
+    ("malformed-parks", "every malformed candidate payload parks", t_malformed_evidence_parks),
+    ("bad-entry-poisons", "a malformed entry is never skipped past a good one", t_one_bad_entry_poisons_the_list),
+    ("resolve-migrates", "a migrate rewrites the base and voids what the old base authorized",
+     t_resolve_migrates_the_row),
+    ("resolve-releases-park", "a migrate releases a park opened for this same base change",
+     t_resolve_releases_a_park_for_this_base_change),
+    ("resolve-parks", "an unexplained retarget parks with the shared wording and keeps the recorded base",
+     t_resolve_parks_an_unexplained_retarget),
+    ("resolve-keeps-other-question", "a row held on another question keeps it and moves no base",
+     t_resolve_keeps_an_open_question_it_did_not_ask),
+    ("resolve-terminal-refused", "a terminal row is neither retargeted nor parked",
+     t_resolve_refuses_a_terminal_row),
+    ("resolve-reads-recorded-base", "the recorded base comes from the ledger, never from the caller",
+     t_resolve_reads_the_recorded_base_from_the_ledger),
+    ("resolve-legacy-row", "a legacy row is compared and parked by its inherited header base",
+     t_resolve_parks_a_legacy_row_by_its_inherited_base),
+    ("resolve-unreadable-evidence", "evidence that could not be read parks",
+     t_resolve_fails_closed_on_unreadable_evidence),
+    ("resolve-unnamed-live-base", "an empty or `-` --live is refused before any write",
+     t_resolve_refuses_an_unnamed_live_base),
+    ("resolve-malformed-repo", "a malformed --repo is refused at the CLI boundary",
+     t_resolve_refuses_a_malformed_repo),
+    ("decide-cli-pure", "the decide subcommand reads a recorded response and gates on $?", t_decide_cli_is_pure),
+    ("shared-park-wording", "the park wording is the ledger's shared constant",
+     t_park_wording_is_the_shared_constant),
+]

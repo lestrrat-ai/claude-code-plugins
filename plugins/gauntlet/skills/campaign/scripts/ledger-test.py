@@ -3054,7 +3054,8 @@ def t_unreadable_status_verbosity_renders_full(L: ModuleType, tmp: Path) -> None
 # `base_branch` and `required_set` are per-ROW state now; the header fields are only what a row with no
 # explicit value inherits. These fixtures pin the schema half of mixed-base support (each consumer's own
 # resolution through the accessors is exercised by that consumer's test suite): the two accessors, the
-# immutable creation-only row base, and the `-` (inherit) vs `unknown` (explicit, fail-closed) distinction.
+# creation-only row base (closed to every driver door), and the `-` (inherit) vs `unknown` (explicit,
+# fail-closed) distinction.
 
 def t_old_ledger_resolves_through_the_header(L: ModuleType, tmp: Path) -> None:
     """An old ledger — written before the row base fields existed — loads and resolves through the header.
@@ -3108,11 +3109,13 @@ def t_new_row_owns_its_base(L: ModuleType, tmp: Path) -> None:
 
 
 def t_row_base_is_creation_only(L: ModuleType, tmp: Path) -> None:
-    """The row base is written ONCE at `add-row` and is IMMUTABLE after — `set` has no `--base-branch` flag.
+    """The row base is written ONCE at `add-row` and is closed to every DRIVER door — `set` has no
+    `--base-branch` flag.
 
-    The campaign never migrates a row to a new base (an unsupported live-base change parks the row for the
-    user, later-stage work), so the recorded base cannot be rewritten. The mechanism is the absent-door one
-    `base_ok_sha`/`review_rounds` use, asymmetric across the doors: present at `add-row`, absent at `set`.
+    No driver retargets a row it is merely driving, so the recorded base cannot be rewritten through the
+    generic write door. The mechanism is the absent-door one `base_ok_sha`/`review_rounds` use, asymmetric
+    across the doors: present at `add-row`, absent at `set`. The ONE transition that does rewrite it on a
+    live row has its own door and its own evidence (`retarget`, pinned below).
     """
     check("base_branch" in L.CREATE_ONLY, "base_branch must be in CREATE_ONLY, or `set` could rewrite it")
     check(L.settable("base_branch"), "base_branch is still settable() — CREATE_ONLY narrows only WHICH door")
@@ -3121,7 +3124,7 @@ def t_row_base_is_creation_only(L: ModuleType, tmp: Path) -> None:
     check(code == 0, f"add-row --base-branch exited {code}: {err!r}")
     # `set --base-branch` is an argparse refusal — the flag is ABSENT at that door, exactly like base_ok_sha.
     code, _, err = cli(L, ["--file", str(path), "set", "--pr", "1", "--base-branch", "main"])
-    check(code == 2, f"`set --base-branch` was accepted (exit {code}) — the recorded base is not immutable")
+    check(code == 2, f"`set --base-branch` was accepted (exit {code}) — a driver door can rewrite the base")
     check("unrecognized arguments" in err,
           f"`set --base-branch` failed, but not because the flag is ABSENT: {err!r}")
     # …and the stored base is untouched by the refused write.
@@ -3132,6 +3135,109 @@ def t_row_base_is_creation_only(L: ModuleType, tmp: Path) -> None:
           "required_set must stay settable via `set` — the grouped required-set refresh writes it")
     code, _, err = cli(L, ["--file", str(path), "set", "--pr", "1", "--required-set", "none"])
     check(code == 0, f"`set --required-set` must stay open for the grouped required-set refresh: exit {code}, {err!r}")
+
+
+def _retarget_row(L: ModuleType, tmp: Path, name: str, *, base: str = "fix-a") -> Path:
+    """A live row on `base` with a base-preflight stamp, a landed verdict, a green ci and a read required
+    set — all EARNED through the real doors, so what `retarget` voids is real gate state, not a hand write."""
+    path = write_lines(tmp / name, header_line(L, run_id="r1"))
+    cli(L, ["--file", str(path), "add-row", "--pr", "36", "--head-sha", "a" * 40, "--base-branch", base])
+    cli(L, ["--file", str(path), "set", "--pr", "36", "--status", "in_review", "--ci", "green",
+            "--required-set", "declared:[]"])
+    cli(L, ["--file", str(path), "base-ok", "--pr", "36", "--head-sha", "a" * 40])
+    cli(L, ["--file", str(path), "verdict", "--pr", "36", "--head-sha", "a" * 40, "--verdict", "satisfied"])
+    return path
+
+
+def t_retarget_moves_the_base_and_voids_what_it_authorized(L: ModuleType, tmp: Path) -> None:
+    """`retarget` is the ONE door that rewrites a LIVE row's base, and it writes the base MOVE plus
+    everything the old base authorized, atomically.
+
+    The review tally SURVIVES on purpose: a retarget moves no content, and whether the PR's diff changed is
+    the head-move judgement that fires on the rebase this forces. The base-preflight stamp does NOT survive —
+    voiding it is what makes a fresh preflight against the new base the only way back to a countable verdict.
+    """
+    path = _retarget_row(L, tmp, "rt.jsonl")
+    code, _, err = cli(L, ["--file", str(path), "retarget", "--pr", "36", "--from", "fix-a", "--to", "main"])
+    check(code == 0, f"retarget exited {code}: {err!r}")
+    _, rows = L.load(path)
+    row = L.find_row(rows, "36")
+    check(row["base_branch"] == "main", f"the recorded base must move: {row['base_branch']!r}")
+    check(row["reviews_ok"] == "1", f"a retarget moves no content — the tally must survive: {row!r}")
+    check(row["review_rounds"] == "1", f"and so must the round count: {row!r}")
+    check(row["base_ok_sha"] == "-", f"the OLD base's preflight proceed must be voided: {row!r}")
+    check(row["required_set"] == "-", f"the required set is derived from the base and must be re-read: {row!r}")
+    check(row["ci"] == "pending", f"ci must be re-derived against the new required set: {row!r}")
+    for field in L.LIVENESS_COUNTERS:
+        check(row[field] == L.ROW_DEFAULTS[field],
+              f"{field} describes the old base's ci and must reset with it: {row!r}")
+
+
+def t_retarget_releases_a_park_for_this_base_change(L: ModuleType, tmp: Path) -> None:
+    """A row parked on THIS base change is released by the same write; a row parked on any OTHER question
+    keeps it. That asymmetry is the whole transition: the fail-closed consumers may keep parking, and only
+    the question the evidence answered is cleared."""
+    path = _retarget_row(L, tmp, "rt-park.jsonl")
+    cli(L, ["--file", str(path), "park", "--pr", "36", "--reason",
+            L.BASE_CHANGE_PARK_REASON.format(recorded="fix-a", live="main")])
+    code, _, err = cli(L, ["--file", str(path), "retarget", "--pr", "36", "--from", "fix-a", "--to", "main"])
+    check(code == 0, f"a park for this base change must be released, not refused: {code}, {err!r}")
+    _, rows = L.load(path)
+    row = L.find_row(rows, "36")
+    check(row["status"] == L.LIVE_STATUS, f"the released row must return to the live status: {row!r}")
+    check(row["ci_reason"] == "-" and row["blocker_ruling"] == "-",
+          f"the answered question and any spent ruling must be cleared: {row!r}")
+
+    other = _retarget_row(L, tmp, "rt-other.jsonl")
+    cli(L, ["--file", str(other), "park", "--pr", "36", "--reason", "CI stalled for 3 refetches"])
+    code, _, err = cli(L, ["--file", str(other), "retarget", "--pr", "36", "--from", "fix-a", "--to", "main"])
+    check(code == L.EXIT_STOP, f"a park on another question is a STOP, not a write: exit {code}")
+    check("CI stalled" in err, f"the open question must be surfaced: {err!r}")
+    _, rows = L.load(other)
+    check(L.find_row(rows, "36")["base_branch"] == "fix-a",
+          "no base may be written underneath an unanswered question")
+
+
+def t_retarget_refuses_what_it_cannot_authorize(L: ModuleType, tmp: Path) -> None:
+    """Every refusal writes NOTHING: a stale `--from`, a `--to` that names no branch or the recorded base
+    itself, a terminal row, and a hold with its own owner."""
+    path = _retarget_row(L, tmp, "rt-refuse.jsonl")
+    for argv, why in (
+        (["--from", "v3", "--to", "main"], "a --from disagreeing with the recorded base"),
+        (["--from", "fix-a", "--to", "-"], "a --to that names no branch"),
+        (["--from", "fix-a", "--to", "fix-a"], "a --to equal to the recorded base"),
+    ):
+        code, _, err = cli(L, ["--file", str(path), "retarget", "--pr", "36", *argv])
+        check(code == 1, f"{why} must fail (exit {code}): {err!r}")
+    _, rows = L.load(path)
+    check(L.find_row(rows, "36")["base_branch"] == "fix-a", "no refused retarget may have written a base")
+
+    for status, why in (("merged", "a terminal row"), ("awaiting-api", "a hold with its own owner")):
+        held = _retarget_row(L, tmp, f"rt-{status}.jsonl")
+        cli(L, ["--file", str(held), "set", "--pr", "36", "--status", status])
+        code, _, err = cli(L, ["--file", str(held), "retarget", "--pr", "36", "--from", "fix-a",
+                               "--to", "main"])
+        check(code == 1, f"{why} must fail (exit {code}): {err!r}")
+        _, rows = L.load(held)
+        check(L.find_row(rows, "36")["base_branch"] == "fix-a", f"{why} must keep its recorded base")
+
+    code, _, err = cli(L, ["--file", str(path), "retarget", "--pr", "99", "--from", "fix-a", "--to", "main"])
+    check(code == 1, f"an unknown row must fail (exit {code}): {err!r}")
+
+
+def t_retarget_reads_the_legacy_header_base(L: ModuleType, tmp: Path) -> None:
+    """A legacy row carries no explicit base, so `--from` is asserted against the INHERITED header base —
+    and the write gives the row an explicit one, which is what a migrated row must carry from then on."""
+    path = write_lines(tmp / "rt-legacy.jsonl", header_line(L, run_id="r1", base_branch="v3"))
+    cli(L, ["--file", str(path), "add-row", "--pr", "36", "--head-sha", "a" * 40])
+    cli(L, ["--file", str(path), "set", "--pr", "36", "--status", "in_review"])
+    code, _, err = cli(L, ["--file", str(path), "retarget", "--pr", "36", "--from", "main", "--to", "x"])
+    check(code == 1, f"--from must be asserted against the INHERITED base, not accepted: {code}, {err!r}")
+    code, _, err = cli(L, ["--file", str(path), "retarget", "--pr", "36", "--from", "v3", "--to", "main"])
+    check(code == 0, f"the inherited header base must satisfy --from: {code}, {err!r}")
+    _, rows = L.load(path)
+    check(L.find_row(rows, "36")["base_branch"] == "main",
+          "a migrated legacy row must carry its new base EXPLICITLY, never keep inheriting")
 
 
 def t_required_set_dash_vs_unknown(L: ModuleType, tmp: Path) -> None:
@@ -3343,7 +3449,11 @@ CASES = [
     ("verbosity-unreadable-full", "an unreadable status_verbosity renders FULL — a setting nobody can read hides nothing", t_unreadable_status_verbosity_renders_full),
     ("old-ledger-header-fallback", "an old row with no base fields loads and resolves through the header", t_old_ledger_resolves_through_the_header),
     ("new-row-owns-its-base", "a new row's explicit base wins over the header, per row", t_new_row_owns_its_base),
-    ("row-base-creation-only", "the row base is written once at add-row and immutable — no `set --base-branch`", t_row_base_is_creation_only),
+    ("row-base-creation-only", "the row base is written once at add-row and closed to `set` — no `--base-branch` flag", t_row_base_is_creation_only),
+    ("retarget-moves-base", "retarget moves the base and voids what the old base authorized; the tally survives", t_retarget_moves_the_base_and_voids_what_it_authorized),
+    ("retarget-releases-park", "retarget releases a park for THIS base change and stops at any other question", t_retarget_releases_a_park_for_this_base_change),
+    ("retarget-refusals", "a stale --from, an unusable --to, a terminal row and a foreign hold each write nothing", t_retarget_refuses_what_it_cannot_authorize),
+    ("retarget-legacy-base", "a legacy row's --from is the inherited header base; the write makes it explicit", t_retarget_reads_the_legacy_header_base),
     ("required-set-dash-vs-unknown", "`-` inherits the header; explicit `unknown` fails closed, never inherits", t_required_set_dash_vs_unknown),
     ("base-agrees", "base_agrees: identical strings always agree; only the ARGUMENT's origin/ is stripped", t_base_agrees),
     ("require-effective-base", "require_effective_base: a usable base passes; a blank/whitespace/`-` base fails closed naming the PR", t_require_effective_base),

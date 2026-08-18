@@ -150,9 +150,11 @@ review gate"), and the review re-starts on the clean tip:
   a conflict, GitHub reporting behind, or a CLEAN PR whose branch lacks the refreshed base — a base that
   merely **ADVANCED** (same branch NAME, new commits). `recheck` covers an uncomputed GitHub value,
   ancestry the helper cannot verify, **or a live retarget** — the PR now targets a different branch
-  NAME, an unsupported mid-run change the helper refuses with the same machine-blocker reason a
-  reconcile/re-adoption park records (`base changed from <recorded> to <live>; not supported mid-run`); park
-  the row through that path and do not proceed. Re-poll and re-run, never dispatch or rebase from incomplete
+  NAME, which the helper refuses with the same machine-blocker reason every base-change park records
+  (`base changed from <recorded> to <live>; not supported mid-run`). The helper never decides why the base
+  moved: hand the retarget to the `base_changed` route (`loop-control.md`), which migrates the row when
+  GitHub's own retarget explains it and parks it otherwise, and do not proceed here either way. Re-poll and
+  re-run, never dispatch or rebase from incomplete
   evidence. `park` covers an enum value GitHub's schema does not declare; with `--file`, the helper records
   the existing `ledger.py park` transition before returning, so leave the now-held candidate alone.
   `base-preflight.py` owns the decision and is the pre-flight gate for every fix subagent

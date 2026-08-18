@@ -618,11 +618,11 @@ def t_dash_leading_base_is_never_option_parseable():
 def t_live_base_retarget_refuses_with_shared_reason():
     # The live PR base no longer matches the row's recorded base: an unsupported mid-run retarget. The merge
     # runner must REFUSE (never merge onto the new base) with the SAME machine-blocker wording every base door
-    # records — pr-adopt.py owns it, reached here via merge-check (M.MC.PA).
+    # records — ledger.py owns it, reached here via merge-check (M.MC.BASE_CHANGE_PARK_REASON).
     td, root, f, led, real = scenario(view_base="v9")
     try:
         code, _result, err = invoke(f, led, root)
-        expected = M.MC.PA.BASE_CHANGE_PARK_REASON.format(recorded="main", live="v9")
+        expected = M.MC.BASE_CHANGE_PARK_REASON.format(recorded="main", live="v9")
         check(code != 0, f"a live base retarget must refuse, not merge: {err}")
         check(expected in err, f"the refusal must use the shared base-change reason, got: {err!r}")
     finally:

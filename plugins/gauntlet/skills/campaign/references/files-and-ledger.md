@@ -396,11 +396,14 @@ Header field notes (the header fields above; per-row fields follow):
   **admission** is LIVE too: adoption surfaces PRs on DIFFERENT bases into one run, each row owning the
   base it was created with, and PRs adopted together need **NOT** agree on `baseRefName` (`pr-adoption.md`,
   "PR adoption"). A new run leaves the header `base_branch` at `-` and records only per-row bases. It is **TOOL-OWNED and
-  FIXED FOR THE ROW'S WORKING LIFE** (`CREATE_ONLY` in `scripts/ledger.py`): `add-row` writes it and **`set` has no
-  `--base-branch` flag**, so no driver can retarget a row it is still driving — the campaign does not migrate
-  a live row to a new base. The one write outside those doors is the **terminal** GitHub-owned refresh
-  ("GitHub-owned vs campaign-owned row fields"), which is not a retarget: it fires only on a row that is
-  already done, and it records the base the PR actually merged into. The default is **`-`**, which is both the schema's "not set" spelling **and** its "inherit
+  CLOSED TO EVERY DRIVER DOOR** (`CREATE_ONLY` in `scripts/ledger.py`): `add-row` writes it and **`set` has no
+  `--base-branch` flag**, so no driver can retarget a row it is still driving. Exactly one transition rewrites
+  it on a LIVE row — **`ledger.py retarget`**, called by `base-retarget.py` once that tool has ESTABLISHED
+  that GitHub moved the PR when the recorded base's own PR merged; it writes the base move together with
+  everything the old base authorized, and `scripts/ledger.py`'s `cmd_retarget` owns that set. A divergence
+  nothing explains still parks. The one write outside every door is the **terminal** GitHub-owned refresh
+  ("GitHub-owned vs campaign-owned row fields"), which is not a retarget either: it fires only on a row that
+  is already done, and it records the base the PR actually merged into. The default is **`-`**, which is both the schema's "not set" spelling **and** its "inherit
   the legacy header" signal, and is **DISTINCT from any explicit base name**: a `-` row inherits, an
   explicit-base row does not — which is what lets one run mix legacy inheriting rows with new explicit-base
   rows. An old ledger's rows read back `-` and resolve exactly as they always did, with no migration.
@@ -719,6 +722,8 @@ ledger.py --file <state.jsonl> table [--all] [--fields <f>,<f>,…] # print run 
 ledger.py --file <state.jsonl> dispatch-check --pr N [--action ordinary|repair]
 ledger.py --file <state.jsonl> park --pr N --reason <blocker>     # MACHINE-BLOCKER park: status=awaiting-user, ci_reason=<blocker>, blocker_ruling=- — one write
 ledger.py --file <state.jsonl> unpark --pr N                      # retry unpark: status=in_review, ruling spent, liveness counters reset — one write
+ledger.py --file <state.jsonl> retarget --pr N --from <base> --to <base>
+                                                                  # EXPLAINED-retarget migration: base_branch=--to, required_set/base_ok_sha/ci/liveness reset, a park on THIS base change released — one write; called by base-retarget.py on established evidence, never hand-run
 ```
 
 **`verdict` is the ONLY sanctioned way to record a review verdict**, and it is not a convenience: it bumps

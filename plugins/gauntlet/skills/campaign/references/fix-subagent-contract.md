@@ -38,10 +38,11 @@ is an **assertion** that must equal the row's effective base, and the helper als
   the label. Then **re-run the pre-flight**.
 - **`recheck`** → mergeability is not computed yet, base ancestry could
   not be verified, **or the PR was retargeted** — its live `baseRefName` no longer equals the row's effective
-  base (a different branch NAME, not a mere ADVANCE of the same branch). A retarget is an unsupported mid-run
-  change: the reason is the machine-blocker wording a reconcile/re-adoption park records (`base changed from
-  <recorded> to <live>; not supported mid-run`); **park the row** on the user through that path rather than
-  dispatch. For the other `recheck` causes, do **NOT** dispatch and do **NOT** rebase — **re-poll**, then
+  base (a different branch NAME, not a mere ADVANCE of the same branch). The reason is the machine-blocker
+  wording every base-change park records (`base changed from <recorded> to <live>; not supported mid-run`);
+  **do not dispatch** — hand the retarget to the `base_changed` route (`loop-control.md`), which migrates the
+  row when GitHub's own retarget explains it and parks it on the user otherwise. For the other `recheck`
+  causes, do **NOT** dispatch and do **NOT** rebase — **re-poll**, then
   **re-run the pre-flight**.
 - **`park`** → either GitHub enum carries a value its schema does not declare. With required `--file`, the
   helper has already written the `ledger.py park` machine-blocker transition, naming the value verbatim.

@@ -37,9 +37,9 @@ and `UNKNOWN` decide on their own, `MERGEABLE` falls through — then `.mergeSta
 yields `merge`), then confirms `origin/<effective-base>` is an ancestor of the ledger's reviewed
 `head_sha`. Both enums are crossed
 **TOTALLY**: a value GitHub's schema does not declare **parks**, never guesses. A live `baseRefName` that no
-longer matches the row's recorded base is an unsupported retarget: it fails closed with the shared
-machine-blocker reason (`base changed from <recorded> to <live>; not supported mid-run`), and the next
-reconcile parks the row. Act on the verdict:
+longer matches the row's recorded base fails closed with the shared machine-blocker reason (`base changed
+from <recorded> to <live>; not supported mid-run`); the next reconcile decides what the move WAS, migrating
+the row when GitHub's own retarget explains it and parking it otherwise. Act on the verdict:
 
 - `merge` → run the command in **"Resumable merge execution"** below.
 - `not-yet <reason>` → do **NOT** merge; the reason names the block. Route on the reason's **action**
@@ -56,7 +56,9 @@ reconcile parks the row. Act on the verdict:
   - `re-poll` reasons (merge state / mergeability not computed yet — `UNKNOWN`) → the **UNKNOWN re-poll
     bound** (below).
   - the **`not supported mid-run`** reason (a live base retarget) → leave the PR; the next reconcile detects
-    the base change and parks the row on the user (the merge door only refuses — reconcile owns the park).
+    the base change and routes it through `base-retarget.py`, which migrates the row when GitHub's own
+    retarget explains it and otherwise parks it on the user (the merge door only refuses — the
+    `base_changed` route owns the decision, `loop-control.md`).
   - Everything else (`ci is …`, `N of M approvals`, `held`, stale head) → leave the PR; the next
     heartbeat re-evaluates once that precondition changes.
 

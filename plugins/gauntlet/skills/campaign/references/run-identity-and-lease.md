@@ -6,8 +6,9 @@ view`), which may be a release or integration branch. A run is **not** confined 
 target `v3`, others `main`, in the same run, and PRs adopted together need **NOT** agree on `baseRefName`.
 
 The base is **per-row** state, recorded on each row **once** at adoption (`pr-adopt.py` → `add-row
---base-branch`) from its live `baseRefName`; that recorded value is **never retargeted** — the campaign never
-migrates a row to a new base (a live retarget PARKS the row, see `pr-adoption.md`, `loop-control.md`). The
+--base-branch`) from its live `baseRefName`; no driver rewrites that recorded value, and a live retarget is
+decided by `base-retarget.py` — migrated when GitHub's own retarget explains it, parked otherwise (see
+`pr-adoption.md`, `loop-control.md`). The
 ledger **header** `base_branch` is only the **legacy fallback** a row carrying none inherits. Every
 consumer resolves a row's base through `ledger.py`'s `effective_base(header, row)` (and
 `require_effective_base`, its fail-closed form, before acting on it) — never by re-reading the one header

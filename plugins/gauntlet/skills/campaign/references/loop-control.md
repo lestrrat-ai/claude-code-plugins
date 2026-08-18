@@ -153,19 +153,27 @@ rules keep their own wording; these are illustrations of them, not a second copy
        your judgement.
      - **`base_changed`** — the snapshot `baseRefName` differs from this row's **`effective_base`** (its
        explicit row `base_branch`, else the legacy header fallback; `detect` resolves it per row through
-       `ledger.py`'s `effective_base`, never against the one header base). The PR's TARGET moved, and the
-       campaign does **not** migrate a row to a new base — **PARK the row** on the user through the existing
-       machine-blocker path and do **NOT** act on `head_moved`/dispatch/CI/merge for it this pass (base
-       currency is decided FIRST): run **`ledger.py … park --pr <N> --reason "base changed from <ledger> to
-       <snapshot>; not supported mid-run"`** with the `base_changed` fact's own `ledger` (recorded) and
-       `snapshot` (live) values — the EXACT durable reason, recorded in `ci_reason`; the park sets
-       `status = awaiting-user` and clears `blocker_ruling`, and the label reconcile below mirrors it. An
-       **already-held** row keeps its open question — `park` returns `EXIT_STOP` and leaves the existing
-       `ci_reason` intact; report the mismatch, do not overwrite. The user resolves it through the ordinary
-       machine-blocker ruling path (`retry` after restoring the base / `abort`) at "PARKED" below. (This is
-       the PR being **retargeted** — a different base branch NAME. A base branch that merely ADVANCED, same
-       name, is not this fact; it is caught by base-preflight ancestry — `stage-2-review-gate.md`, "Base
-       currency with `<base>`".)
+       `ledger.py`'s `effective_base`, never against the one header base). The PR's TARGET moved. **Hand it
+       to `python3 scripts/base-retarget.py resolve --pr <N> --live <snapshot> --file <state.jsonl>` and do
+       NOT act on `head_moved`/dispatch/CI/merge for that row until it answers** (base currency is decided
+       FIRST). **Do NOT decide this yourself and do NOT run `ledger.py park` by hand here** — one tool owns
+       both the judgement and the ledger write, and it reads the RECORDED base from the ledger itself, so you
+       pass only the live one:
+       - **exit 0 (`migrate`)** — GitHub's own retarget: the recorded base's PR MERGED, and GitHub moved this
+         PR onto that PR's base. The row is migrated to the live base, everything the old base authorized is
+         voided (`ledger.py`, `cmd_retarget`, owns exactly what), the review tally is KEPT, and any park
+         opened for this same base change is RELEASED. **Continue this pass normally** — the row is on the
+         base the PR actually targets. Base-preflight will demand the rebase onto it before any further
+         verdict, which is the mechanism, not an extra step for you.
+       - **non-zero (`park`)** — nothing explains the move, so the row is PARKED on the user with the EXACT
+         durable reason recorded in `ci_reason` (`status = awaiting-user`, `blocker_ruling` cleared; the
+         label reconcile below mirrors it). An **already-held** row keeps its open question — `park` never
+         overwrites one; report the mismatch, do not overwrite. The user resolves it through the ordinary
+         machine-blocker ruling path (`retry` after restoring the base / `abort`) at "PARKED" below.
+
+       (This is the PR being **retargeted** — a different base branch NAME. A base branch that merely
+       ADVANCED, same name, is not this fact; it is caught by base-preflight ancestry —
+       `stage-2-review-gate.md`, "Base currency with `<base>`".)
      - **`branch_mismatch`** — the snapshot `headRefName` differs from the row's recorded `branch`: reconcile
        the row's `branch` (adopted PRs keep their **own** head branch — the `gauntlet-run-<run-id>` label is
        the ownership marker, never a branch prefix; `files-and-ledger.md`, `branch`).

@@ -1,6 +1,14 @@
 # Mixed base branches in one gauntlet campaign
 
-Status: proposed design. This document does not change campaign behavior.
+Status: proposed design, since implemented. This document does not change campaign behavior.
+
+**SUPERSEDED IN ONE PLACE — read this before the rest.** Where this document says the campaign NEVER
+migrates a row to a new base and parks EVERY live base change, that is no longer the shipped rule. One
+divergence is now migrated without asking: GitHub's own retarget, when the recorded base's PR merges (the
+stacked-PR case). `plugins/gauntlet/skills/campaign/scripts/base-retarget.py` decides it and
+`ledger.py retarget` performs it; every other divergence parks exactly as described here. The affected
+sections carry the same note. Nothing else in this document changed — per-row bases, the accessors, the
+required-set grouping, and legacy inheritance are all as written.
 
 ## Problem and motivation
 
@@ -228,6 +236,11 @@ while newly adopted rows store different explicit bases in the same run.
 
 ### Unsupported base changes park the row
 
+**SUPERSEDED IN PART (see the note at the top).** An EXPLAINED retarget — GitHub moving the PR because the
+recorded base's own PR merged — is now MIGRATED in place by `base-retarget.py` through the `ledger.py
+retarget` transition, which also RELEASES a park opened for that same base change. The section below still
+governs every divergence that evidence does not explain, and the park wording and ruling path are unchanged.
+
 On every reconciliation snapshot, compare each open row's `effective_base` with live `baseRefName` before
 head reconciliation, dispatch, CI derivation, or merge scheduling.
 
@@ -435,7 +448,9 @@ Unrelated existing fields are omitted. The on-disk row still contains the comple
 {"type":"row","pr":"52","branch":"fix-v4-parser","base_branch":"main","head_sha":"2222222222222222222222222222222222222222","base_ok_sha":"2222222222222222222222222222222222222222","required_set":"declared:[{\"context\":\"v4-test\",\"app\":\"-\"}]","reviews_ok":"2","ci":"green"}
 ```
 
-If PR 41 later targets `main`, its ledger row stays unchanged. Reconciliation parks it with:
+If PR 41 later targets `main`, reconciliation asks `base-retarget.py` why. With a merged PR whose head was
+`v3` and whose own base was `main`, the row is migrated to `main` and keeps going; with no such evidence,
+its ledger row stays unchanged and it is parked with:
 
 ```text
 base changed from v3 to main; not supported mid-run
@@ -450,7 +465,7 @@ they do for an explicit row base.
 Because every ledger write serializes the whole store, the first write after the schema addition also
 stores those `-` sentinels explicitly on legacy rows. That is the expected on-disk shape, not a
 migration: a stored `-` resolves exactly as a missing field does. A legacy row's `base_branch` stays `-`
-for the life of the row — row base is creation-only, and the row predates the field. Its `required_set`
+for the life of the row unless an explained retarget migrates it, which writes an explicit base. Its `required_set`
 stays `-` while its base group is settled through the header fallback; a fresh grouped read for the
 group replaces it with an explicit canonical value, exactly as for explicit rows.
 
