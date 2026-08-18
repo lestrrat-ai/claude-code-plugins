@@ -31,8 +31,9 @@ verbosity rule that hides a decision the user alone can make is worse than the n
 rules keep their own wording; these are illustrations of them, not a second copy:
 
 - **Every park question, WITH how long it has waited**, in each of the three park classes — API approval,
-  review-standoff ruling, machine-blocker ruling ("Only the user's answer unparks a PR" in Step 3, and
-  the health pass in Step 5). Only the user's answer unparks a PR, so silence here wedges the run for good.
+  review-standoff ruling, machine-blocker ruling ("Who unparks a PR" in Step 3, and
+  the health pass in Step 5). Apart from the one machine release named there, a park waits on the user, so
+  silence here wedges the run for good.
 - **The `ledger.py table` output, WHOLE** — every `#` disclosure line included (Step 5).
 - **Every disclosure the final report owes** (`bailout-and-final-report.md`, "Final report") — among them
   `skill_version`, the required-set `unknown`-versus-`none` distinction, `authored@` intents, and open
@@ -156,15 +157,19 @@ rules keep their own wording; these are illustrations of them, not a second copy
        `ledger.py`'s `effective_base`, never against the one header base). The PR's TARGET moved. **Hand it
        to `python3 scripts/base-retarget.py resolve --pr <N> --live <snapshot> --file <state.jsonl>` and do
        NOT act on `head_moved`/dispatch/CI/merge for that row until it answers** (base currency is decided
-       FIRST). **Do NOT decide this yourself and do NOT run `ledger.py park` by hand here** — one tool owns
+       FIRST). **Run it even when the row is PARKED** — this is the one decision the held-status guard
+       admits on a held row, because it records what GitHub did and mutates the PR in no way (the guard's
+       "Recording ground truth is not mutating either" bullet). **Do NOT decide this yourself and do NOT run `ledger.py park` by hand here** — one tool owns
        both the judgement and the ledger write, and it reads the RECORDED base from the ledger itself, so you
        pass only the live one:
-       - **exit 0 (`migrate`)** — GitHub's own retarget: the recorded base's PR MERGED, and GitHub moved this
-         PR onto that PR's base. The row is migrated to the live base, everything the old base authorized is
-         voided (`ledger.py`, `cmd_retarget`, owns exactly what), the review tally is KEPT, and any park
-         opened for this same base change is RELEASED. **Continue this pass normally** — the row is on the
-         base the PR actually targets. Base-preflight will demand the rebase onto it before any further
-         verdict, which is the mechanism, not an extra step for you.
+       - **exit 0 (`migrate`)** — GitHub's own retarget: the recorded base's PR MERGED, and GitHub's
+         timeline records that merge moving THIS PR onto that PR's base. The row is migrated to the live
+         base, everything the old base authorized is voided (`ledger.py`, `cmd_retarget`, owns exactly
+         what), the review tally is KEPT, and any park opened for this same base change is RELEASED —
+         **the ONE machine release in the whole skill**, defined at "Who unparks a PR" below and nowhere
+         else. **Continue this pass normally** — the row is on the base the PR actually targets.
+         Base-preflight will demand the rebase onto it before any further verdict, which is the mechanism,
+         not an extra step for you.
        - **non-zero (`park`)** — nothing explains the move, so the row is PARKED on the user with the EXACT
          durable reason recorded in `ci_reason` (`status = awaiting-user`, `blocker_ruling` cleared; the
          label reconcile below mirrors it). An **already-held** row keeps its open question — `park` never
@@ -358,8 +363,9 @@ rules keep their own wording; these are illustrations of them, not a second copy
    a status added to it must be enforced at every site with no edit to any of them. Today it holds two
    kinds, held for **different reasons** and cleared by **different events**:
 
-   - **PARKED** (`awaiting-user`, `awaiting-api`) — waiting on a **HUMAN**. No amount of machine work can
-     resolve it; only the user's answer unparks it (below).
+   - **PARKED** (`awaiting-user`, `awaiting-api`) — waiting on a **HUMAN**. Machine work does not resolve
+     it: the user's answer does, with the single explained-base-retarget release named in "Who unparks a
+     PR" (below).
    - **`repairing`** — the PR reached a **review-loop cap** and has stopped converging. It normally is **NOT
      waiting on a human**: campaign clears it by running the reassessment pass and executing its decision.
      An unreconcilable capped history is the narrow exception; `repair-pass.md`, **Unreconcilable capped
@@ -383,7 +389,9 @@ rules keep their own wording; these are illustrations of them, not a second copy
    - **The sole mutating exception is a non-legacy recorded repair's required clean base-only rebase.** It
      applies only to `repairing` after `dispatch-check --action repair` succeeds; `repair-pass.md`, **A
      non-legacy recorded repair may first take its required clean base-only rebase**, owns it. It does not permit a
-     conflict-resolving/diff-changing rebase or unhold the row.
+     conflict-resolving/diff-changing rebase or unhold the row. (The one release that DOES un-hold a row
+     without the user mutates no PR and is not an exception to this rule; the ground-truth bullet below and
+     "Who unparks a PR" own it.)
    - **Held-PR watch action.** Observing a PR is not mutating it. Run `liveness`, then ensure
      or relaunch a watch only when returned `watch_warranted` is `true` (`stage-2-ci.md`, "WATCH ONLY WHAT
      CAN MOVE"). Parked status does not override that result. Do **NOT** dispatch a CI *fix*.
@@ -392,10 +400,16 @@ rules keep their own wording; these are illustrations of them, not a second copy
      mirror, when **someone else** pushed to the PR (step 1). Recording a change campaign did not make is
      not making one. What is frozen is **campaign's own action on the PR**; a park never licenses a
      lying label or a stale row.
+     - **The `base_changed` route runs on a held row for exactly that reason, and it is the only decision
+       that does.** GitHub moved the PR's base; `base-retarget.py resolve` records what moved it and
+       touches the PR itself in no way. When the evidence is GitHub's own retarget the same write releases
+       a park opened for that same base change — the ONE machine release, owned by "Who unparks a PR"
+       below. Every other held row is skipped exactly as before.
 
-   #### Only the user's answer unparks a PR
+   #### Who unparks a PR
 
-   - **Only the user's answer unparks a PR — and EVERY park class names the durable record it is
+   - **The user's answer unparks a PR — with exactly ONE machine exception, "THE ONE MACHINE RELEASE"
+     below in this section — and EVERY park class names the durable record it is
      answered into.** An answer that lives only in this session is an answer a fresh agent re-asks. On
      the answer: **record it**, then unpark to the `status` **THAT ANSWER** dictates — the table below is
      the authority, and it is **NOT always `in_review`**:
@@ -417,7 +431,7 @@ rules keep their own wording; these are illustrations of them, not a second copy
      |---|---|---|
      | **`awaiting-api`** — an API-changing fix | `api_approval` = `approved@<iso>` / `declined@<iso>` | `approved` → `in_review`; `declined` → terminal `aborted` |
      | **`awaiting-user`, review standoff** — a REFUTED finding the fresh reviewer re-raised | `finding-audit.py rule-standoff` in `<rundir>/audit-<pr>-<n>.jsonl` (`finding-audit.md`, **Executable audit artifact**) | `in_review`; follow the accessor's derived fix scope |
-     | **`awaiting-user`, machine blocker** — campaign cannot move this PR without a human; that **property** IS the class, **never a list of cases** (one illustration: CI has SETTLED and is still not green). Do not enumerate the members here — `files-and-ledger.md`, `status`, `awaiting-user` class 2, **owns** the class, and `ci_reason` names the blocker at every one of them, present or future | `blocker_ruling` = `retry@<iso>` / `abort@<iso>` | `retry` → **`ledger.py … unpark --pr <N>`** — one write that sets `status = in_review`, SPENDS the ruling to `-`, and RESETS the liveness counters (`stage-2-ci.md`, "THE LIVENESS COUNTERS" / "THE RULING IS CONSUMED EXACTLY ONCE"), then re-derive CI on the next heartbeat; `abort` → terminal `aborted` via the abort procedure (`unpark` refuses it — the ruling **stays** as the record of why) |
+     | **`awaiting-user`, machine blocker** — campaign cannot move this PR without a human; that **property** IS the class, **never a list of cases** (one illustration: CI has SETTLED and is still not green). Do not enumerate the members here — `files-and-ledger.md`, `status`, `awaiting-user` class 2, **owns** the class, and `ci_reason` names the blocker at every one of them, present or future | `blocker_ruling` = `retry@<iso>` / `abort@<iso>` | `retry` → **`ledger.py … unpark --pr <N>`** — one write that sets `status = in_review`, SPENDS the ruling to `-`, and RESETS the liveness counters (`stage-2-ci.md`, "THE LIVENESS COUNTERS" / "THE RULING IS CONSUMED EXACTLY ONCE"), then re-derive CI on the next heartbeat; `abort` → terminal `aborted` via the abort procedure (`unpark` refuses it — the ruling **stays** as the record of why). One question in this class has a SECOND exit that needs no ruling at all — see "THE ONE MACHINE RELEASE" below |
 
      **The counter reset is part of the unpark, not an optimization**: a `retry` that clears nothing
      re-escalates on its first derivation (`stage-2-ci.md`, "THE LIVENESS COUNTERS" / "SETTLED" /
@@ -435,6 +449,22 @@ rules keep their own wording; these are illustrations of them, not a second copy
      braces on the same invariant, and the entry clear is the one that survives a lost context.
      **`abort` is different and is NOT cleared:** it goes **terminal** (`aborted`), and a terminal row is
      never re-parked, so nothing can ever re-consume it.
+   - **THE ONE MACHINE RELEASE — an EXPLAINED BASE RETARGET, and nothing else.** A machine-blocker park
+     whose OPEN question is the base change itself (`ci_reason` carrying the shared `base changed from
+     <recorded> to <live>` wording) is released **with no user answer** when — and only when —
+     `base-retarget.py resolve` ESTABLISHES that GitHub's own retarget made that exact move (the
+     `base_changed` route, in step 1's reconcile). `ledger.py`'s `retarget` transition performs the release
+     inside the migration's single write; `files-and-ledger.md`, `status`, keeps the class definition.
+     - **It is a WITHDRAWAL, not a ruling.** Nothing is recorded in `blocker_ruling`, no `retry` is spent,
+       and the row does not go through `unpark` (which still refuses everything but an answered park). The
+       question is not answered — it **stops being a question**, because the evidence shows the move was
+       GitHub's own and not a user change at all.
+     - **It reaches ONE question on ONE row.** A base-change park the evidence does **not** explain, a park
+       for any other blocker, an `awaiting-api` park and a review standoff are all untouched and still wait
+       for the user. **Never generalise this to "a tool may unpark when it is confident."**
+     - **The held-status guard lets it run.** A parked row is frozen, so the `base_changed` route is the one
+       place a decision is taken on a held row — see the guard's "Recording ground truth is not mutating
+       either" bullet above, which names it.
    - **Why the guard must live HERE, at the dispatch site:** `reviews_ok < required(tier)` is TRUE for a
      parked PR (the park does not raise it), so a dispatch rule that looks only at `reviews_ok` will
      happily re-review a PR that is waiting on a human — and a `SATISFIED` verdict would then make it

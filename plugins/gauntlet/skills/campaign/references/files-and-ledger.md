@@ -522,8 +522,8 @@ Header field notes (the header fields above; per-row fields follow):
   taxonomy below): `-` (none yet) | `retry@<iso>` | `abort@<iso>`. It is the **answer** to the question
   `ci_reason` **asks**, and it exists for the same reason `api_approval` does: a heartbeat may be a fresh
   agent instance, so an answer held only in context is an answer the user is asked for twice. `retry`
-  unparks with the liveness counters cleared; `abort` goes terminal `aborted`. The unpark is
-  `loop-control.md` step 3, "Only the user's answer unparks a PR".
+  unparks with the liveness counters cleared; `abort` goes terminal `aborted`. Who may unpark, and the one
+  machine release that needs no ruling, are `loop-control.md` step 3, "Who unparks a PR".
 
   **Who writes it:** the user's **answer** is recorded through `set --pr <N> --blocker-ruling retry@<iso>`
   (or `abort@<iso>`); the park-ENTRY clear to `-` is the park writer's (`ledger.py … park` / `ci-status.py
@@ -585,11 +585,13 @@ Header field notes (the header fields above; per-row fields follow):
 
   Held statuses come in **two kinds, and they are cleared by DIFFERENT events — do not collapse them:**
 
-  1. **PARKED — waiting on a HUMAN** (`awaiting-api`, `awaiting-user`). No amount of machine work can
-     resolve it. The user's answer unparks the PR **to the `status` that answer dictates** — a **RESUME**
+  1. **PARKED — waiting on a HUMAN** (`awaiting-api`, `awaiting-user`). The user's answer unparks the PR
+     **to the `status` that answer dictates** — a **RESUME**
      answer (`approved`, a standoff ruling, `retry`) to `in_review`, with normal dispatch resuming on the
-     next heartbeat; a **TERMINAL** answer (`declined`, `abort`) to `aborted`, which never resumes. Per class,
-     below — and `loop-control.md` step 3, "Only the user's answer unparks a PR", owns the mapping.
+     next heartbeat; a **TERMINAL** answer (`declined`, `abort`) to `aborted`, which never resumes. Machine
+     work resolves exactly ONE park question without an answer — an explained base retarget withdraws the
+     base-change park it explains — and nothing else. Per class,
+     below — and `loop-control.md` step 3, "Who unparks a PR", owns the mapping and that one release.
   2. **`repairing` — waiting on the REASSESSMENT PASS, not on a human.** The PR reached a review-loop cap
      (`review_rounds` or `ns_streak`), so it has stopped converging and **must not take another targeted
      fix or another review pass**. `ledger.py verdict` sets it, and campaign normally clears it by
@@ -621,12 +623,17 @@ Header field notes (the header fields above; per-row fields follow):
        **and the ruling itself SPENT back to `-`** (a ruling is consumed exactly once — `stage-2-ci.md`,
        "THE RULING IS CONSUMED EXACTLY ONCE"; entering this park clears it too, so it can never be answered
        by a **previous** park's ruling), all in one write; `abort@<iso>` → terminal `aborted` via the abort
-       procedure (`unpark` refuses it — not cleared, terminal rows are never re-parked).
+       procedure (`unpark` refuses it — not cleared, terminal rows are never re-parked). **One question in
+       this class has a second exit:** a park recording the shared `base changed from <recorded> to <live>`
+       wording is WITHDRAWN, with no ruling and no `unpark`, when `base-retarget.py` establishes that
+       GitHub's own retarget made that move (`ledger.py`'s `retarget` transition performs the release;
+       `loop-control.md` step 3, "Who unparks a PR", owns the rule).
 
     Same park mechanics as
     `awaiting-api` for both: `reviews_ok` stays 0, no review pass is launched for this PR, the other PRs
-    keep being driven, and the answer folds in as its own heartbeat (`loop-control.md` step 3, "Only the
-    user's answer unparks a PR" — the owning definition of the record + unpark for **every** park class).
+    keep being driven, and the answer folds in as its own heartbeat (`loop-control.md` step 3, "Who
+    unparks a PR" — the owning definition of the record + unpark for **every** park class, and of the one
+    machine release).
     NEVER park without surfacing the question, and NEVER park into a state whose exit is undefined.
 
 ### GitHub-owned vs campaign-owned row fields
@@ -753,7 +760,10 @@ a new name. The non-legacy recorded repair's required clean base-only rebase is 
 the flow.
 
 **`park`/`unpark` are the sanctioned writers of the machine-blocker park/unpark TRANSITIONS**, the same
-way `verdict` owns the review counters: a park (`status = awaiting-user`, `ci_reason` = the blocker,
+way `verdict` owns the review counters — with **`retarget` a third writer of the unpark SIDE**, releasing a
+park that records the shared base-change wording as part of the migration it performs (`cmd_retarget`;
+`loop-control.md` step 3, "Who unparks a PR", owns when that is allowed, and it is the one release that
+consumes no ruling): a park (`status = awaiting-user`, `ci_reason` = the blocker,
 `blocker_ruling = -`) and a retry unpark (`status = in_review`, ruling spent, the four liveness counters
 reset) are each MULTI-FIELD writes coherent only together, so each is ONE atomic call rather than a
 hand-assembled string of `set`s. `park` is for every **non-CI** machine-blocker park (the merge-precondition

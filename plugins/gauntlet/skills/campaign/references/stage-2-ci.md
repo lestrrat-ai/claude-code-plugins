@@ -534,7 +534,7 @@ too.** A park whose exit event never comes is the same wedge, one level up. So t
     check, fixed the repo/branch setting); derive again."
   - **`abort`** — "stop work on this PR" (terminal `aborted`, PR left open — `bailout-and-final-report.md`).
 - **Records that answer DURABLY in the ledger's `blocker_ruling`** (`files-and-ledger.md`) the moment it
-  lands, and unparks per `loop-control.md` step 3, "Only the user's answer unparks a PR" — which also
+  lands, and unparks per `loop-control.md` step 3, "Who unparks a PR" — which also
   **clears the liveness counters**, so the retry gets a fresh budget instead of re-escalating on its first
   derivation. A heartbeat may be a fresh agent instance, so the answer must be durable ("HOW state dies
   with the context is a CLASS" below).

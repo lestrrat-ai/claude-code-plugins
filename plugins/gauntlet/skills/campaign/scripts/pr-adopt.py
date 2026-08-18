@@ -388,7 +388,8 @@ def cmd_adopt(args) -> int:
     # RE-ADOPTION BASE GATE — runs BEFORE any write. No driver door rewrites the recorded row base (ledger
     # CREATE_ONLY), so a live base that no longer matches the row's `effective_base` (its explicit base, else
     # the legacy header) is handed to `base-retarget.py resolve`. It MIGRATES the row when GitHub's own
-    # retarget explains the divergence — the old base's PR merged — and adoption continues against the new
+    # retarget explains the divergence — the old base's PR merged AND GitHub's timeline records that merge
+    # moving THIS PR — and adoption continues against the new
     # base; anything else PARKS the row on the user and adoption STOPS here, refreshing no evidence,
     # rewriting no base, applying no label. A NEW row (existing is None) has no recorded base to diverge
     # from; it records the live base in step 4.
@@ -418,7 +419,9 @@ def cmd_adopt(args) -> int:
     #     resets those counters itself (ledger.py's `apply_head_sha`; stage-2-ci.md, "THE LIVENESS COUNTERS")
     #     — this refresh MUST NOT hand-reset them. `status` is PRESERVED: it tracks a HUMAN decision, not the
     #     SHA, so a head refresh must never un-hold a PR the user has not ruled on (awaiting-user, aborted,
-    #     repairing).
+    #     repairing). The base gate above may already have released a base-change park through `retarget` —
+    #     the one release a machine performs (loop-control.md, "Who unparks a PR") — and that is a decision
+    #     about the BASE, made on established evidence, not this refresh reading a SHA.
     #   * UNCHANGED head on an existing row: name none of the SHA-bound fields — the accumulated verdicts,
     #     ci and liveness state all describe content that is still there and are preserved (the accessor's
     #     same-value `--head-sha` write is a no-op, so the counters are untouched).

@@ -269,13 +269,17 @@ def _labelset(argv, flag):
 
 class Recorder:
     def __init__(self, *, view, worktree_head=None, local_branch_exists=False,
-                 checkouts=None, dirty=False, ff_fails=False, candidates=None, root=None):
+                 checkouts=None, dirty=False, ff_fails=False, candidates=None, base_moves=None,
+                 root=None):
         self.view = view
         # The evidence the base-retarget decider reads when a live base diverges: the merged PRs from the
-        # recorded branch, and the adopted PR's own creation instant (its recency bound). Both are FIXTURE
-        # INPUTS because the decision belongs to that tool, not to this one: adoption is pinned here for both
-        # answers it can get back, and the decision's own rules are pinned in `base-retarget-test.py`.
+        # recorded branch, the adopted PR's own creation instant (its recency bound), and the newest item
+        # that MOVED this PR's base (its causal event). All three are FIXTURE INPUTS because the decision
+        # belongs to that tool, not to this one: adoption is pinned here for both answers it can get back,
+        # and the decision's own rules are pinned in `base-retarget-test.py`. The default base-move list is
+        # EMPTY, which is a park — a fixture that wants the migrate hands in GitHub's own retarget.
         self.candidates = list(candidates or [])
+        self.base_moves = list(base_moves or [])
         # Earlier than every candidate merge below, so a fixture that hands in a parent gets that parent's
         # answer. `base-retarget-test.py` owns what the bound itself refuses.
         self.pr_created_at = "2025-12-31T00:00:00Z"
@@ -298,14 +302,18 @@ class Recorder:
                 return CompletedProcess(argv, 0, json.dumps(self.view), "")
             return CompletedProcess(argv, 0, "", "")  # label create / pr edit
         if prog == "python3" and argv[1].endswith("base-retarget.py"):
-            # The base-retarget decider — run the REAL tool in-process against the temp store, with BOTH of
-            # its `gh` reads replaced by this fixture's recorded responses. Only the network reads are
-            # stubbed: the decision, the ledger transition it performs, and its exit code are all real.
-            feed = Path(self.root or ".") / "candidates.json"
+            # The base-retarget decider — run the REAL tool in-process against the temp store, with ALL
+            # THREE of its `gh` reads replaced by this fixture's recorded responses. Only the network reads
+            # are stubbed: the decision, the ledger transition it performs, and its exit code are all real.
+            root = Path(self.root or ".")
+            feed = root / "candidates.json"
             feed.write_text(json.dumps(self.candidates), encoding="utf-8")
+            moves = root / "base-moves.json"
+            moves.write_text(json.dumps(self.base_moves), encoding="utf-8")
             code, out, err = capture_cli(_sibling("pr_adopt_base_retarget", "base-retarget.py").main,
                                          list(argv[2:]) + ["--candidates-json", str(feed),
-                                                           "--pr-created-at", self.pr_created_at])
+                                                           "--pr-created-at", self.pr_created_at,
+                                                           "--base-events-json", str(moves)])
             return CompletedProcess(argv, code, out, err)
         if prog == "python3":  # the ledger subprocess — run it for real against the temp store
             try:
@@ -353,9 +361,10 @@ class Recorder:
 
 def _adopt(d: Path, ledger: Path, v: dict, *, wroot: Path, worktree_head=None,
            local_branch_exists=False, checkouts=None, dirty=False, ff_fails=False,
-           tier="HIGH", run_id="g1", repo=None, candidates=None):
+           tier="HIGH", run_id="g1", repo=None, candidates=None, base_moves=None):
     rec = Recorder(view=v, worktree_head=worktree_head, local_branch_exists=local_branch_exists,
-                   checkouts=checkouts, dirty=dirty, ff_fails=ff_fails, candidates=candidates, root=d)
+                   checkouts=checkouts, dirty=dirty, ff_fails=ff_fails, candidates=candidates,
+                   base_moves=base_moves, root=d)
     argv = ["adopt", "--pr", str(v["number"]), "--run-id", run_id, "--file", str(ledger),
             "--tier", tier, "--worktrees-root", str(wroot), "--project-root", str(d)]
     if repo:
@@ -906,8 +915,13 @@ def t_readopt_explained_retarget_migrates_and_continues():
         _record_verdict(ledger, 12, sha)                # reviews_ok -> 1 (a retarget moves no content)
         parent = {"number": 11, "headRefName": "v3", "baseRefName": "main", "state": "MERGED",
                   "mergedAt": "2026-08-18T10:00:00Z", "isCrossRepository": False}
+        # The merge is only what COULD have moved this PR; GitHub's own retarget of it is what DID, and the
+        # decider takes both (`base-retarget-test.py`, "hand-retarget-parks", owns why).
+        moved = {"__typename": "AutomaticBaseChangeSucceededEvent", "createdAt": "2026-08-18T10:00:02Z",
+                 "oldBase": "v3", "newBase": "main"}
         code, _, err, rec = _adopt(d, ledger, view(headRefOid=sha, baseRefName="main"),
-                                   wroot=wroot, worktree_head=sha, candidates=[parent])
+                                   wroot=wroot, worktree_head=sha, candidates=[parent],
+                                   base_moves=[moved])
         check(code == 0, f"an explained retarget adopts normally (got {code}: {err})")
         check(_field(ledger, 12, "base_branch") == "main", "the row must record the base the PR now targets")
         check(_field(ledger, 12, "status") == "in_review", "and it must NOT be parked on the user")

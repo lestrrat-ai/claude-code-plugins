@@ -15,7 +15,8 @@ LOCAL state against that same PR / its head; the PR itself is left in place.
   - **a PARK** — `status == awaiting-api` (parked for user approval) or `status == awaiting-user` (parked
     for the user to adjudicate a **review standoff** or a **machine blocker** — `files-and-ledger.md`,
     `status`). Its exit is **declared**: the user's answer (`approved`/`declined`, a standoff ruling, a
-    `blocker_ruling` of `retry`/`abort`).
+    `blocker_ruling` of `retry`/`abort`) — or, for a base-change park alone, the explained-retarget release
+    (`loop-control.md` step 3, "Who unparks a PR").
   - **a REPAIR — `status == repairing`** (`repair-pass.md`). The PR has reached a review-loop cap and is
     being reassessed and repaired. It is **bounded by `repair_count`/`REPAIR_CAP`**, and its exit is
     **declared**: the reassessment's decision, and — at the cap — **ABORT**, which lands on this very
@@ -74,7 +75,7 @@ LOCAL state against that same PR / its head; the PR itself is left in place.
   waits above**: not parked, not `repairing`, and **NO** bound of the CI owner's set live for it (never a
   count of them, which rots the moment a set gains a member) — trips it.
 - **The user's `abort` ruling on a parked PR takes this SAME path.** A `blocker_ruling = abort@<iso>`
-  (`loop-control.md` step 3, "Only the user's answer unparks a PR") is a permanent abort of that PR, not a
+  (`loop-control.md` step 3, "Who unparks a PR") is a permanent abort of that PR, not a
   new mechanism: run exactly the procedure below, with the park's `ci_reason` as the recorded cause.
 - On the **second** stuck/failure, abort permanently: stop work on that PR but **leave the PR OPEN** —
   the adopted PR may be user/externally owned, so closing it is destructive and contradicts "set aside

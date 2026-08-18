@@ -13,7 +13,9 @@ row on the user exactly as it always did.
 
     base-retarget.py resolve --pr 36 --live main --file <state.jsonl> [--repo owner/name]
         [--project-root <dir>] [--candidates-json <path>] [--pr-created-at <iso>]
+        [--base-events-json <path>]
     base-retarget.py decide --recorded fix-a --live main --candidates-json <path> --pr-created-at <iso>
+        --base-events-json <path>
     base-retarget.py self-test    run every fixture (base-retarget-test.py)
 
 `resolve` reads the row's RECORDED base itself (`ledger.py`'s `effective_base`) — a caller passes only the
@@ -28,18 +30,20 @@ performs the ONE ledger write that follows:
   * `park` -> `ledger.py park --pr <N> --reason <BASE_CHANGE_PARK_REASON>`, the shared machine-blocker
     wording every base-change park in the campaign records, so the user's ruling path is unchanged.
 
-THE DECISION IS PURE AND THE EVIDENCE IS A VALUE. `decide()` takes the candidate list and this PR's own
-creation instant and returns the verdict; `resolve` establishes both with TWO targeted reads — one
-`gh pr list --head <recorded> --state merged` for the candidates, one `gh pr view <pr> --json createdAt` for
-the instant. Recorded answers can be handed in with `--candidates-json` and `--pr-created-at` instead, so
-every rule below is pinned offline with no `gh` and no network. Neither query is a widening of the run
-snapshot: one asks about ONE branch — the base this row records — and one about THIS row's own PR, and
-neither re-opens which of the RUN's PRs are live (repo `CLAUDE.md` owns why the run snapshot stays
-`--state open`).
+THE DECISION IS PURE AND THE EVIDENCE IS A VALUE. `decide()` takes the candidate list, this PR's own
+creation instant, and the newest event that MOVED this PR's base, and returns the verdict; `resolve`
+establishes all three with THREE targeted reads — one `gh pr list --head <recorded> --state merged` for the
+candidates, one `gh pr view <pr> --json createdAt` for the instant, and one `gh api graphql` over THIS PR's
+own base-change timeline items for the move. Recorded answers can be handed in with `--candidates-json`,
+`--pr-created-at` and `--base-events-json` instead, so every rule below is pinned offline with no `gh` and
+no network. No query is a widening of the run snapshot: one asks about ONE branch — the base this row
+records — and two about THIS row's own PR, and none re-opens which of the RUN's PRs are live (repo
+`CLAUDE.md` owns why the run snapshot stays `--state open`).
 
 FAIL CLOSED, ALWAYS TOWARDS THE PARK. A fetch that fails, a malformed candidate, no merged PR from THIS
 REPOSITORY's recorded branch, one whose merge is not stamped strictly AFTER this PR was created, several
-with contradictory bases, or a merged PR whose own base is NOT where this PR now points — each is a
+with contradictory bases, a merged PR whose own base is NOT where this PR now points, a base move GitHub
+did not make, or a base move that did not carry this PR off the recorded base at that merge — each is a
 divergence this tool cannot explain, and an unexplained divergence is the park the user already knows how to
 answer. Only the exact GitHub shape migrates.
 
@@ -55,6 +59,23 @@ neither unique nor single-use, so a name match alone is not the event:
     because `gh` stamps both instants at SECOND precision: an EQUAL pair is consistent with the parent
     merging FIRST and this PR being opened later in the same second, which GitHub retargets nothing for.
 
+A MERGE THAT COULD HAVE MOVED THIS PR IS NOT THE MERGE THAT DID. The bounds above establish that a merge
+of the recorded branch was ELIGIBLE to retarget this PR. They cannot establish that it is what put this PR
+where it now points, because the same fetched fields fit a sequence GitHub retargeted nothing for:
+
+    this PR is opened on `v3` -> the USER hand-retargets it to `main` -> the `v3` parent (base `main`)
+    merges afterwards.
+
+Same-repository, MERGED, head `v3`, merged after this PR was created, parent base `main`: every field
+matches, and that merge still moved nothing, because GitHub retargets the PRs whose base is `v3` AT THE
+MERGE INSTANT and this one's base was already `main`. So the CAUSAL EVENT is read directly, from THIS PR's
+own timeline. GitHub records its own retarget as an `AutomaticBaseChangeSucceededEvent` carrying the
+`oldBase`/`newBase` it moved and the instant it moved them, and a person's retarget as a
+`BaseRefChangedEvent` instead. The NEWEST of those items is what put this PR on its live base, and it
+migrates only when it is GitHub's OWN, moved `recorded` -> `live`, and is stamped NO EARLIER than the merge
+that explains it. The hand-retarget above is then the wrong item TYPE, and an older automatic retarget the
+wrong REFS or the wrong INSTANT.
+
 The verdict is printed as JSON on stdout and the EXIT CODE gates a caller's `$?`: 0 when the row now matches
 its live base (`migrate`, or `no-change` when it already did), non-zero when it does not (`park`, or a write
 that could not land). The fixture suite is the SIBLING `base-retarget-test.py`, this tool's executable
@@ -65,6 +86,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from datetime import datetime
@@ -104,6 +126,28 @@ CANDIDATE_LIMIT = 50
 # CLOSED PR's branch is not merged anywhere, so a PR retargeted after it is not carrying reviewed content
 # onto a base that contains its parent's work — that is a user change, and it parks.
 MERGED_STATE = "MERGED"
+
+# WHAT MOVED THIS PR'S BASE — the GraphQL timeline item types that move (or try to move) a pull request's
+# `baseRefName`, each mapped to the field names IT spells its from/to refs in. This is the COMPLETE set:
+# nothing else changes a PR's base, so the NEWEST of these items is the event that put this PR where it now
+# points. The `gh api graphql` request is BUILT from this mapping (`BASE_MOVE_QUERY`), so a type added here
+# is requested AND understood, and the two can never drift.
+BASE_MOVE_TYPES = {
+    # GitHub's OWN retarget, fired when the base branch's PR merges. THE ONLY ONE THAT EXPLAINS A MIGRATE.
+    "AutomaticBaseChangeSucceededEvent": ("oldBase", "newBase"),
+    # GitHub TRIED to retarget this PR and could not, so this item did NOT move it — whatever did, GitHub
+    # is not claiming it.
+    "AutomaticBaseChangeFailedEvent": ("oldBase", "newBase"),
+    # A person (or a token acting as one) set the base by hand. That is user intent this pipeline cannot
+    # interpret, and it is exactly the sequence a merged parent alone cannot be told apart from.
+    "BaseRefChangedEvent": ("previousRefName", "currentRefName"),
+}
+GITHUB_RETARGET = "AutomaticBaseChangeSucceededEvent"
+
+# How many timeline items the base-move read asks for. ONE: only the NEWEST base move can be what put this
+# PR on its live base, and an older one is a move that something later overwrote. A payload carrying more
+# than this is not the read this tool made, so it decides nothing (see `base_move`).
+BASE_MOVE_LIMIT = 1
 
 
 class FetchError(RuntimeError):
@@ -176,18 +220,69 @@ def parent_candidates(candidates: object, recorded: str) -> "tuple[list[dict], s
     return parents, None
 
 
-def decide(recorded: str, live: str, candidates: object, created: object) -> dict:
-    """Migrate or park, from the recorded base, the live base, the merged PRs from the recorded branch, and
-    this PR's own `createdAt`.
+def base_move(events: object) -> "tuple[dict | None, str | None]":
+    """The newest event that moved this PR's base, as `(move, problem)` — a malformed payload yields a
+    problem and no move, an EMPTY payload yields neither. PURE — no I/O, no raising.
 
-    PURE — no I/O, no raising. The ONE shape that migrates is GitHub's own retarget:
+    The move comes back NORMALIZED — `{"type", "from", "to", "at"}` — because the three item types spell the
+    same two refs under different names (`BASE_MOVE_TYPES` owns which). The `type` is kept verbatim so the
+    caller can say WHICH event it refused, and `at` is the payload's own stamp so the reason quotes what
+    GitHub said.
+
+    Validation is strict and TOTAL over the payload, for the same reason the candidate list's is: an item
+    this tool cannot read is not evidence, and reading past it would decide a live row's base on a payload
+    nobody understood. MORE items than the read asked for is itself a malformation — the request is
+    `last:BASE_MOVE_LIMIT`, so a longer list is not the answer to the question this tool put, and picking
+    one entry out of it would be a guess about which.
+    """
+    if not isinstance(events, list):
+        return None, f"the base-move list is not a JSON array (got {type(events).__name__})"
+    if len(events) > BASE_MOVE_LIMIT:
+        return None, (f"the base-move read asks for the newest {BASE_MOVE_LIMIT} timeline item(s) and the "
+                      f"payload carries {len(events)}")
+    if not events:
+        return None, None
+    entry = events[0]
+    problem = field_problem(entry, strings=("__typename",))
+    if problem is not None:
+        return None, f"base-move item: {problem}"
+    if not isinstance(entry, dict):   # unreachable through `field_problem`, and never assumed
+        return None, f"base-move item is not a JSON object (got {type(entry).__name__})"
+    kind = str(entry["__typename"])
+    refs = BASE_MOVE_TYPES.get(kind)
+    if refs is None:
+        return None, (f"base-move item carries timeline type {kind!r}, which is not one this tool asked "
+                      f"for ({', '.join(BASE_MOVE_TYPES)})")
+    problem = field_problem(entry, strings=("createdAt", *refs))
+    if problem is not None:
+        return None, f"base-move item {kind}: {problem}"
+    if instant(entry["createdAt"]) is None:
+        return None, (f"base-move item {kind} carries createdAt {entry['createdAt']!r}, which is not an "
+                      f"ISO-8601 timestamp with an offset")
+    return {"type": kind, "from": entry[refs[0]], "to": entry[refs[1]], "at": entry["createdAt"]}, None
+
+
+def decide(recorded: str, live: str, candidates: object, created: object, events: object) -> dict:
+    """Migrate or park, from the recorded base, the live base, the merged PRs from the recorded branch,
+    this PR's own `createdAt`, and the newest item that moved this PR's base.
+
+    PURE — no I/O, no raising. The ONE shape that migrates is GitHub's own retarget, and it takes BOTH a
+    merge that COULD have caused the move and the event that DID:
 
         the most recently merged SAME-REPOSITORY PR whose HEAD was `recorded`, merged STRICTLY after
-        this PR was created, has `baseRefName == live`.
+        this PR was created, has `baseRefName == live`
+        — AND the newest item that moved this PR's base is GitHub's OWN automatic retarget, from
+        `recorded` to `live`, stamped NO EARLIER than that merge.
 
     Both bounds on the parent are there because a head branch NAME identifies neither one repository nor one
     branch instance: `--head` also matches FORK branches of the same name, and a name can be recreated after
     an earlier merge of it. A candidate that fails either bound is a name collision, not the event.
+
+    THE SECOND HALF IS NOT A BELT-AND-BRACES CHECK ON THE FIRST — it is the only thing that establishes
+    CAUSE. `child opened on v3 -> user hand-retargets it to main -> the v3 parent (base main) merges` passes
+    every bound above and GitHub moved nothing for it, because the child was already on `main` at the merge
+    instant. Only this PR's own timeline separates that from the stacked-PR case (module docstring, "A MERGE
+    THAT COULD HAVE MOVED THIS PR IS NOT THE MERGE THAT DID").
 
     Everything else parks, and each park names what was missing rather than restating the shared user-facing
     wording (`resolve` records that; this explains it to the transcript):
@@ -211,7 +306,16 @@ def decide(recorded: str, live: str, candidates: object, created: object) -> dic
         (the same MOMENT, however each stamp is spelled) and they disagree about their own base, so "the base
         GitHub moved this PR to" has no single answer;
       * a newest merged parent whose own base is NOT `live`: GitHub would have moved this PR to the parent's
-        base, so wherever it points came from somewhere else.
+        base, so wherever it points came from somewhere else;
+      * a base-move payload this tool cannot read — a wrong-shaped item, a timeline type it never asked for,
+        an unorderable `createdAt`, or more items than the newest-only read asks for;
+      * NO base-move item at all: something put this PR on a base it was not opened with, and GitHub's own
+        timeline does not say what, so nothing shows the merge above did it;
+      * a newest base move that is a HAND retarget, or an automatic one that FAILED: the eligible merge is
+        then a coincidence beside a move somebody else made, which is precisely the sequence the two bounds
+        on the parent cannot separate on their own;
+      * a newest automatic retarget whose own `oldBase`/`newBase` are not `recorded` -> `live`, or that is
+        stamped BEFORE the deciding merge: that is some OTHER retarget, and this merge is not what moved it.
     """
     if recorded == live:
         return _verdict(NO_CHANGE, "the live base already equals the recorded base", recorded=recorded, live=live)
@@ -280,6 +384,32 @@ def decide(recorded: str, live: str, candidates: object, created: object) -> dic
         return _verdict(PARK, f"PR {numbers[0]} merged {recorded!r} into {parent_base!r}, but this PR now "
                               f"targets {live!r} — the retarget did not come from that merge",
                         recorded=recorded, live=live, evidence=evidence)
+    # THE PARENT MERGE IS NOW ELIGIBLE, NOT ESTABLISHED. Everything above is a fact about the recorded
+    # BRANCH; nothing above is a fact about THIS PR's base ever having been on it when that merge happened.
+    # The timeline item is the one that is.
+    move, problem = base_move(events)
+    if problem is not None:
+        return _verdict(PARK, f"the base-move evidence for this PR is malformed: {problem}",
+                        recorded=recorded, live=live, evidence=evidence)
+    if move is None:
+        return _verdict(PARK, f"no timeline item moved this PR's base, so nothing shows PR {numbers[0]}'s "
+                              f"merge is what put it on {live!r}",
+                        recorded=recorded, live=live, evidence=evidence)
+    evidence["base_move"] = move
+    if move["type"] != GITHUB_RETARGET:
+        return _verdict(PARK, f"this PR's base was last moved by a {move['type']}, not by GitHub's own "
+                              f"retarget — PR {numbers[0]}'s merge could have moved it and did not",
+                        recorded=recorded, live=live, evidence=evidence)
+    if move["from"] != recorded or move["to"] != live:
+        return _verdict(PARK, f"GitHub's retarget of this PR moved it from {move['from']!r} to "
+                              f"{move['to']!r}, not from {recorded!r} to {live!r}",
+                        recorded=recorded, live=live, evidence=evidence)
+    moved = instant(move["at"])
+    # `base_move` refuses an unorderable stamp, so this is never `None` — the guard is the assertion.
+    if moved is None or moved < newest:
+        return _verdict(PARK, f"GitHub retargeted this PR at {move['at']}, BEFORE PR {numbers[0]} merged "
+                              f"{recorded!r} at {latest[0]['mergedAt']} — that merge is not what moved it",
+                        recorded=recorded, live=live, evidence=evidence)
     return _verdict(MIGRATE, f"GitHub retargeted this PR onto {live!r} when PR {numbers[0]} merged "
                              f"{recorded!r} into it", recorded=recorded, live=live, evidence=evidence)
 
@@ -315,9 +445,72 @@ def fetch_candidates(recorded: str, *, repo: "str | None", cwd: "str | None",
         raise FetchError(f"could not parse `gh pr list` output: {type(exc).__name__}: {exc}") from exc
 
 
-# The `gh pr view --json` field the recency bound reads, and nothing else: this tool judges ONE fact about
-# the row's own PR. `body` and every other attacker-influenced field stay unfetched and unparsed.
+# The `gh pr view --json` field the recency bound reads, and nothing else. Together with the base-move read
+# below, this tool judges exactly TWO facts about the row's own PR: when it was opened, and what last moved
+# its base. `body` and every other attacker-influenced field stay unfetched and unparsed.
 PR_VIEW_FIELDS = "createdAt"
+
+
+def _timeline_enum(typename: str) -> str:
+    """`AutomaticBaseChangeSucceededEvent` -> `AUTOMATIC_BASE_CHANGE_SUCCEEDED_EVENT`.
+
+    GraphQL spells a timeline item's TYPE in PascalCase and the `itemTypes` filter for the same item in
+    SCREAMING_SNAKE. Deriving one from the other is what keeps the request and `BASE_MOVE_TYPES` from
+    drifting: a type added to the mapping is filtered for, selected, and validated with no second edit.
+    """
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", typename).upper()
+
+
+# ONE `gh api graphql` read of THIS PR's own base-change timeline, BUILT from `BASE_MOVE_TYPES`: the filter
+# names every type in it and the selection asks each one for its own from/to ref field names. `last:` takes
+# the NEWEST items, which is the only end that can hold the move that put this PR where it now points.
+BASE_MOVE_QUERY = (
+    "query($owner:String!,$name:String!,$number:Int!){"
+    " repository(owner:$owner,name:$name){"
+    " pullRequest(number:$number){"
+    " timelineItems(last:" + str(BASE_MOVE_LIMIT)
+    + ",itemTypes:[" + ",".join(_timeline_enum(name) for name in BASE_MOVE_TYPES) + "]){"
+    " nodes{ __typename "
+    + " ".join(f"... on {name}{{createdAt {old} {new}}}" for name, (old, new) in BASE_MOVE_TYPES.items())
+    + " }}}}}"
+)
+# Where the nodes live in the response, from the outside in. Walked as a value so a payload that stops
+# matching partway names the key it stopped at, instead of raising a `TypeError` out of a chained lookup.
+BASE_MOVE_PATH = ("data", "repository", "pullRequest", "timelineItems", "nodes")
+
+
+def fetch_base_moves(pr: str, *, repo: "str | None", cwd: "str | None",
+                     base_events_json: "str | None") -> object:
+    """The newest items that moved THIS PR's base, from `gh` or from a RECORDED response file.
+
+    Raises `FetchError` on anything that is not a parsed payload carrying the node list — a caller turns
+    that into a park, never a migrate. The repository is named through GraphQL VARIABLES, never by
+    interpolating into the query text; without an explicit `--repo` the `{owner}`/`{repo}` placeholders let
+    `gh` resolve them from the checkout `cwd` stands in, exactly as the other two reads do.
+    """
+    if base_events_json is not None:
+        try:
+            return json.loads(Path(base_events_json).read_text(encoding="utf-8"))
+        except Exception as exc:   # noqa: BLE001 — a recorded response that will not load is not evidence
+            raise FetchError(f"could not read {base_events_json}: {type(exc).__name__}: {exc}") from exc
+    owner, name = repo.split("/", 1) if repo else ("{owner}", "{repo}")
+    argv = ["gh", "api", "graphql", "-F", f"owner={owner}", "-F", f"name={name}", "-F", f"number={pr}",
+            "-f", f"query={BASE_MOVE_QUERY}"]
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, check=False, cwd=cwd)  # noqa: S603
+    except Exception as exc:   # noqa: BLE001 — a spawn that fails is not evidence
+        raise FetchError(f"could not run `gh api graphql`: {type(exc).__name__}: {exc}") from exc
+    if proc.returncode != 0:
+        raise FetchError(f"`gh api graphql` exited {proc.returncode}: {proc.stderr.strip()}")
+    try:
+        payload: object = json.loads(proc.stdout)
+    except Exception as exc:   # noqa: BLE001 — an unparseable response is not evidence
+        raise FetchError(f"could not parse `gh api graphql` output: {type(exc).__name__}: {exc}") from exc
+    for key in BASE_MOVE_PATH:
+        if not isinstance(payload, dict) or key not in payload:
+            raise FetchError(f"`gh api graphql` returned no base-move items: no {key!r} in the response")
+        payload = payload[key]
+    return payload
 
 
 def fetch_created(pr: str, *, repo: "str | None", cwd: "str | None",
@@ -374,7 +567,8 @@ def recorded_base(ledger_file: str, pr: str) -> "tuple[str | None, str | None]":
 
 
 def resolve(pr: str, live: str, ledger_file: str, *, repo: "str | None", project_root: "str | None",
-            candidates_json: "str | None", pr_created_at: "str | None") -> int:
+            candidates_json: "str | None", pr_created_at: "str | None",
+            base_events_json: "str | None") -> int:
     """Decide and perform the ONE ledger write that follows. Exit 0 iff the row now matches its live base."""
     live = live.strip()
     if live in ("", "-"):
@@ -387,19 +581,20 @@ def resolve(pr: str, live: str, ledger_file: str, *, repo: "str | None", project
         return 1
     if recorded == live:
         # No divergence: `decide` answers before it reads any evidence, so neither read is owed here.
-        result = decide(recorded, live, [], "")
+        result = decide(recorded, live, [], "", [])
         print(json.dumps({**result, "pr": pr, "wrote": None}))
         return 0
     try:
         candidates = fetch_candidates(recorded, repo=repo, cwd=project_root, candidates_json=candidates_json)
         created = fetch_created(pr, repo=repo, cwd=project_root, pr_created_at=pr_created_at)
+        events = fetch_base_moves(pr, repo=repo, cwd=project_root, base_events_json=base_events_json)
     except FetchError as exc:
         # Evidence this tool could not obtain is not evidence AGAINST a retarget either — but it is not
         # evidence FOR one, and only evidence FOR one migrates. Park, and say the read failed.
         result = _verdict(PARK, f"the retarget evidence for {recorded!r} could not be read: {exc}",
                           recorded=recorded, live=live)
     else:
-        result = decide(recorded, live, candidates, created)
+        result = decide(recorded, live, candidates, created, events)
 
     if result["decision"] == MIGRATE:
         proc = _ledger(ledger_file, project_root, "retarget", "--pr", str(pr),
@@ -455,6 +650,8 @@ def main(argv: "list[str] | None" = None) -> int:
     r.add_argument("--candidates-json", help="a recorded `gh pr list` response — decide without calling gh")
     r.add_argument("--pr-created-at", help="a recorded `gh pr view --json createdAt` value — decide without "
                                            "calling gh")
+    r.add_argument("--base-events-json", help="a recorded base-move timeline response — decide without "
+                                              "calling gh")
 
     d = sub.add_parser("decide", help="the PURE decision, printed as JSON; reads no ledger and writes nothing")
     d.add_argument("--recorded", required=True, help="the base the row records")
@@ -463,6 +660,9 @@ def main(argv: "list[str] | None" = None) -> int:
                    help="a recorded `gh pr list --head <recorded> --state merged` response")
     d.add_argument("--pr-created-at", required=True,
                    help="the PR's own `createdAt` — a merged parent older than it retargeted nothing")
+    d.add_argument("--base-events-json", required=True,
+                   help="the newest item that moved this PR's base, as the recorded node list — an eligible "
+                        "parent merge is not the event that moved it")
 
     sub.add_parser("self-test", help="run every fixture (base-retarget-test.py)")
 
@@ -481,14 +681,16 @@ def main(argv: "list[str] | None" = None) -> int:
         try:
             candidates = fetch_candidates(args.recorded, repo=None, cwd=None,
                                           candidates_json=args.candidates_json)
+            events = fetch_base_moves("", repo=None, cwd=None, base_events_json=args.base_events_json)
         except FetchError as exc:
             print(json.dumps(_verdict(PARK, str(exc), recorded=args.recorded, live=args.live)))
             return 1
-        result = decide(args.recorded, args.live, candidates, args.pr_created_at)
+        result = decide(args.recorded, args.live, candidates, args.pr_created_at, events)
         print(json.dumps(result))
         return 0 if result["decision"] in (MIGRATE, NO_CHANGE) else 1
     return resolve(args.pr, args.live, args.file, repo=args.repo, project_root=args.project_root,
-                   candidates_json=args.candidates_json, pr_created_at=args.pr_created_at)
+                   candidates_json=args.candidates_json, pr_created_at=args.pr_created_at,
+                   base_events_json=args.base_events_json)
 
 
 if __name__ == "__main__":

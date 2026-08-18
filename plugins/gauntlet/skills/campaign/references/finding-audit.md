@@ -286,7 +286,7 @@ review prompt**, so a native worker reviewer and a `codex exec` reviewer both re
 
   Then set `status` → `in_review`. The command records one durable ruling and refuses a second; a heartbeat
   may be a fresh agent instance, and an answer held only in context is one the user is asked for twice
-  (`loop-control.md` step 3, "Only the user's answer unparks a PR"). Ruling the finding **invalid** → drop
+  (`loop-control.md` step 3, "Who unparks a PR"). Ruling the finding **invalid** → drop
   it and return to the normal flow; **valid** → fix it exactly like a CONFIRMED finding.
 - **NEVER refute the same finding twice on your own authority.** One refutation, then the reviewer rules;
   if it re-raises, the user rules. A REFUTED finding does **NOT** park by itself — only the **re-raise**

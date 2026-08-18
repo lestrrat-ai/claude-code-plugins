@@ -149,8 +149,9 @@ the verdict the tool prints.
   deliberately enumerates **no** blocker cases — `files-and-ledger.md`, `status`, `awaiting-user` class
   2, owns the class), surface the question, keep driving the other PRs, reschedule, and fold
   the answer in when it lands as its own heartbeat. Each class names the **durable record** it is answered into
-  and the **unpark** it triggers (`files-and-ledger.md`, `status`; `loop-control.md` step 3, "Only the
-  user's answer unparks a PR") — a park with no defined exit is the wedge one level up (Constraints;
+  and the **unpark** it triggers (`files-and-ledger.md`, `status`; `loop-control.md` step 3, "Who unparks
+  a PR", which also owns the one release a machine may perform) — a park with no defined exit is the wedge
+  one level up (Constraints;
   `stage-2-review-gate.md`).
 - **Adopt only an orphaned run.** `acquire` adopts only a lease that is **absent or stale**; a fresh
   lease under a different token answers `superseded` — pass `--allow-takeover` only after the user has

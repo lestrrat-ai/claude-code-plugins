@@ -225,8 +225,10 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
     a non-legacy recorded repair's required clean base-only rebase, owned by `repair-pass.md`, **A non-legacy
     recorded repair may first take its required clean base-only rebase**. The CI watch is not a mutation, so
     parked status does not override item 21's returned `watch_warranted` action. Keep driving the other PRs.
-    Unpark only on the user's answer, recorded DURABLY per park class; a ruling is durable and
-    consumed exactly once (`references/stage-2-ci.md`, "THE RULING IS CONSUMED EXACTLY ONCE").
+    Unpark on the user's answer, recorded DURABLY per park class; a ruling is durable and
+    consumed exactly once (`references/stage-2-ci.md`, "THE RULING IS CONSUMED EXACTLY ONCE"). Exactly ONE
+    machine release exists — an explained base retarget withdraws the base-change park it answers — and
+    `references/loop-control.md`, "Who unparks a PR", owns it; never invent a second.
 
 **Merge — stage 3** (`references/stage-3-merge.md`)
 
@@ -293,7 +295,7 @@ a line the tool writes.
 | `emit-report.py` | Reviewer's door: write the pass's ONE report record and its verdict (the only sanctioned way, on every route — the report was the last free-text artifact) | `references/stage-2-review-gate.md` |
 | `reviewer-liveness.py` | Probe whether a dispatched reviewer's output stream is still moving; decides nothing, always exits 0 | `references/stage-2-review-gate.md` |
 | `base-preflight.py` | Decide proceed / rebase-first / recheck / park from live merge-state plus fetched base ancestry before review or fix; performs no rebase — with `--file`, `proceed` records `base_ok_sha` and `park` records the ledger-owned machine blocker | `references/stage-2-review-gate.md` |
-| `base-retarget.py` | `resolve` — decide what a live base divergence MEANS for one row and perform the one ledger write it implies: MIGRATE the row (`ledger.py retarget`) when GitHub's own retarget explains it — the recorded base's PR merged — and PARK it on the user otherwise; `decide` is the pure surface | `references/loop-control.md`, `references/pr-adoption.md` |
+| `base-retarget.py` | `resolve` — decide what a live base divergence MEANS for one row and perform the one ledger write it implies: MIGRATE the row (`ledger.py retarget`) when GitHub's own retarget explains it — the recorded base's PR merged AND GitHub's timeline records that merge moving THIS PR — and PARK it on the user otherwise; `decide` is the pure surface | `references/loop-control.md`, `references/pr-adoption.md` |
 | `format-preflight.py` | `check` — refuse to format any file whose formatter-write could escape the worktree (the file, or any path component, is a symlink); reads only, formats nothing | `references/stage-2-ci.md` |
 | `worker-prompt.py` | `fix` — bind one complete review/CI fix prompt and logical model class, then atomically publish its exact bytes + metadata | `references/fix-subagent-contract.md` |
 | `clean-rebase.py` | `run` — EXECUTE the clean base-only rebase (fetch/rebase/force-with-lease push + the ledger write that **carries `reviews_ok` and the status label forward** on a shape-preserving rebase, resetting only `ci = pending` and firing the head-move reset (`files-and-ledger.md`, the `head_sha` field, "What a genuine head move resets")) and REFUSE everything else: a conflict or a diff-changing rebase is aborted/reset and handed back (exit 3), never resolved | `references/stage-2-review-gate.md` |

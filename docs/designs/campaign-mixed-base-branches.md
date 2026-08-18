@@ -459,8 +459,9 @@ Unrelated existing fields are omitted. The on-disk row still contains the comple
 ```
 
 If PR 41 later targets `main`, reconciliation asks `base-retarget.py` why. With a merged PR whose head was
-`v3` and whose own base was `main`, the row is migrated to `main` and keeps going; with no such evidence,
-its ledger row stays unchanged and it is parked with:
+`v3` and whose own base was `main`, AND GitHub's own retarget of PR 41 recorded on its timeline as the move
+from `v3` to `main`, the row is migrated to `main` and keeps going; with no such evidence, its ledger row
+stays unchanged and it is parked with:
 
 ```text
 base changed from v3 to main; not supported mid-run

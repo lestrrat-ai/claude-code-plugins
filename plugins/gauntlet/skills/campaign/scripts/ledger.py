@@ -416,7 +416,8 @@ PREFLIGHT_OWNED = ("base_ok_sha",)
 # ONE TRANSITION rewrites it on a live row: `retarget` (`cmd_retarget`), the same absent-flag-plus-own-door
 # shape `park`/`unpark` use at `status`. It is not an exception to the rule above but its point: the field is
 # closed to drivers and open to the ONE consumer that can establish WHY the live base moved
-# (`base-retarget.py`, on a merged parent PR). A retarget nobody can explain still parks.
+# (`base-retarget.py`, on a merged parent PR TOGETHER WITH GitHub's own recorded retarget of this one).
+# A retarget nobody can explain still parks.
 #
 # ONE writer sits outside every door above, and it is not a retarget either: `merge.py`'s TERMINAL write
 # refreshes the GitHub-owned fields — `base_branch` among them — when it records a merge the campaign did not perform
@@ -507,7 +508,9 @@ REPAIR_STATUS = "repairing"
 # what makes the freeze a command that can FAIL rather than a rule an attentive agent must remember. The
 # members are held for DIFFERENT reasons and cleared by DIFFERENT events — never collapse them:
 #
-#   awaiting-api / awaiting-user   parked on a HUMAN. Only the user's answer unparks.
+#   awaiting-api / awaiting-user   parked on a HUMAN. The user's answer unparks; the one release that
+#                                  needs none is `cmd_retarget`'s, which withdraws a base-change park the
+#                                  evidence has explained (`loop-control.md`, "Who unparks a PR").
 #   repairing                      at a review-loop cap. The reassessment pass and the repair it decides
 #                                  normally clear it. Before a decision, unreconcilable capped history may
 #                                  enter the `awaiting-user` machine-blocker park; `repair-pass.md`,
@@ -1521,8 +1524,8 @@ def held_reason(status: str) -> str:
     if status == "awaiting-api":
         return "parked for the user to approve an API-changing fix — only the user's answer unparks it"
     if status == "awaiting-user":
-        return ("parked for the user to adjudicate a review standoff or a machine blocker — only the "
-                "user's answer unparks it")
+        return ("parked for the user to adjudicate a review standoff or a machine blocker — the user's "
+                "answer unparks it, bar an explained base retarget withdrawing a base-change park")
     return "held"
 
 
@@ -1685,7 +1688,8 @@ def cmd_unpark(path: Path, args) -> int:
         fail(f"no row for pr {pr}; use `add-row` to create it")
     if row["status"] != "awaiting-user":
         fail(f"pr {pr} is {row['status']}, not awaiting-user — there is no machine-blocker park to unpark. "
-             f"Only a parked row is unparked, and only the user's answer parks-then-unparks it")
+             f"Only a parked row is unparked, and this command consumes the USER's ruling; the one park a "
+             f"machine releases is a base change `retarget` has explained, and it never comes through here")
     ruling = row["blocker_ruling"]
     if ruling == "-":
         print(f"ledger: pr {pr} is awaiting-user but its blocker_ruling is `-` — the park is NOT yet "

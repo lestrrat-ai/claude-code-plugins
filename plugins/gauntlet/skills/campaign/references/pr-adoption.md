@@ -149,8 +149,8 @@ For each `#PR` to adopt:
    retargets the upper PR onto the lower PR's own base. That is the ONE divergence the campaign can explain
    without asking, so it **migrates the row in place** and keeps going — the row records the new base, the
    review tally survives (a retarget moves no content), and the base-preflight rebase onto the new base is
-   the ordinary next step. `base-retarget.py` establishes the merged parent and performs the write through
-   `ledger.py retarget`; nothing here is a user decision.
+   the ordinary next step. `base-retarget.py` establishes both the merged parent and GitHub's own recorded retarget of this PR, then
+   performs the write through `ledger.py retarget`; nothing here is a user decision.
 
    A divergence it CANNOT explain still parks, and a parked row is answered by the user through the ordinary
    ruling path — not by retiring it. Retiring the row and re-adopting the PR into a fresh run remains

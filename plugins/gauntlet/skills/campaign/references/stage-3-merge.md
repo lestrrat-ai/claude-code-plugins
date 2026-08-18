@@ -14,12 +14,12 @@ stopped converging and is being **`repairing`**-ed (`repair-pass.md`); `HELD_STA
 `scripts/ledger.py` is the one enumeration, so **do not retype it here**. Merge eligibility is **not**
 derived from the gate counters alone — being held does not lower `reviews_ok`, so a rule that reads only
 the counters would merge a PR whose disputed finding or API change the user has not yet ruled on, or one
-whose diff the reassessment pass is in the middle of rescoping. For a park, only the user's answer unparks
-it, and **to the `status` that
+whose diff the reassessment pass is in the middle of rescoping. For a park, the user's answer unparks
+it — bar the one machine release named below — and **to the `status` that
 answer dictates** — `in_review` for a **resume** answer; terminal `aborted` for a **terminal** one (a
 `declined` API change, a `blocker_ruling` of `abort`), which never returns to `in_review` and which
-the campaign never merges (`loop-control.md` step 3, "Only the user's answer unparks a PR", owns the
-mapping). Until the answer lands the PR is skipped, never merged.
+the campaign never merges (`loop-control.md` step 3, "Who unparks a PR", owns the mapping, and the one
+release a machine may perform). Until the answer lands the PR is skipped, never merged.
 
 ### The merge precondition — TWO enums, and NEITHER of them is a CI signal
 
@@ -86,8 +86,8 @@ spends nothing and answers nothing — a ruling already on the row belongs to a 
 `stage-2-ci.md`, "THE RULING IS CONSUMED EXACTLY ONCE"), and it refuses a blank reason, a terminal row, and
 a second park over an open question. It is then resolved through `blocker_ruling` = `retry` / `abort` — the
 user marks the PR ready, clears the protection, or gives up, and answers. The record and the unpark are
-defined once, in `files-and-ledger.md` (`status`) and `loop-control.md` step 3, "Only the user's answer
-unparks a PR"; never invent a second mechanism here.
+defined once, in `files-and-ledger.md` (`status`) and `loop-control.md` step 3, "Who unparks a PR"; never
+invent a second mechanism here.
 
 #### `BLOCKED` and `UNSTABLE` — what each merge state means
 
