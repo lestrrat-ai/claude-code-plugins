@@ -13,6 +13,10 @@ only once the offsets are read as instants, and the one that fits EVERY bound on
 nothing (the user hand-retargeted the PR first, and the eligible merge only followed) — and each asserts
 that the recorded base SURVIVES.
 
+THE MIGRATES CARRY A BOUND OF THEIR OWN: the merge that decides is the one GitHub's own retarget FOLLOWED,
+so a LATER merge of a reused or recreated name — which happened after this PR had already been moved, and
+did nothing to it — can neither decide the row nor park it.
+
 The `resolve` fixtures drive the real CLI against a REAL ledger built through `ledger.py` itself, with all
 three `gh` reads replaced by recorded responses (`--candidates-json`, `--pr-created-at`,
 `--base-events-json`). What they assert is the
@@ -126,11 +130,13 @@ def t_merged_parent_migrates():
 
 
 def t_newest_merge_decides():
-    """A reused branch: the NEWEST merge from it is the one GitHub retargeted against, not the older one."""
+    """A reused branch: of the merges GitHub's own retarget could have FOLLOWED, the newest one decides —
+    here the retarget postdates both, so it is the newest merge on the branch."""
     got = expect("fix-a", "v4",
                  [pr_entry(10, "fix-a", "main", merged_at="2026-01-01T00:00:00Z"),
                   pr_entry(35, "fix-a", "v4", merged_at="2026-08-18T10:00:00Z")], M.MIGRATE)
-    check(got["evidence"]["parent_prs"] == [35], f"the NEWEST merge must decide, got {got!r}")
+    check(got["evidence"]["parent_prs"] == [35],
+          f"the newest merge the retarget could have followed must decide, got {got!r}")
 
 
 def t_unrelated_entries_are_filtered():
@@ -202,21 +208,22 @@ def t_mixed_offset_stamps_are_ordered_as_instants():
     stamps hands the decision to a merge that is NOT the newest, and splits a tie-group that is really one
     moment; either way a live row's base would move on an ordering this tool does not hold."""
     created = "2026-01-01T00:00:00Z"
-    # The newest merge is PR 1 (01:00Z, spelled with a -01:00 offset) and it went to `release`, so `main` is
-    # unexplained. As text, PR 2's `00:30` stamp would win and migrate this row onto `main`.
+    # The retarget postdates both merges, so the one it followed is PR 1 (01:00Z, spelled with a -01:00
+    # offset) and it went to `release`, leaving `main` unexplained. As text, PR 2's `00:30` stamp would win
+    # and migrate this row onto `main`.
     got = expect("feature-a", "main",
                  [pr_entry(1, "feature-a", "release", merged_at="2026-01-01T00:00:00-01:00"),
                   pr_entry(2, "feature-a", "main", merged_at="2026-01-01T00:30:00Z")], M.PARK,
                  created=created)
     check(got["evidence"]["parent_prs"] == [1] and "release" in got["reason"],
-          f"the newest merge BY INSTANT must decide, got {got!r}")
+          f"the deciding merge must be chosen BY INSTANT, got {got!r}")
     # The same two merges with the offset-spelled one going to `main` is the ordinary stacked-PR migrate —
     # the bound orders instants, it does not distrust an offset.
     got = expect("feature-a", "main",
                  [pr_entry(1, "feature-a", "main", merged_at="2026-01-01T00:00:00-01:00"),
                   pr_entry(2, "feature-a", "release", merged_at="2026-01-01T00:30:00Z")], M.MIGRATE,
                  created=created)
-    check(got["evidence"]["parent_prs"] == [1], f"the newest merge BY INSTANT must decide, got {got!r}")
+    check(got["evidence"]["parent_prs"] == [1], f"the deciding merge must be chosen BY INSTANT, got {got!r}")
     # Two SPELLINGS of the same instant are ONE tie-group, so disagreeing bases are the ambiguity park.
     got = expect("feature-a", "main",
                  [pr_entry(1, "feature-a", "main", merged_at="2026-01-01T01:00:00Z"),
@@ -277,6 +284,40 @@ def t_older_merge_cannot_shadow_a_recent_one():
     check(got["evidence"]["parent_prs"] == [35], f"the eligible parent must decide, got {got!r}")
 
 
+def t_a_later_merge_cannot_park_the_retarget():
+    """A REUSED branch merged AGAIN after GitHub had already moved this PR. PR 101 merges `fix-a` into
+    `main`, GitHub retargets this PR one second later and records it; `fix-a` then takes more commits and
+    merges again as PR 102 the next day, and only THEN does a resolve run. GitHub stamps its own retarget at
+    or after the merge that triggered it, so PR 102's merge postdates the move and cannot be what it
+    followed — deciding against it would park a row GitHub really did retarget, on a merge that never
+    touched this PR. Branch REUSE is all this takes: with auto-delete-branch off, `fix-a` simply survives PR
+    101's merge."""
+    created = "2026-01-01T00:00:00Z"
+    first = pr_entry(101, "fix-a", "main", merged_at="2026-01-02T00:00:00Z")
+    move = auto_move("fix-a", "main", at="2026-01-02T00:00:01Z")
+    got = expect("fix-a", "main",
+                 [first, pr_entry(102, "fix-a", "main", merged_at="2026-01-03T00:00:00Z")], M.MIGRATE,
+                 created=created, moves=[move])
+    check(got["evidence"]["parent_prs"] == [101],
+          f"the merge the retarget FOLLOWED must decide, not the newest on the branch, got {got!r}")
+    # THE MIRROR: the same call WITHOUT the later merge. It must decide identically — the later merge is
+    # evidence about `fix-a`, and none at all about this PR.
+    got = expect("fix-a", "main", [first], M.MIGRATE, created=created, moves=[move])
+    check(got["evidence"]["parent_prs"] == [101], f"the mirror case must decide identically, got {got!r}")
+    # No day-long window is needed either: THIRTY SECONDS is enough, so any resolve that first wakes after
+    # the second merge meets this shape.
+    expect("fix-a", "main", [first, pr_entry(102, "fix-a", "main", merged_at="2026-01-02T00:00:30Z")],
+           M.MIGRATE, created=created, moves=[move])
+    # AND THE SELECTION IS NOT "the latest merge whose base happens to be `live`". With the later merge going
+    # somewhere ELSE and the retarget stamped after BOTH, the merge the move followed is that later one, its
+    # base is not `live`, and the row parks — the older merge into `main` never stands in for it.
+    got = expect("fix-a", "main",
+                 [first, pr_entry(103, "fix-a", "v9", merged_at="2026-01-03T00:00:00Z")], M.PARK,
+                 created=created, moves=[auto_move("fix-a", "main", at="2026-01-04T00:00:00Z")])
+    check(got["evidence"]["parent_prs"] == [103] and "v9" in got["reason"],
+          f"the merge the retarget followed must decide even when it parks, got {got!r}")
+
+
 def t_unanchored_instants_park():
     """An instant this tool cannot order is a bound it cannot apply, and an unapplied bound is not a passed
     one: an unparseable or OFFSET-LESS `createdAt`, and the same for a candidate's `mergedAt`."""
@@ -289,7 +330,7 @@ def t_unanchored_instants_park():
 
 
 def t_full_page_parks():
-    """A FULL page means the newest merge may be outside the window, so the deciding row may not be here."""
+    """A FULL page means the deciding merge may be outside the window, so the deciding row may not be here."""
     entries = [pr_entry(n, "fix-a", "main") for n in range(M.CANDIDATE_LIMIT)]
     got = expect("fix-a", "main", entries, M.PARK)
     check(str(M.CANDIDATE_LIMIT) in got["reason"], f"the park must name the window, got {got['reason']!r}")
@@ -401,13 +442,20 @@ def t_retarget_of_other_refs_parks():
 
 
 def t_retarget_before_the_deciding_merge_parks():
-    """GitHub's own retarget of the right refs, stamped BEFORE the merge that is supposed to explain it:
-    they are not the same event, so that merge is not what moved this PR."""
+    """GitHub's own retarget of the right refs, stamped BEFORE EVERY merge that could explain it: nothing it
+    could have followed had happened yet, so no merge of that branch is what moved this PR."""
     parent = [pr_entry(35, "fix-a", "main", merged_at="2026-08-18T10:00:00Z")]
     got = expect("fix-a", "main", parent, M.PARK,
                  moves=[auto_move("fix-a", "main", at="2026-08-18T09:59:59Z")])
     check("BEFORE PR 35 merged" in got["reason"],
           f"the park must name the ordering it applied, got {got['reason']!r}")
+    # With SEVERAL such merges the park names the EARLIEST — the one closest to the move, and the strongest
+    # case against it. Naming the newest instead would report a merge even further from the event.
+    got = expect("fix-a", "main",
+                 [pr_entry(36, "fix-a", "main", merged_at="2026-08-18T10:00:01Z"), *parent], M.PARK,
+                 moves=[auto_move("fix-a", "main", at="2026-08-18T09:59:59Z")])
+    check(got["evidence"]["parent_prs"] == [35] and "BEFORE PR 35 merged" in got["reason"],
+          f"the EARLIEST eligible merge must name the park, got {got!r}")
     # Stamped AT the merge instant is NOT before it, and the bound here is deliberately not strict: `gh`
     # truncates both stamps to whole seconds, and GitHub's retarget follows its merge closely enough to
     # land inside the same one. The strict bound is the one against `createdAt`, where an equal pair is
@@ -738,7 +786,10 @@ def t_park_wording_is_the_shared_constant():
 CASES = [
     ("merged-parent-migrates", "a parent PR that merged the recorded base into the live base migrates",
      t_merged_parent_migrates),
-    ("newest-merge-decides", "a reused branch is decided by its NEWEST merge", t_newest_merge_decides),
+    ("newest-merge-decides", "a reused branch is decided by the newest merge the retarget could have "
+     "followed", t_newest_merge_decides),
+    ("later-merge-cannot-park", "a merge of a reused branch AFTER the retarget neither decides nor parks",
+     t_a_later_merge_cannot_park_the_retarget),
     ("filters-other-branches", "entries for another head branch cannot decide this row",
      t_unrelated_entries_are_filtered),
     ("same-base-no-change", "a live base equal to the recorded one reads no evidence", t_same_base_is_no_change),

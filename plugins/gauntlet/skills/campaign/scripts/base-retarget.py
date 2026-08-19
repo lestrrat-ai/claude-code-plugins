@@ -42,9 +42,9 @@ records — and two about THIS row's own PR, and none re-opens which of the RUN'
 
 FAIL CLOSED, ALWAYS TOWARDS THE PARK. A fetch that fails, a malformed candidate, no merged PR from THIS
 REPOSITORY's recorded branch, one whose merge is not stamped strictly AFTER this PR was created, several
-with contradictory bases, a merged PR whose own base is NOT where this PR now points, a base move GitHub
-did not make, or a base move that did not carry this PR off the recorded base at that merge — each is a
-divergence this tool cannot explain, and an unexplained divergence is the park the user already knows how to
+with contradictory bases, the merged PR the move followed having a base that is NOT where this PR now
+points, a base move GitHub did not make, one that did not carry this PR off the recorded base, or one
+stamped before every merge that could have caused it — each is a divergence this tool cannot explain, and an unexplained divergence is the park the user already knows how to
 answer. Only the exact GitHub shape migrates.
 
 TWO BOUNDS KEEP A BRANCH NAME FROM STANDING IN FOR THE MERGE THAT MOVED THIS PR. A head branch NAME is
@@ -58,6 +58,8 @@ neither unique nor single-use, so a name match alone is not the event:
     be shown to have moved it — the merge is history, not the cause, and the row parks. That bound is STRICT
     because `gh` stamps both instants at SECOND precision: an EQUAL pair is consistent with the parent
     merging FIRST and this PR being opened later in the same second, which GitHub retargets nothing for.
+    The same name can also merge AGAIN after this PR was already moved — a reused or a recreated branch —
+    and which of its merges the move followed is settled by the causal event below, never by recency.
 
 A MERGE THAT COULD HAVE MOVED THIS PR IS NOT THE MERGE THAT DID. The bounds above establish that a merge
 of the recorded branch was ELIGIBLE to retarget this PR. They cannot establish that it is what put this PR
@@ -74,9 +76,13 @@ own timeline. GitHub records its own retarget as an `AutomaticBaseChangeSucceede
 `BaseRefChangedEvent` instead. ONLY items that MOVED the base are read: GitHub also records an attempt it
 could NOT complete (`AutomaticBaseChangeFailedEvent`), which moved nothing and is deliberately never asked
 for, so it can never displace the move that did (`BASE_MOVE_TYPES` owns why). The NEWEST of the items read
-is therefore what put this PR on its live base, and it migrates only when it is GitHub's OWN, moved
-`recorded` -> `live`, and is stamped NO EARLIER than the merge that explains it. The hand-retarget above is
-then the wrong item TYPE, and an older automatic retarget the wrong REFS or the wrong INSTANT.
+is therefore what put this PR on its live base, and it migrates only when it is GitHub's OWN and moved
+`recorded` -> `live`. WHICH merge that move explains is then read off the event itself: GitHub emits it only
+when a PR with head `recorded` and base `live` merges while this one is OPEN, and stamps it AT OR AFTER that
+merge — so the merge that caused it is the NEWEST merge of the recorded branch stamped AT OR BEFORE the
+event, never simply the newest merge on the branch, which a reused or recreated name can put there long
+after this PR was already moved. The hand-retarget above is then the wrong item TYPE, an older automatic
+retarget the wrong REFS, and an event older than every eligible merge has no cause among them at all.
 
 The verdict is printed as JSON on stdout and the EXIT CODE gates a caller's `$?`: 0 when the row now matches
 its live base (`migrate`, or `no-change` when it already did), non-zero when it does not (`park`, or a write
@@ -119,7 +125,7 @@ CANDIDATE_BOOLS = ("isCrossRepository",)
 CANDIDATE_FIELDS = ",".join((*CANDIDATE_NUMBERS, *CANDIDATE_STRINGS, *CANDIDATE_BOOLS))
 
 # How many merged PRs from the recorded branch are considered. A branch that carried more than this many
-# merged PRs is not a shape this decides: the extra pages are never fetched, so the newest merge could be
+# merged PRs is not a shape this decides: the extra pages are never fetched, so the deciding merge could be
 # outside the window, and a decision made on a window that might not hold the deciding row would be a guess.
 # The cap is therefore a FAIL-CLOSED boundary, not a performance knob — a full page parks (see `decide`).
 CANDIDATE_LIMIT = 50
@@ -287,10 +293,15 @@ def decide(recorded: str, live: str, candidates: object, created: object, events
     PURE — no I/O, no raising. The ONE shape that migrates is GitHub's own retarget, and it takes BOTH a
     merge that COULD have caused the move and the event that DID:
 
-        the most recently merged SAME-REPOSITORY PR whose HEAD was `recorded`, merged STRICTLY after
-        this PR was created, has `baseRefName == live`
-        — AND the newest item that moved this PR's base is GitHub's OWN automatic retarget, from
-        `recorded` to `live`, stamped NO EARLIER than that merge.
+        the newest item that moved this PR's base is GitHub's OWN automatic retarget, from `recorded`
+        to `live` — AND the SAME-REPOSITORY PR whose HEAD was `recorded` that merged most recently AT OR
+        BEFORE that retarget, and STRICTLY after this PR was created, has `baseRefName == live`.
+
+    THE EVENT CHOOSES THE MERGE, so it is read BEFORE the merge rather than checked against a merge already
+    chosen. GitHub stamps its own retarget at or after the merge that triggered it, so a merge stamped LATER
+    cannot be what it followed. Taking the newest merge on the branch instead would let a SECOND merge of a
+    reused or recreated name — one that happened after this PR had already been moved, and did nothing to
+    it — park a row GitHub really did retarget.
 
     Both bounds on the parent are there because a head branch NAME identifies neither one repository nor one
     branch instance: `--head` also matches FORK branches of the same name, and a name can be recreated after
@@ -311,7 +322,7 @@ def decide(recorded: str, live: str, candidates: object, created: object, events
         unapplied bound is not a passed one;
       * a malformed candidate list — a wrong-shaped entry, or a parent whose `mergedAt` cannot be ordered —
         so no candidate is evidence;
-      * a FULL page — the newest merge may be outside the window, so the deciding row may not be here;
+      * a FULL page — the deciding merge may be outside the window, so the deciding row may not be here;
       * no merged SAME-REPOSITORY PR from the recorded branch at all: the branch was deleted, its PR is still
         open or was closed unmerged, or every match was a fork's like-named branch. GitHub retargets on the
         MERGE of THIS repository's branch, so none of those explain where this PR now points;
@@ -320,22 +331,25 @@ def decide(recorded: str, live: str, candidates: object, created: object, events
         merge stamped at the very same SECOND cannot show this PR was open for it either (see the strict
         bound below). This is the recreated-branch shape — a name merged long ago, recreated, and
         hand-retargeted since;
-      * several merged PRs from that branch whose newest merge is AMBIGUOUS — two merged at the same instant
-        (the same MOMENT, however each stamp is spelled) and they disagree about their own base, so "the base
-        GitHub moved this PR to" has no single answer;
-      * a newest merged parent whose own base is NOT `live`: GitHub would have moved this PR to the parent's
-        base, so wherever it points came from somewhere else;
       * a base-move payload this tool cannot read — a wrong-shaped item, a timeline type it never asked for,
         an unorderable `createdAt`, or more items than the newest-only read asks for;
       * NO base-move item at all: something put this PR on a base it was not opened with, and GitHub's own
-        timeline does not say what, so nothing shows the merge above did it;
-      * a newest base move that is a HAND retarget: the eligible merge is then a coincidence beside a move
+        timeline does not say what, so nothing shows a merge of the recorded branch did it;
+      * a newest base move that is a HAND retarget: the eligible merges are then a coincidence beside a move
         somebody else made, which is precisely the sequence the two bounds on the parent cannot separate on
         their own. GitHub's own FAILED attempt is not among the items read at all — it moved nothing, so it
         must never displace the move that did (`BASE_MOVE_TYPES`), and one handed in anyway is refused by
         the malformed-payload rule above as a type this tool never asked for;
-      * a newest automatic retarget whose own `oldBase`/`newBase` are not `recorded` -> `live`, or that is
-        stamped BEFORE the deciding merge: that is some OTHER retarget, and this merge is not what moved it.
+      * a newest automatic retarget whose own `oldBase`/`newBase` are not `recorded` -> `live`: that is some
+        OTHER retarget of this PR, so no merge of `recorded` into `live` is what it recorded;
+      * EVERY eligible merge stamped after that retarget: GitHub stamps its own move at or after the merge
+        that triggered it, so a move older than all of them followed none of them;
+      * a DECIDING merge that is AMBIGUOUS — the merge the retarget followed is two merges at the same
+        instant (the same MOMENT, however each stamp is spelled) that disagree about their own base, so "the
+        base GitHub moved this PR to" has no single answer;
+      * a deciding parent whose own base is NOT `live`: GitHub would have moved this PR to that parent's
+        base, so wherever it points came from somewhere else. The merge is chosen by the EVENT and never by
+        its base, so an older merge into `live` can never stand in for the newer one the move followed.
     """
     if recorded == live:
         return _verdict(NO_CHANGE, "the live base already equals the recorded base", recorded=recorded, live=live)
@@ -350,7 +364,7 @@ def decide(recorded: str, live: str, candidates: object, created: object, events
                         recorded=recorded, live=live)
     if isinstance(candidates, list) and len(candidates) >= CANDIDATE_LIMIT:
         return _verdict(PARK, f"{recorded!r} returned a FULL page of {CANDIDATE_LIMIT} merged PRs, so the "
-                              f"newest merge may be outside the window this read",
+                              f"deciding merge may be outside the window this read",
                         recorded=recorded, live=live)
     if not parents:
         return _verdict(PARK, f"no merged PR of THIS repository has head {recorded!r}, so nothing explains "
@@ -381,20 +395,64 @@ def decide(recorded: str, live: str, candidates: object, created: object, events
                               f"merge stamped in the same SECOND cannot show this PR was open for it",
                         recorded=recorded, live=live,
                         evidence={"stale_parent_prs": stale, "pr_created_at": created})
-    # THE NEWEST MERGE AND ITS TIE-GROUP ARE CHOSEN ON THE PARSED INSTANTS, NEVER ON THE `mergedAt` TEXT.
-    # `instant()` accepts ANY offset, so ONE moment has many spellings: `2026-01-01T01:00:00Z` and
-    # `2026-01-01T00:00:00-01:00` name the same instant, and `2026-01-01T00:30:00Z` sorts above BOTH as text
-    # while being the older merge. Ordering the strings would therefore hand the decision to a merge that is
-    # not the newest, and split a tie-group that is really one instant — both of which decide a live row's
-    # base on an ordering this tool does not hold. The datetimes built above are the ordering.
-    newest = max(moment for _, moment in recent)
-    latest = sorted((entry for entry, moment in recent if moment == newest),
+    # THE PARENT MERGES ARE NOW ELIGIBLE, NOT ESTABLISHED. Everything above is a fact about the recorded
+    # BRANCH; nothing above is a fact about THIS PR's base ever having been on it when any of them happened.
+    # The timeline item is the one that is — AND it is what SELECTS which of those merges is being judged,
+    # so it is read BEFORE the choice rather than checked against a choice already made.
+    move, problem = base_move(events)
+    evidence = {"pr_created_at": created}
+    if problem is not None:
+        return _verdict(PARK, f"the base-move evidence for this PR is malformed: {problem}",
+                        recorded=recorded, live=live, evidence=evidence)
+    if move is None:
+        return _verdict(PARK, f"no timeline item moved this PR's base, so nothing shows a merge of "
+                              f"{recorded!r} is what put it on {live!r}",
+                        recorded=recorded, live=live, evidence=evidence)
+    evidence["base_move"] = move
+    if move["type"] != GITHUB_RETARGET:
+        return _verdict(PARK, f"this PR's base was last moved by a {move['type']}, not by GitHub's own "
+                              f"retarget — a merge of {recorded!r} could have moved it and did not",
+                        recorded=recorded, live=live, evidence=evidence)
+    if move["from"] != recorded or move["to"] != live:
+        return _verdict(PARK, f"GitHub's retarget of this PR moved it from {move['from']!r} to "
+                              f"{move['to']!r}, not from {recorded!r} to {live!r}",
+                        recorded=recorded, live=live, evidence=evidence)
+    moved = instant(move["at"])
+    if moved is None:   # `base_move` refuses an unorderable stamp, so this is unreachable — never assumed
+        return _verdict(PARK, f"GitHub's retarget of this PR is stamped {move['at']!r}, which cannot be "
+                              f"ordered against a merge", recorded=recorded, live=live, evidence=evidence)
+    # THE MERGE THAT EXPLAINS THE MOVE IS THE NEWEST ONE THE MOVE COULD HAVE FOLLOWED, NOT THE NEWEST ONE
+    # ON THE BRANCH. GitHub emits this event only when a PR with head `recorded` and base `live` merges
+    # while this one is OPEN, and stamps it AT OR AFTER that merge — so the merge that caused it is
+    # necessarily one stamped at or before it. A branch that merges AGAIN afterwards, reused or recreated,
+    # puts a NEWER merge on this list that the move cannot have followed; judging the move against THAT one
+    # would park a row GitHub really did retarget, on the strength of a merge that never touched this PR.
+    # Selecting BY THE EVENT keeps both other bounds live and widens nothing: these candidates are already
+    # the ones merged strictly after this PR was created, and the one chosen must still have merged into
+    # `live` below — an older merge into `live` never stands in for the newer one the move followed.
+    caused = [(entry, moment) for entry, moment in recent if moment <= moved]
+    # THE DECIDING MERGE AND ITS TIE-GROUP ARE CHOSEN ON THE PARSED INSTANTS, NEVER ON THE `mergedAt` TEXT,
+    # and the event's own stamp is compared as one for exactly the same reason. `instant()` accepts ANY
+    # offset, so ONE moment has many spellings: `2026-01-01T01:00:00Z` and `2026-01-01T00:00:00-01:00` name
+    # the same instant, and `2026-01-01T00:30:00Z` sorts above BOTH as text while being the older merge.
+    # Ordering the strings would therefore hand the decision to a merge the move did not follow, and split a
+    # tie-group that is really one instant — both of which decide a live row's base on an ordering this tool
+    # does not hold. The datetimes built above are the ordering.
+    #
+    # With NO merge at or before the move, the group is the EARLIEST eligible merge instead: it is the one
+    # closest to the move, so it names the park with the strongest case there is against it.
+    chosen = max(moment for _, moment in caused) if caused else min(moment for _, moment in recent)
+    latest = sorted((entry for entry, moment in recent if moment == chosen),
                     key=lambda entry: entry["number"])
     bases = {entry["baseRefName"] for entry in latest}
     numbers = [entry["number"] for entry in latest]
     # The stamp is reported as the deciding parent SPELLED it, so the evidence quotes the payload verbatim.
-    evidence = {"parent_prs": numbers, "merged_at": latest[0]["mergedAt"], "parent_bases": sorted(bases),
-                "pr_created_at": created}
+    evidence.update({"parent_prs": numbers, "merged_at": latest[0]["mergedAt"],
+                     "parent_bases": sorted(bases)})
+    if not caused:
+        return _verdict(PARK, f"GitHub retargeted this PR at {move['at']}, BEFORE PR {numbers[0]} merged "
+                              f"{recorded!r} at {latest[0]['mergedAt']} — that merge is not what moved it",
+                        recorded=recorded, live=live, evidence=evidence)
     if len(bases) > 1:
         return _verdict(PARK, f"PRs {numbers} from {recorded!r} merged at the same instant onto different "
                               f"bases {sorted(bases)}, so the retarget target is ambiguous",
@@ -403,32 +461,6 @@ def decide(recorded: str, live: str, candidates: object, created: object, events
     if parent_base != live:
         return _verdict(PARK, f"PR {numbers[0]} merged {recorded!r} into {parent_base!r}, but this PR now "
                               f"targets {live!r} — the retarget did not come from that merge",
-                        recorded=recorded, live=live, evidence=evidence)
-    # THE PARENT MERGE IS NOW ELIGIBLE, NOT ESTABLISHED. Everything above is a fact about the recorded
-    # BRANCH; nothing above is a fact about THIS PR's base ever having been on it when that merge happened.
-    # The timeline item is the one that is.
-    move, problem = base_move(events)
-    if problem is not None:
-        return _verdict(PARK, f"the base-move evidence for this PR is malformed: {problem}",
-                        recorded=recorded, live=live, evidence=evidence)
-    if move is None:
-        return _verdict(PARK, f"no timeline item moved this PR's base, so nothing shows PR {numbers[0]}'s "
-                              f"merge is what put it on {live!r}",
-                        recorded=recorded, live=live, evidence=evidence)
-    evidence["base_move"] = move
-    if move["type"] != GITHUB_RETARGET:
-        return _verdict(PARK, f"this PR's base was last moved by a {move['type']}, not by GitHub's own "
-                              f"retarget — PR {numbers[0]}'s merge could have moved it and did not",
-                        recorded=recorded, live=live, evidence=evidence)
-    if move["from"] != recorded or move["to"] != live:
-        return _verdict(PARK, f"GitHub's retarget of this PR moved it from {move['from']!r} to "
-                              f"{move['to']!r}, not from {recorded!r} to {live!r}",
-                        recorded=recorded, live=live, evidence=evidence)
-    moved = instant(move["at"])
-    # `base_move` refuses an unorderable stamp, so this is never `None` — the guard is the assertion.
-    if moved is None or moved < newest:
-        return _verdict(PARK, f"GitHub retargeted this PR at {move['at']}, BEFORE PR {numbers[0]} merged "
-                              f"{recorded!r} at {latest[0]['mergedAt']} — that merge is not what moved it",
                         recorded=recorded, live=live, evidence=evidence)
     return _verdict(MIGRATE, f"GitHub retargeted this PR onto {live!r} when PR {numbers[0]} merged "
                              f"{recorded!r} into it", recorded=recorded, live=live, evidence=evidence)
