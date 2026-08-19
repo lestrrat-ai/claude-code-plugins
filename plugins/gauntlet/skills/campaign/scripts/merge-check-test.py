@@ -606,7 +606,7 @@ def t_base_retarget_parks():
     # A fully clean+green+in_review PR whose live base no longer matches its recorded (effective) base. The
     # recorded base is IMMUTABLE; a retarget is unsupported and parks with the SAME machine-blocker wording
     # every base door records. This fixture pins that the merge door catches it and uses the shared reason.
-    expected = M.PA.BASE_CHANGE_PARK_REASON.format(recorded="v3", live="main")
+    expected = M.BASE_CHANGE_PARK_REASON.format(recorded="v3", live="main")
     expect(row(base_branch="v3"), view(baseRefName="main"), "not-yet", expected)
 
 

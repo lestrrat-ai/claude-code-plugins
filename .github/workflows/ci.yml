@@ -289,6 +289,16 @@ jobs:
       - name: Base-preflight contract
         run: python3 plugins/gauntlet/skills/campaign/scripts/base-preflight.py self-test
 
+      # The base-retarget decider's contract, executed. It is the ONLY thing in the campaign that can rewrite
+      # a live row's base without a human, so the fixtures that matter most are the REFUSALS: each park
+      # fixture is one shape that LOOKS like GitHub's own stacked-PR retarget and is not, and each asserts
+      # the recorded base SURVIVES (`base-retarget-test.py`'s module docstring names the set). The `resolve`
+      # fixtures drive the real CLI against a real ledger with only the `gh` reads replaced, and assert the
+      # LEDGER afterwards, so a decider that printed `migrate` and wrote nothing would go red. The sibling
+      # `base-retarget-test.py` is loaded by path and a MISSING sibling fails loudly.
+      - name: Base-retarget contract (what may rewrite a live row's base)
+        run: python3 plugins/gauntlet/skills/campaign/scripts/base-retarget.py self-test
+
       # The format-preflight guard's contract, executed. It turns stage-2-ci.md's PREFLIGHT prose (the
       # cheap CI-fixer must refuse to format a file whose write could land OUTSIDE the worktree — the file
       # or any path component is a symlink) into a tested command, so the check no longer depends on a model

@@ -78,7 +78,7 @@ TABLE_CONFIG_FIELDS = tuple(f for f in HEADER_FIELDS if f not in HEADER_PRESENTA
 HEADER_DEFAULTS = {
     "run_id": "-",
     # LEGACY FALLBACK for the base branch. The base a PR merges into is now ROW state (`base_branch` in
-    # ROW_FIELDS), written once at row creation. This header field is only what a row with NO explicit base
+    # ROW_FIELDS), recorded on the row at adoption. This header field is only what a row with NO explicit base
     # inherits, through `effective_base` — the schema-owned resolver, the sanctioned door for base
     # consumers. Per-row base resolution is LIVE: adoption records each row's base and every consumer
     # resolves through the accessor, never this header directly. Mixed-base ADMISSION is ENABLED: adoption
@@ -255,10 +255,12 @@ ROW_FIELDS = (
     # resolver — an explicit row value, else the header. files-and-ledger.md, "Base branch", owns the field.
     #
     # It is TOOL-OWNED and CREATION-ONLY (`CREATE_ONLY`): `add-row` writes it when the row appears and no
-    # driver door changes it after — there is no `--base-branch` flag at `set`. The campaign never migrates
-    # a row to a new base; a live base that no longer matches the recorded one is an unsupported change a
-    # consumer parks for the user, never a value `set` rewrites. (`CREATE_ONLY` below names the one write
-    # outside those doors — the terminal GitHub-owned refresh, which is not a retarget.)
+    # DRIVER door changes it after — there is no `--base-branch` flag at `set`. Exactly one other door
+    # rewrites it on a live row, and it is not a driver: `retarget` (`cmd_retarget`), which `base-retarget.py`
+    # calls after ESTABLISHING that GitHub itself moved the PR when its old base merged. A live base that
+    # diverged for any OTHER reason is an unsupported change a consumer parks for the user, never a value
+    # `set` rewrites. (`CREATE_ONLY` below names the one write outside all three doors — the terminal
+    # GitHub-owned refresh, which is not a retarget either.)
     #
     # The default is `-`, the schema's own "not set" spelling AND its "inherit the legacy header" signal:
     # an old ledger's rows read back `-` and resolve through the header, exactly as they always did. A `-`
@@ -403,16 +405,22 @@ REPAIR_OWNED = ("repair_count", "repair_decision")
 PREFLIGHT_OWNED = ("base_ok_sha",)
 
 # The row fields that `add-row` may write ONCE, at row creation, and that `set` may NEVER change afterward.
-# `base_branch` is the target `baseRefName` recorded from live GitHub at adoption; the campaign never
-# migrates a LIVE row to a new base, so the field is TOOL-OWNED and fixed for the row's working life. The
-# mechanism is the same absent-door one `PREFLIGHT_OWNED` uses, but ASYMMETRIC across the two write doors:
-# the flag is present at `add-row` (creation must be able to record the base) and ABSENT at `set` (argparse
-# then refuses `set --base-branch`, so no driver can retarget a row it is still driving). A field here is
-# still `settable()`; CREATE_ONLY narrows only WHICH door may write it. (`required_set` is NOT here — the
-# grouped required-set refresh rewrites it through `set`, so that door stays open.)
+# `base_branch` is the target `baseRefName` recorded from live GitHub at adoption, and it is TOOL-OWNED: no
+# DRIVER door rewrites it. The mechanism is the same absent-door one `PREFLIGHT_OWNED` uses, but ASYMMETRIC
+# across the two write doors: the flag is present at `add-row` (creation must be able to record the base) and
+# ABSENT at `set` (argparse then refuses `set --base-branch`, so no driver can retarget a row it is still
+# driving). A field here is still `settable()`; CREATE_ONLY narrows only WHICH door may write it.
+# (`required_set` is NOT here — the grouped required-set refresh rewrites it through `set`, so that door
+# stays open.)
 #
-# ONE writer sits outside those doors, and it is not a retarget: `merge.py`'s TERMINAL write refreshes the
-# GitHub-owned fields — `base_branch` among them — when it records a merge the campaign did not perform
+# ONE TRANSITION rewrites it on a live row: `retarget` (`cmd_retarget`), the same absent-flag-plus-own-door
+# shape `park`/`unpark` use at `status`. It is not an exception to the rule above but its point: the field is
+# closed to drivers and open to the ONE consumer that can establish WHY the live base moved
+# (`base-retarget.py`, on a merged parent PR TOGETHER WITH GitHub's own recorded retarget of this one).
+# A retarget nobody can explain still parks.
+#
+# ONE writer sits outside every door above, and it is not a retarget either: `merge.py`'s TERMINAL write
+# refreshes the GitHub-owned fields — `base_branch` among them — when it records a merge the campaign did not perform
 # (`references/files-and-ledger.md`, "GitHub-owned vs campaign-owned row fields"). It fires only on a row
 # that is already terminal, so no rebase, review, or merge can ever read the refreshed value; what reads it
 # is the final report and the carryover projection, which are exactly what must name the base the PR
@@ -446,6 +454,15 @@ CREATE_ONLY = ("base_branch",)
 # (`unpark` resets every LIVENESS_COUNTERS member — the set defined once, above — to its ROW_DEFAULTS
 # value, never a retyped literal, so a counter added to the set is reset by the retry unpark with NO edit
 # to `cmd_unpark`.)
+
+# The EXACT durable reason recorded in `ci_reason` when a consumer finds a row's live `baseRefName` diverged
+# from its recorded base and cannot explain the divergence. DEFINED HERE, the schema owner, because two
+# transitions read it: `park` writes it (through its caller) and `retarget` REQUIRES it to release a park it
+# is clearing, so a second copy of the wording would let the release silently stop matching the park. Every
+# other site re-exports or formats THIS constant — `pr-adopt.py`, `base-preflight.py`, `merge-check.py`,
+# `base-retarget.py` — so `grep 'not supported mid-run'` reaches the whole class. `{recorded}` is the row's
+# `effective_base`, `{live}` the live `baseRefName`.
+BASE_CHANGE_PARK_REASON = "base changed from {recorded} to {live}; not supported mid-run"
 
 SATISFIED, NOT_SATISFIED = "satisfied", "not-satisfied"
 VERDICTS = (SATISFIED, NOT_SATISFIED)
@@ -491,7 +508,9 @@ REPAIR_STATUS = "repairing"
 # what makes the freeze a command that can FAIL rather than a rule an attentive agent must remember. The
 # members are held for DIFFERENT reasons and cleared by DIFFERENT events — never collapse them:
 #
-#   awaiting-api / awaiting-user   parked on a HUMAN. Only the user's answer unparks.
+#   awaiting-api / awaiting-user   parked on a HUMAN. The user's answer unparks; the one release that
+#                                  needs none is `cmd_retarget`'s, which withdraws a base-change park the
+#                                  evidence has explained (`loop-control.md`, "Who unparks a PR").
 #   repairing                      at a review-loop cap. The reassessment pass and the repair it decides
 #                                  normally clear it. Before a decision, unreconcilable capped history may
 #                                  enter the `awaiting-user` machine-blocker park; `repair-pass.md`,
@@ -1505,8 +1524,8 @@ def held_reason(status: str) -> str:
     if status == "awaiting-api":
         return "parked for the user to approve an API-changing fix — only the user's answer unparks it"
     if status == "awaiting-user":
-        return ("parked for the user to adjudicate a review standoff or a machine blocker — only the "
-                "user's answer unparks it")
+        return ("parked for the user to adjudicate a review standoff or a machine blocker — the user's "
+                "answer unparks it, bar an explained base retarget withdrawing a base-change park")
     return "held"
 
 
@@ -1669,7 +1688,8 @@ def cmd_unpark(path: Path, args) -> int:
         fail(f"no row for pr {pr}; use `add-row` to create it")
     if row["status"] != "awaiting-user":
         fail(f"pr {pr} is {row['status']}, not awaiting-user — there is no machine-blocker park to unpark. "
-             f"Only a parked row is unparked, and only the user's answer parks-then-unparks it")
+             f"Only a parked row is unparked, and this command consumes the USER's ruling; the one park a "
+             f"machine releases is a base change `retarget` has explained, and it never comes through here")
     ruling = row["blocker_ruling"]
     if ruling == "-":
         print(f"ledger: pr {pr} is awaiting-user but its blocker_ruling is `-` — the park is NOT yet "
@@ -1691,6 +1711,91 @@ def cmd_unpark(path: Path, args) -> int:
         updates[f] = ROW_DEFAULTS[f]   # from the defaults — NEVER a retyped literal
     row.update(updates)
     save(path, header, rows, activity=True)  # unpark flips `status` back to in_review — a non-exempt change
+    print(json.dumps(row))
+    return 0
+
+
+def cmd_retarget(path: Path, args) -> int:
+    """Move a LIVE row onto a new base — the EXPLAINED-retarget transition, in ONE atomic dump.
+
+    This is the SECOND door to the CREATE_ONLY `base_branch` field (`add-row` is the first), and the ONLY one
+    a live row is written through. It exists because ONE retarget is fully explained by GitHub's own
+    mechanics: merging PR A (head `<b>`) makes GitHub retarget every open PR based on `<b>` onto A's base.
+    The row's work is unchanged, so the campaign follows the PR instead of asking the user to retire it.
+    `base-retarget.py` is the ONE decider of whether a live divergence is that event; it establishes the
+    evidence and calls this. Nothing else calls it: `set` still has no `--base-branch` flag, so a driver
+    cannot retarget a row it is merely driving.
+
+    The write, ONE atomic dump, is the base move PLUS everything the old base authorized:
+      * `base_branch` = `--to`;
+      * `required_set` reset to its `ROW_DEFAULTS` — the required-check set is DERIVED from the base, so a
+        set read for the old base is not evidence for the new one (`effective_required_set` then re-inherits
+        the header set when the new base IS the header base, and fail-closed `unknown` when it is not);
+      * `base_ok_sha` reset to its `ROW_DEFAULTS` — the base-preflight `proceed` was decided against the OLD
+        base. This reset is LOAD-BEARING, not tidiness: `cmd_verdict` refuses unless the stamp equals the
+        head, so voiding it here makes a fresh `base-preflight.py check` — which will demand the rebase onto
+        the new base — the only way back to recording a verdict;
+      * `ci` reset to its `ROW_DEFAULTS` and every `LIVENESS_COUNTERS` member with it: the required set just
+        became unknown, so the derived status must be re-derived rather than carried;
+      * `reviews_ok` and `review_rounds` PRESERVED. A retarget moves no content. Whether the PR's DIFF
+        changed is the head-move judgement (`loop-control.md`, step 3), which fires on the rebase this
+        retarget forces — resetting the tally here would discard verdicts on content nobody touched.
+
+    Refusals, none of which write anything:
+      * no row, or a TERMINAL row (`merged`/`aborted`) — a finished row is never retargeted — `fail` (exit 1);
+      * `--from` disagreeing with the row's `effective_base` — the caller's evidence was gathered for a
+        DIFFERENT pair, so it does not license this write — `fail` (exit 1);
+      * `--to` empty, `-`, or equal to the recorded base — that is not a retarget — `fail` (exit 1);
+      * `awaiting-api` or `repairing` — each held state has its OWN owner and exit; the retarget is
+        re-decided against the live base once the hold clears — `fail` (exit 1);
+      * `awaiting-user` on ANY OTHER question than this exact base change — a park is open and a retarget may
+        not answer it. `EXIT_STOP`, with the open `ci_reason` surfaced.
+
+    A row parked on THIS base change (`ci_reason` == `BASE_CHANGE_PARK_REASON` for the same recorded→live
+    pair) is RELEASED by the same write: `status` back to `LIVE_STATUS`, `ci_reason` and `blocker_ruling`
+    cleared. That release is the whole point of the transition. Every fail-closed consumer — `pr-adopt.py`'s
+    re-adoption gate, `merge.py`'s merge door — still parks the moment it sees a divergence it is not the
+    decider of; without the release, an explained retarget would strand the row on a question the user was
+    never meant to answer.
+    """
+    header, rows = load(path)
+    pr = str(args.pr)
+    row = find_row(rows, pr)
+    if row is None:
+        fail(f"no row for pr {pr}; use `add-row` to create it")
+    recorded, base_problem = require_effective_base(header, row, pr)
+    if base_problem is not None or recorded is None:
+        fail(str(base_problem))
+    new_base = args.to_base.strip()
+    if new_base in ("", "-"):
+        fail(f"retarget requires a --to NAMING the new base branch; {args.to_base!r} is not one")
+    if not base_agrees(args.from_base, recorded):
+        fail(f"--from {args.from_base!r} disagrees with pr {pr}'s recorded base {recorded!r} — a retarget is "
+             f"authorized by evidence gathered for the RECORDED base, so a stale --from writes nothing")
+    if new_base == recorded:
+        fail(f"pr {pr} already records base {recorded!r} — a same-base write is not a retarget")
+    status = row["status"]
+    if status in TERMINAL_STATUSES:
+        fail(f"pr {pr} is {status} — a terminal row is never retargeted; its base records what it merged into")
+    if status in HELD_STATUSES and status != "awaiting-user":
+        fail(f"pr {pr} is {status}, whose hold has its own owner ({held_reason(status)}) — the retarget is "
+             f"re-decided against the live base once that hold exits, never written underneath it")
+    if status == "awaiting-user":
+        expected = BASE_CHANGE_PARK_REASON.format(recorded=recorded, live=new_base)
+        if row["ci_reason"] != expected:
+            print(f"ledger: pr {pr} is awaiting-user on a DIFFERENT question, which a retarget may not "
+                  f"answer. Open blocker: {row['ci_reason']}", file=sys.stderr)
+            return EXIT_STOP
+
+    updates = {"base_branch": new_base, "required_set": ROW_DEFAULTS["required_set"],
+               "base_ok_sha": ROW_DEFAULTS["base_ok_sha"], "ci": ROW_DEFAULTS["ci"]}
+    for field in LIVENESS_COUNTERS:
+        updates[field] = ROW_DEFAULTS[field]   # from the defaults — NEVER a retyped literal
+    if status == "awaiting-user":
+        updates.update({"status": LIVE_STATUS, "ci_reason": ROW_DEFAULTS["ci_reason"],
+                        "blocker_ruling": ROW_DEFAULTS["blocker_ruling"]})
+    row.update(updates)
+    save(path, header, rows, activity=True)  # a retarget changes the base — a non-exempt field, so it is activity
     print(json.dumps(row))
     return 0
 
@@ -1918,7 +2023,8 @@ def build_parser() -> argparse.ArgumentParser:
             if not settable(name):
                 continue
             # A CREATE_ONLY field (row `base_branch`) gets a flag at `add-row` ONLY — no `set` flag, so
-            # `set --base-branch` is an "unrecognized arguments" refusal and the recorded base is immutable.
+            # `set --base-branch` is an "unrecognized arguments" refusal and no driver rewrites the recorded
+            # base. The one transition that does has its OWN door (`retarget`), not a flag here.
             if not creating and name in CREATE_ONLY:
                 continue
             # Canonical flag is dash-form (--reviews-ok); accept the underscore
@@ -1988,6 +2094,21 @@ def build_parser() -> argparse.ArgumentParser:
                                        "status=in_review, ruling spent, liveness counters reset — atomically")
     up.add_argument("--pr", required=True, help="PR number (row key)")
 
+    # The SECOND door to the CREATE_ONLY `base_branch` (CREATE_ONLY, `cmd_retarget`), and the only one a LIVE
+    # row is written through. `base-retarget.py` establishes the evidence and calls this; `set` still has no
+    # `--base-branch` flag, so no driver retargets a row it is merely driving.
+    rt = sub.add_parser("retarget", help="move a LIVE row onto a new base after an EXPLAINED retarget: "
+                                         "base_branch=--to, required_set/base_ok_sha/ci/liveness counters "
+                                         "reset, a park on THIS base change released — atomically. Called by "
+                                         "base-retarget.py on established evidence, never hand-run")
+    rt.add_argument("--pr", required=True, help="PR number (row key)")
+    rt.add_argument("--from", dest="from_base", required=True,
+                    help="the base the evidence was gathered for — asserted against the row's effective "
+                         "base; a disagreement writes nothing")
+    rt.add_argument("--to", dest="to_base", required=True,
+                    help="the PR's live baseRefName — the new recorded base. Empty, `-`, or the recorded "
+                         "base is refused")
+
     g = sub.add_parser("get", help="print the row for --pr as JSON, or one field")
     g.add_argument("--pr", required=True, help="PR number (row key)")
     g.add_argument("--field", help="print only this field")
@@ -2035,6 +2156,7 @@ def main(argv: list[str]) -> int:
         "base-ok": cmd_base_ok,
         "get": cmd_get, "list": cmd_list, "table": cmd_table,
         "dispatch-check": cmd_dispatch_check, "park": cmd_park, "unpark": cmd_unpark,
+        "retarget": cmd_retarget,
         "watchdog": cmd_watchdog,
     }
     return handlers[args.cmd](path, args)

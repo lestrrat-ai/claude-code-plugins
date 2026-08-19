@@ -198,7 +198,8 @@ A pre-launch cross-engine capability miss (the paired CLI is absent) has no proc
 consumes no retry and takes the fresh native fallback immediately.
 A `content-refusal` park is the ordinary `awaiting-user` machine-blocker class (`files-and-ledger.md`,
 `status`, `awaiting-user` class 2): campaign cannot move this PR without a human, so only the user's
-ruling resumes it. Missing native OS/startup controls alone never select `park-machine-blocker`; only
+ruling resumes THIS park (the one machine release in the skill answers a base change, and never reaches a
+`content-refusal` park — `loop-control.md` step 3, "Who unparks a PR"). Missing native OS/startup controls alone never select `park-machine-blocker`; only
 actual inability to complete the installed contract after the allocation journal reports no final review
 remains. This table owns the transition meaning; **Review allocation journal** owns allocation state.
 

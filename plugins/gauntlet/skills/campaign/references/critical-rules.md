@@ -241,8 +241,8 @@
   is **one of TWO `awaiting-user` classes**, each with its own durable answer record: the standoff is
   answered through `finding-audit.py rule-standoff`; a **machine blocker** (campaign cannot move the PR without a human) is
   answered into `blocker_ruling` = `retry`/`abort`. `files-and-ledger.md`, `status`, `awaiting-user`
-  class 2, **owns** the machine-blocker class; `loop-control.md` step 3, "Only the user's answer unparks a
-  PR", owns the unpark. **NEVER park into a state whose exit is undefined.**
+  class 2, **owns** the machine-blocker class; `loop-control.md` step 3, "Who unparks a PR", owns who may
+  unpark and the one machine release. **NEVER park into a state whose exit is undefined.**
 
 ### Held and parked PRs
 
@@ -264,9 +264,10 @@
   post-merge rebase would change the very content the user is adjudicating. The guard MUST be enforced
   at **every dispatch and mutation site** — `loop-control.md` step 3 (the canonical statement), the
   **merge** and the **post-merge reconcile** (`stage-3-merge.md`) — not merely recorded in the ledger.
-  Only the user's answer unparks it (`status` → `in_review`, recorded durably per park class; a declined
-  API change or a `blocker_ruling` of `abort` → `aborted`); a parked PR that fell behind its base stays
-  behind until then. **Held-PR watch action.** Observing a PR is not mutating it. Run
+  The user's answer unparks it (`status` → `in_review`, recorded durably per park class; a declined
+  API change or a `blocker_ruling` of `abort` → `aborted`), and the ONE machine release — an explained base
+  retarget — is defined with the rest at `loop-control.md` step 3, "Who unparks a PR"; a parked PR that fell
+  behind its base stays behind until then. **Held-PR watch action.** Observing a PR is not mutating it. Run
   `liveness`, then ensure or relaunch a watch only when returned `watch_warranted` is `true`
   (`stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE"). Parked status does not override that result. Do not
   dispatch a CI fix.
@@ -515,10 +516,12 @@
   `baseRefName` and **not assumed to be `main`**. One run may hold PRs on different bases; they need **NOT**
   agree. Resolve a PR's base through `effective_base` (its row value, else the legacy header fallback).
   Reviews diff `origin/<base>...HEAD` and each PR merges into its `<base>`; a fix worktree branches off the
-  PR's OWN head branch/SHA, never off `<base>` (see `pr-adoption.md`). That recorded row base is
-  **never retargeted** — the campaign never migrates a row to a new base; a live `baseRefName` retarget **PARKS the
-  row** (never rewrites `base_branch`), through the park procedure owned by `pr-adoption.md` (re-adoption
-  base gate) and `loop-control.md` (`base_changed` route). Re-resolve it each heartbeat (see "Base branch").
+  PR's OWN head branch/SHA, never off `<base>` (see `pr-adoption.md`). No driver rewrites that recorded row
+  base: a live `baseRefName` retarget is decided by `base-retarget.py`, which **MIGRATES** the row only when
+  GitHub's own retarget explains it (the recorded base's PR merged AND GitHub's timeline records that merge
+  moving THIS PR) and **PARKS** it otherwise, through the
+  procedure owned by `pr-adoption.md` (re-adoption base gate) and `loop-control.md` (`base_changed` route).
+  Re-resolve it each heartbeat (see "Base branch").
 - After every merge, let `merge.py run` fast-forward local `<base>` to `origin/<base>` (Stage 3,
   **"Resumable merge execution"**) so later diffs and rebases use the just-merged tip. If it fails,
   re-run the command after fixing the named cause — never force the base.

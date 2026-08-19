@@ -387,7 +387,8 @@ def _facts_for_present_row(row: dict, effective_base: str, entry: dict) -> dict:
     fallback, resolved by the caller through `ledger.py`'s `effective_base(header, row)`. A run may hold
     rows on different bases, so the comparison is per-row, never against the one header base. `base_changed`
     reports the row's RECORDED base as `ledger` and the live `baseRefName` as `snapshot`; loop-control.md
-    routes that fact to the machine-blocker park (an unsupported mid-run base change is not migrated)."""
+    routes that fact to `base-retarget.py`, which migrates the row when GitHub's own retarget explains the
+    move and parks it on the user otherwise. This tool decides neither — it only reports the difference."""
     facts: dict = {"absent_from_snapshot": False}
     # A detected difference is emitted ONLY when it differs — the key's PRESENCE is the fact.
     if entry["headRefOid"] != row["head_sha"]:
