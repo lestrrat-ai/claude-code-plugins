@@ -122,12 +122,12 @@ that one decided-repair path.
 #### Preconditions — clear Copilot items, CI, and conflicts before reviewing
 
 **Only launch a review pass once all three are clear for the current tip.** Clear Copilot items, CI,
-and conflicts before reviewing: a review pass is
+and conflicts before reviewing — a base that has merely advanced is **not** one of the three and blocks
+nothing (the base-currency bullet owns why). A review pass is
 expensive and is invalidated by any PR-content change, so never spend one on a PR whose current tip
 still has review-blocking issues. Before launching a pass on a **non-parked** PR, check three things
-and clear any that are dirty. Each fix changes PR content, so `reviews_ok` resets to 0 **and the status label is restored to
-`gauntlet-reviewing` in that same step** if the PR was `gauntlet-accepted` ("Status labels mirror the
-review gate"), and the review re-starts on the clean tip:
+and clear any that are dirty. Each fix changes PR content, so `reviews_ok` resets to 0 **and the status label is reconciled in that same
+step** ("Status labels mirror the review gate"), and the review re-starts on the clean tip:
 
 - **GitHub Copilot review items.** If the PR has any unresolved Copilot review comments, address them
   with the active host form of `gauntlet:copilot-address-reviews <pr>` before reviewing (that skill verifies each item against source
@@ -146,9 +146,13 @@ review gate"), and the review re-starts on the clean tip:
   scripts/base-preflight.py check --pr <pr> --worktree <worktree> --base <base> --file <state.jsonl>`. With
   `--file`, the ROW owns the base: `--base` is an **assertion** that must equal the row's effective base, and
   the helper also compares the PR's **live** `baseRefName` against it. It checks GitHub's merge states and
-  whether the fetched base is an ancestor of the PR worktree's `HEAD`. A `rebase-first` verdict covers
-  a conflict, GitHub reporting behind, or a CLEAN PR whose branch lacks the refreshed base — a base that
-  merely **ADVANCED** (same branch NAME, new commits). `recheck` covers an uncomputed GitHub value,
+  whether the fetched base is an ancestor of the PR worktree's `HEAD`. **`rebase-first` covers a CONFLICT and
+  nothing else** — GitHub reporting `CONFLICTING`, or `DIRTY`. A base that merely **ADVANCED** (same branch
+  NAME, new commits) is **NOT** a rebase-first: it reaches `proceed` carrying `base_current: no`, because the
+  rebase it calls for is owed before the **MERGE**, not before the review. Rebasing every behind PR the
+  moment a sibling merges is what made one N-PR run pay for N(N-1)/2 CI cycles, and each of those rebases is
+  undone by the next merge into the base; the ONE PR at the front of the drain rebases instead
+  (`stage-3-merge.md`, "Step 6"). `recheck` covers an uncomputed GitHub value,
   ancestry the helper cannot verify, **or a live retarget** — the PR now targets a different branch
   NAME, which the helper refuses with the same machine-blocker reason every base-change park records
   (`base changed from <recorded> to <live>; not supported mid-run`). The helper never decides why the base
@@ -161,7 +165,9 @@ review gate"), and the review re-starts on the clean tip:
   (`fix-subagent-contract.md`, PRE-FLIGHT). **Run it with `--file <state.jsonl>`:** on `proceed` it records
   `base_ok_sha` for the current head — the MECHANICAL precondition `ledger.py verdict` then enforces
   ("Recording a verdict", below), so a review verdict can never be recorded for a head with no fresh
-  `proceed`.
+  `proceed` — **and `base_current` in the same write.** That makes this a label-reconcile site: run
+  `label-mirror.py mirror` for the PR after the check, in the same step
+  ("`gauntlet-rebase-pending` — the SECOND label axis", below, owns the rule).
   Once it says `rebase-first`, **the CLEAN
   base-only case is EXECUTED — not hand-run — by `python3 scripts/clean-rebase.py run --ledger
   <state.jsonl> --pr <pr> --worktree <worktree> --base <base>`**: it does the fetch/rebase/`--force-with-lease`
@@ -961,7 +967,7 @@ Then, per verdict:
 
 1. **Void the tally and restore the label in the same step.** The SHA's tally is void (`ledger.py verdict
    … --verdict not-satisfied` does it) **and, in the same step, reconcile the label by running
-   `label-mirror.py mirror` for this PR** — it restores `gauntlet-reviewing` on a PR carrying
+   `label-mirror.py mirror` for this PR** — it restores the reviewing label on a PR carrying
    `gauntlet-accepted` ("Status labels mirror the review gate", below, owns the swap and the tool). This
    applies the moment the verdict lands, *before* any fix is written: a PR whose latest verdict says NOT
    SATISFIED must never still read `gauntlet-accepted` on GitHub.
@@ -1007,8 +1013,9 @@ Then, per verdict:
   `required==2` PR — the next heartbeat launches the next (corroborating) review on the same SHA. When the
   tally **reaches** `required(tier)` on the same SHA, the review gate is met for this HEAD — swap the
   PR's label by running `label-mirror.py mirror` for it ("Status labels mirror the review gate", below,
-  owns the swap; it applies `--add-label gauntlet-accepted --remove-label gauntlet-reviewing` from the
-  live gate).
+  owns the swap and every label name it moves). **A SATISFIED that leaves the tally SHORT still moves the
+  label** — the tally is spelled into the name, so `0/2` becomes `1/2` — so run the mirror on every landed
+  verdict, not only on the one that completes the gate.
 
 The audit contract — verdicts, reachability test, refutation handling, termination — is `finding-audit.md`; a reviewer's finding is a CLAIM, and no fix is dispatched for an unaudited finding.
 
@@ -1074,8 +1081,13 @@ one adversarial pass is proportionate.
 
 ### Status labels mirror the review gate — relabel is part of the reset, not a later chore
 
-A PR carries `gauntlet-reviewing` until its current HEAD holds `required(tier)` SATISFIED verdicts for
-the same live PR content, then `gauntlet-accepted`. The label is a **projection of `reviews_ok` AND
+A PR carries **`gauntlet-reviewing <reviews_ok>/<required(tier)>`** until its current HEAD holds
+`required(tier)` SATISFIED verdicts for
+the same live PR content, then `gauntlet-accepted`. The tally is spelled INTO the label name — a PR one
+verdict short of a STANDARD gate wears `gauntlet-reviewing 1/2`, a fresh one wears `gauntlet-reviewing 0/2`
+— so the one piece of run state a human reads on GitHub says how far along a PR is, not merely that it is
+not done. `_gauntlet/labels.py` OWNS the spelling and every tool computes it from there; no site retypes a
+label name. The label is a **projection of `reviews_ok` AND
 `required(tier)`**, so it is only ever as true as the moment it was last written — and because the tier
 is itself a per-heartbeat DECISION (`loop-control.md` re-triage runs the judgment for every PR every
 heartbeat), a tier change moves the projection. **A same-SHA tier change is NOT one event — it is two,
@@ -1099,26 +1111,29 @@ was cast, so it only satisfies tiers **at or below** that depth:
 projection — one that takes `reviews_ok` to `0` (or otherwise voids the tally, **which now includes a
 depth-raising tier escalation**), OR a **de-escalation** that lowers `required(tier)` on unchanged content
 (e.g. STANDARD→TRIVIAL flips `required` from 2 to 1) —
-MUST, in that same step, reconcile the label: restore `gauntlet-reviewing` on a PR that currently carries
-`gauntlet-accepted` when the tally no longer meets `required(tier)`
+MUST, in that same step, reconcile the label: restore the reviewing label for the standing tally on a PR
+that currently carries `gauntlet-accepted` when the tally no longer meets `required(tier)`
 — and, symmetrically, an action that brings `reviews_ok` up to `required(tier)` (a new verdict, or a
 de-escalation that LOWERS `required(tier)` to a tally already standing) swaps it to `gauntlet-accepted`.
+**A verdict that lands but does NOT complete the gate still moves the label** (`0/2` → `1/2`): the tally is
+in the name, so every change to the tally is a change to the label.
 
 **`label-mirror.py mirror` is THE way that swap is applied — never a hand-run `gh pr edit`.** It reads the
-PR's ledger row, computes the desired label from `reviews_ok` and `required(tier)` exactly as the gate
-does, and applies the canonical idempotent swap only if the label is not already right (a terminal row is
-skipped; a tier nobody set is refused). Run it in the same step as the reset, once per PR:
+PR's ledger row, computes the desired labels from it exactly as the gate
+does, creates any label it is about to add, and applies ONE idempotent edit — only if something actually
+needs to move (a terminal row is skipped; a tier nobody set is refused). It sweeps off every OTHER status
+label the PR wears, so a stale tally, a stale `gauntlet-accepted`, and the legacy bare
+`gauntlet-reviewing` all come off in the same call; it never touches `gauntlet-run-<id>` or
+`gauntlet-authored`. Run it in the same step as the reset, once per PR:
 
 ```
 python3 <skill-dir>/scripts/label-mirror.py mirror --ledger <state.jsonl> --pr <N> --repo owner/name
 ```
 
-The swap it applies — shown as the SPEC it implements, NOT a command to paste by hand (the tool picks the
-direction from the live gate; here is the reviewing-restoring one):
-
-```
-gh pr edit <pr> --remove-label gauntlet-accepted --add-label gauntlet-reviewing
-```
+Do **not** hand-write the `gh pr edit` it runs. The tool picks the direction from the live gate, spells the
+tally, creates the label first (`gh pr edit --add-label` fails outright on a label the repository does not
+have, and a tallied name is one no bootstrap list could have known to create), and removes only labels the
+PR actually carries. Every one of those is a step a hand-typed command gets wrong.
 
 Never write the ledger reset and defer the label to "the next heartbeat". A `gauntlet-accepted` label on a
 PR whose live content no longer holds `required(tier)` verdicts is a **false public claim that the PR
@@ -1136,11 +1151,11 @@ event that drops `reviews_ok` to 0, which now includes a **depth-raising tier es
 | Review-fix **or refutation** commit pushed (both are campaign commits to the PR head) | this file, verdict tally |
 | CI-fix commit pushed — economy tier **or** `session` tier | `stage-2-ci.md`, "Any campaign commit to the PR head resets the gate" |
 | Copilot-item fix pushed | Stage 2a preconditions, above |
-| Judgment-path rebase (conflict-resolving **or** diff-changed) — at **either** of the two sites that rebase a PR | **Stage 2a preconditions, above** (the pre-review rebase of a `CONFLICTING`/`DIRTY`/`BEHIND` PR) **and** `stage-3-merge.md`'s step-6 reconcile. Both `clean-rebase.py` exit-3 subcases reset the gate — a conflict AND a no-conflict rebase that changed the PR's own diff — so naming only the conflict one, or only one of the two sites, is how the relabel goes missing; the *event* owes the relabel, wherever it happens |
-| Re-adoption refresh detects changed content | `pr-adoption.md` step 3 (step 4 then sets the status label from the **live** gate — `gauntlet-reviewing` here, but `gauntlet-accepted` for a re-adoption whose content did **not** change and whose verdicts step 3 preserved; either way it removes the other label) |
+| Judgment-path rebase (conflict-resolving **or** diff-changed) — at **either** of the two sites that rebase a PR | **Stage 2a preconditions, above** (the pre-review rebase of a `CONFLICTING`/`DIRTY` PR) **and** `stage-3-merge.md`'s step-6 refresh. Both `clean-rebase.py` exit-3 subcases reset the gate — a conflict AND a no-conflict rebase that changed the PR's own diff — so naming only the conflict one, or only one of the two sites, is how the relabel goes missing; the *event* owes the relabel, wherever it happens |
+| Re-adoption refresh detects changed content | `pr-adoption.md` step 3 (step 4 then sets the status label from the **live** gate — the zero tally here, but `gauntlet-accepted` for a re-adoption whose content did **not** change and whose verdicts step 3 preserved; either way it sweeps off every other status label the PR wears) |
 | Any other PR-content change on the head branch — formatter/bot commit, manual push | **Loop control step 1's ledger refresh** — the heartbeat that *detects* it resets the gate, so it relabels there |
-| `default_non_goals` **broadening reset** — the operator clears banked credit before REMOVING a run default (the broadening guard refuses the header write while any non-terminal PR holds `reviews_ok > 0`) | **`files-and-ledger.md`, "default_non_goals"** — the operator runs `ledger.py set --pr <N> --reviews-ok 0` per credited PR to re-open it under the broadened scope. That is a `reviews_ok`→0 event on unchanged content (no head SHA moves), so each reset MUST, in the SAME step, run `label-mirror.py mirror` for that PR, restoring `gauntlet-reviewing` because the voided tally no longer meets `required(tier)` |
-| Tier DECISION is a **depth-raising escalation** (orchestrator re-triage raises the tier to a strictly deeper one — TRIVIAL→STANDARD, TRIVIAL→HIGH, STANDARD→HIGH — on unchanged content) | **`loop-control.md` re-triage step, the tier write** — this is a `reviews_ok`→0 event ("Status labels mirror the review gate" owns why): the same re-triage step writes the deeper tier and voids `reviews_ok` in ONE ledger write, requires a fresh tier-sized plan before the next dispatch, and runs `label-mirror.py mirror`, which restores `gauntlet-reviewing` because the voided tally no longer meets `required(tier)`. The adoption-time tier write (`pr-adoption.md`, "Adoption-time tier decision") is the SAME event: an UNCHANGED re-adoption PRESERVES `reviews_ok` (>= 1) (`pr-adopt.py` preserves it when the head did not move), so a depth-raising decision there must void that preserved tally too — it is NOT a case that can be skipped |
+| `default_non_goals` **broadening reset** — the operator clears banked credit before REMOVING a run default (the broadening guard refuses the header write while any non-terminal PR holds `reviews_ok > 0`) | **`files-and-ledger.md`, "default_non_goals"** — the operator runs `ledger.py set --pr <N> --reviews-ok 0` per credited PR to re-open it under the broadened scope. That is a `reviews_ok`→0 event on unchanged content (no head SHA moves), so each reset MUST, in the SAME step, run `label-mirror.py mirror` for that PR, restoring the reviewing label because the voided tally no longer meets `required(tier)` |
+| Tier DECISION is a **depth-raising escalation** (orchestrator re-triage raises the tier to a strictly deeper one — TRIVIAL→STANDARD, TRIVIAL→HIGH, STANDARD→HIGH — on unchanged content) | **`loop-control.md` re-triage step, the tier write** — this is a `reviews_ok`→0 event ("Status labels mirror the review gate" owns why): the same re-triage step writes the deeper tier and voids `reviews_ok` in ONE ledger write, requires a fresh tier-sized plan before the next dispatch, and runs `label-mirror.py mirror`, which restores the reviewing label because the voided tally no longer meets `required(tier)`. The adoption-time tier write (`pr-adoption.md`, "Adoption-time tier decision") is the SAME event: an UNCHANGED re-adoption PRESERVES `reviews_ok` (>= 1) (`pr-adopt.py` preserves it when the head did not move), so a depth-raising decision there must void that preserved tally too — it is NOT a case that can be skipped |
 | Tier DECISION is a **de-escalation** that lowers `required(tier)` (STANDARD→TRIVIAL, on unchanged content, so `reviews_ok` is untouched) | **`loop-control.md` re-triage step, the tier write** — the same step runs `label-mirror.py mirror`; the verdicts STAY (they were earned at a deeper depth), and the mirror swaps a standing tally to `gauntlet-accepted` when the lowered `required(tier)` is now met. The adoption-time tier write (`pr-adoption.md`, "Adoption-time tier decision") co-locates the SAME mirror; a FRESH adoption has `reviews_ok=0`, so it is a no-op there, but an UNCHANGED re-adoption whose preserved tally now meets the lowered `required` flips to `gauntlet-accepted` |
 
 **Every row names a place where the gate PROJECTION changes — `reviews_ok` written to 0, or
@@ -1168,3 +1183,27 @@ events, and this row is exactly where they part company.
 **Reconcile is the backstop, not the mechanism.** Loop control re-derives every label from the live
 gate each heartbeat so a missed swap self-heals, exactly as the CI-watch heartbeat backstops a missed watch.
 Relying on it as the primary path is the bug this rule exists to prevent.
+
+### `gauntlet-rebase-pending` — the SECOND label axis, and it is not the gate
+
+**A PR wears `gauntlet-rebase-pending` exactly while its row records `base_current = no`** — its head no
+longer contains its base, so a rebase is owed **before it merges**. The label answers the question a human
+asks when an accepted PR just sits there: it is waiting its turn in the serialized drain
+(`stage-3-merge.md`, "Step 6"), not stuck.
+
+**It is INDEPENDENT of the gate, and treating the two axes as one is the mistake to avoid.** An accepted PR
+that is behind its base wears **both** `gauntlet-accepted` and `gauntlet-rebase-pending`, and that pair is
+the NORMAL state of a PR queued behind another. `label-mirror.py mirror` moves both axes in the one call it
+already makes; there is no second command and no second trigger table.
+
+**Where the reading comes from:** `base-preflight.py check --file` records `base_current` on every
+`proceed`, from the Git ancestry probe it already runs (`files-and-ledger.md`, the `base_current` field).
+**So every `base-preflight.py check --file` is a label-reconcile site** — run `label-mirror.py mirror` for
+that PR after it, in the same step, exactly as a gate reset does. The sites that run the check are named by
+their own steps: the pre-review precondition (Stage 2a, above), `stage-3-merge.md`'s step-6 refresh, and
+`repair-pass.md`'s pre-repair check.
+
+**A rebase LANDING clears it by voiding the reading, not by writing `yes`.** A rebase moves `head_sha`, and
+that write voids both base-preflight readings to `-` at the door (`files-and-ledger.md`, "What a genuine
+head move resets"). `-` makes no claim, so the label comes off at the next mirror and stays off until a
+fresh probe says otherwise. Nothing hand-writes `base_current`; it has no `set` door.

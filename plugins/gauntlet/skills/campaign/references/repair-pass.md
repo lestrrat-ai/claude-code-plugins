@@ -231,6 +231,12 @@ repair rather than unholding the PR. An undecided `repairing` row, every legacy 
 row remain refused. A conflict or a diff-changing rebase remains outside this exception:
 `clean-rebase.py` exits 3 and never resolves it.
 
+**`rebase-first` now means a CONFLICT and nothing else**, so this exception fires only when the branch
+genuinely conflicts with its base. A repair whose PR is merely BEHIND its base gets `proceed` and is
+dispatched as it stands: the rebase it owes is taken at the merge, by the drain
+(`stage-3-merge.md`, "Step 6"). Run `label-mirror.py mirror` after the check either way — the check records
+`base_current` (`stage-2-review-gate.md`, "`gauntlet-rebase-pending` — the SECOND label axis").
+
 When the repair has landed, return the row to the gate (`ledger.py … set --pr <N> --status in_review`) and
 let the review gauntlet run again from the top. **`review_rounds` is not reset** — it never is. A PR that
 comes back to a cap has spent another repair.

@@ -105,8 +105,8 @@ rules keep their own wording; these are illustrations of them, not a second copy
      **This refresh is itself a gate-reset site — relabel here, in this step.** When it detects that a
      PR's live `head_sha` has moved with the PR diff changed (a formatter/bot commit, a manual push,
      any content change this run did not dispatch), it resets `reviews_ok` to 0 — and MUST, in the same
-     step, reconcile the label by running `label-mirror.py mirror` for that PR, which restores
-     `gauntlet-reviewing` on a PR carrying `gauntlet-accepted`
+     step, reconcile the label by running `label-mirror.py mirror` for that PR, which restores the
+     reviewing label on a PR carrying `gauntlet-accepted`
      (`stage-2-review-gate.md`, "Status labels mirror the review gate", owns the swap and the tool).
      Do NOT defer this to the label-reconcile pass below — that pass is only the **backstop** ("This
      reconcile is a backstop, not the mechanism", below). (A clean base-only advance with the PR
@@ -250,38 +250,30 @@ rules keep their own wording; these are illustrations of them, not a second copy
    prompt (run `gauntlet:review`, or pass PR numbers), exactly like a bare no-arg first run, and mints
    no run-id/`<rundir>`/lease.
 
-   **Reconcile labels too** (idempotent, retroactive, **scoped to this run**). Ensure the labels exist
-   (`gh label create … --force`, including this run's `gauntlet-run-<run-id>`), then for every PR **of
-   this run** (its `gauntlet-run-<run-id>` label — the only ownership marker for adopted PRs): ensure
-   it carries `gauntlet-run-<run-id>`, and **reconcile its status label by running `label-mirror.py
-   mirror` for it** — the tool overwrites the status label to match the PR's **live** gate state. (The
+   **Reconcile labels too** (idempotent, retroactive, **scoped to this run**). Ensure this run's
+   `gauntlet-run-<run-id>` label exists (`gh label create … --force`), then for every PR **of
+   this run** (that label — the only ownership marker for adopted PRs): ensure
+   it carries `gauntlet-run-<run-id>`, and **reconcile its status labels by running `label-mirror.py
+   mirror` for it** — the tool overwrites them to match the PR's **live** row state. (The
    `gauntlet-run-<run-id>` ownership label is adoption's, and the tool never touches it — ensure it
-   separately, as above.) **Never touch another run's PRs.**
+   separately, as above. The status labels themselves need no bootstrap: the tool creates each one it is
+   about to add.) **Never touch another run's PRs.**
 
-   **The tool applies one status label AND removes the other — never merely add.** The two status labels
-   are mutually exclusive, so a purely additive reconcile cannot repair the one state it most needs to: a
-   PR wearing **both** labels (what a missed swap at a reset site actually produces) would keep the
-   contradictory label forever, because adding a label it already carries changes nothing. The swap it
-   applies — shown as the SPEC it implements, one call per PR, direction picked from the live gate, NOT a
-   command to paste by hand:
-
-   ```
-   # current HEAD holds required(tier) SATISFIED verdicts:
-   gh pr edit <pr> --add-label gauntlet-accepted  --remove-label gauntlet-reviewing
-   # otherwise:
-   gh pr edit <pr> --add-label gauntlet-reviewing --remove-label gauntlet-accepted
-   ```
-
-   Both forms are idempotent (`--add-label` of a label already present and `--remove-label` of one that
-   is absent are both no-ops), so this converges from **any** starting state — neither label, one label,
-   the wrong label, or both.
+   **The tool ADDS what the row says and REMOVES every other status label — never merely add.** A purely
+   additive reconcile cannot repair the one state it most needs to: a
+   PR wearing a stale tally **and** a current one (what a missed swap at a reset site actually produces)
+   would keep the contradictory label forever, because adding a label it already carries changes nothing.
+   `stage-2-review-gate.md`, "Status labels mirror the review gate", owns the labels, their spelling, and
+   both axes; do not restate the `gh pr edit` here, and do not hand-run one.
 
    This reconcile is a **backstop, not the mechanism**. The relabel is owed at the moment the gate
    projection changes, in the same step that writes `reviews_ok = 0` (which includes a depth-raising tier
    escalation) or decides a de-escalation that lowers `required(tier)`
-   (`stage-2-review-gate.md`, "Status labels mirror the review gate", owns the two-direction split); this pass only
+   (`stage-2-review-gate.md`, "Status labels mirror the review gate", owns the two-direction split), and
+   the base-currency label is owed at the moment `base-preflight.py check --file` records a fresh reading
+   (same file, "`gauntlet-rebase-pending` — the SECOND label axis"); this pass only
    *self-heals* a swap that was somehow missed. A PR that
-   reaches this point wearing a stale `gauntlet-accepted` — or both labels at once — means some reset
+   reaches this point wearing a stale `gauntlet-accepted` — or two gate labels at once — means some reset
    site skipped its relabel: fix the label here, and treat it as a bug in that site, not as normal
    operation.
 
@@ -384,7 +376,8 @@ rules keep their own wording; these are illustrations of them, not a second copy
    it already did: this guard once listed four (review, CI fix, review fix, merge) and missed
    `stage-3-merge.md` step 6, whose post-merge rebase of PRs that fell behind would have moved a held
    PR's `head_sha`, reset its gate, and **changed the very PR content the user was parked to
-   adjudicate**. Any site the skill grows later is covered the moment it would mutate a held PR, with
+   adjudicate**. (Step 6a no longer rebases those PRs at all, which removes that particular reach — but
+   the guard is the property, not the list, and step 6b still rebases the PR at the front of the drain.) Any site the skill grows later is covered the moment it would mutate a held PR, with
    no edit to this list. When unsure whether an action mutates, treat it as mutating and skip it.
    - **The sole mutating exception is a non-legacy recorded repair's required clean base-only rebase.** It
      applies only to `repairing` after `dispatch-check --action repair` succeeds; `repair-pass.md`, **A
@@ -518,9 +511,10 @@ rules keep their own wording; these are illustrations of them, not a second copy
        `required(tier)` moves.
      **Then, in that SAME step, run `label-mirror.py mirror` for that PR** — idempotent, a no-op when the
      label already matches — so the tier, `required(tier)`, and the public status label move together: it
-     restores `gauntlet-reviewing` on a depth-raising escalation (the voided tally no longer meets
+     restores the reviewing label on a depth-raising escalation (the voided tally no longer meets
      `required`) and swaps a standing tally to `gauntlet-accepted` on a de-escalation that now meets the
-     lowered `required` (`stage-2-review-gate.md`, "Status labels mirror the review gate", owns the swap and
+     lowered `required` — and it moves on ANY tier change, because the tally is spelled into the label name
+     and `required(tier)` is half of it (`stage-2-review-gate.md`, "Status labels mirror the review gate", owns the swap and
      the tool). On refusal,
      refresh the moving or mismatched input and retry; never carry a tier across content the command did
      not classify.
@@ -556,7 +550,9 @@ rules keep their own wording; these are illustrations of them, not a second copy
      `base-preflight.py check --pr <N> --worktree <worktree> --base <base> --file <state.jsonl>`; only
      `proceed` clears the review launch, and — because a verdict follows — the `--file` is REQUIRED: on
      `proceed` it records `base_ok_sha` for the head, without which `ledger.py verdict` refuses the verdict
-     it later records (Stage 2a, "Recording a verdict"). Rebase on `rebase-first`, re-poll on `recheck`, or
+     it later records (Stage 2a, "Recording a verdict") **and `base_current`, so run `label-mirror.py
+     mirror` for the PR after the check**. Rebase on `rebase-first` — a CONFLICT, the only verdict that
+     still asks for one — re-poll on `recheck`, or
      leave the ledger-held candidate alone on `park` per Stage 2a, then restart this precondition sequence.
      With `proceed`, pass the freshly read ledger-row `head_sha` to `review-dispatch.py prepare`. Its
      `--file` head assertion refuses before writing an allocation or reviewer artifact if the PR moved;
@@ -571,7 +567,8 @@ rules keep their own wording; these are illustrations of them, not a second copy
      review pass as a **background**
      task (one at a time per PR — the second, when the tier requires two, only after the first is
      SATISFIED; Stage 2a). If a precondition is dirty, clear it first (address Copilot items / fix CI /
-     rebase) instead of spending a review;
+     resolve a conflict) instead of spending a review. A base that merely ADVANCED is not a dirty
+     precondition and blocks nothing here (Stage 2a, Preconditions);
    - a review pass is in flight but the **active attempt's** progress file holds **no launch evidence**
      — no reviewer-written line of ANY kind after `pass_identity` (a `progress` `started`/`done` event
      *or* a `plan_amendment_request` all count) — past its **~5-min launch deadline** (measured from

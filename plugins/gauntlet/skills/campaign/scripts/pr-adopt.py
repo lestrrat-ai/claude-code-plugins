@@ -43,6 +43,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from _gauntlet import labels
 from _gauntlet.atomic import replace_text
 from _gauntlet.modules import load_sibling
 from _gauntlet.repository import repo_problem
@@ -54,17 +55,16 @@ _HERE = Path(__file__).resolve().parent
 SIBLING = _HERE / "pr-adopt-test.py"
 LEDGER_PY = _HERE / "ledger.py"
 
-# The run owner label's prefix and the two MUTUALLY EXCLUSIVE status labels. The owner label's colour
-# matches the one pr-adoption.md's `gh label create` uses, so an idempotent `--force` create never churns
-# it. A PR carries exactly ONE status label, mirroring the live review gate (pr-adoption.md, step 4).
-RUN_LABEL_PREFIX = "gauntlet-run-"
-REVIEWING_LABEL = "gauntlet-reviewing"
-ACCEPTED_LABEL = "gauntlet-accepted"
-RUN_LABEL_COLOR = "5319E7"
+# The label vocabulary is `_gauntlet/labels.py`'s — imported, never re-spelled. These names survive as the
+# spellings this module and its fixtures use; each one IS the shared owner's value, not a copy of it. A PR
+# carries exactly ONE gate label, mirroring the live review gate (pr-adoption.md, step 4), and its NAME
+# carries the tally, so adoption computes it from the row rather than naming a fixed label.
+RUN_LABEL_PREFIX = labels.RUN_PREFIX
+RUN_LABEL_COLOR = labels.RUN_COLOR
 
 # The label that marks a PR as authored by this pipeline (gauntlet:review's handoff applies it to every PR
 # it opens). It is the ONLY thing that makes `pr_origin` = `gauntlet`; a driver cannot assert it by flag.
-GAUNTLET_AUTHORED_LABEL = "gauntlet-authored"
+GAUNTLET_AUTHORED_LABEL = labels.AUTHORED
 
 BASE_RETARGET_PY = _HERE / "base-retarget.py"   # the ONE decider of what a live base divergence means
 
@@ -198,7 +198,11 @@ def build_plan(view: dict, *, run_id: str, tier: str, worktrees_root: str) -> di
     return {
         "verdict": "adopt",
         "row": row,
-        "labels_add": [ours, REVIEWING_LABEL],
+        # A fresh adoption has NO verdicts yet, so its gate label is the zero tally for this tier — a name
+        # the shared vocabulary computes (`labels.gate_label`), never a fixed `gauntlet-reviewing` that
+        # would be wrong the moment the tally is spelled into it. The executor recomputes the label from the
+        # LIVE row at step 6, because a re-adoption may preserve verdicts this plan knows nothing about.
+        "labels_add": [ours, labels.gate_label(0, RP.required_reviews(tier))],
         "branch": branch,
         "worktree": str(Path(worktrees_root) / branch),
         "base": view["baseRefName"],
@@ -556,18 +560,33 @@ def cmd_adopt(args) -> int:
     if proc.returncode != 0:
         return _refuse(f"ledger set of worktree fields for PR {pr} failed: {proc.stderr.strip()}")
 
-    # 6. Label it ours and set the ONE status label from the LIVE gate. The two status labels are mutually
-    # exclusive, so whichever we apply, we remove the other IN THE SAME CALL. `gauntlet-accepted` only when
-    # the (preserved-or-reset) gate is met at THIS head — reviews_ok >= required(tier); otherwise it is
-    # under review. A fresh adoption and a head change both reset reviews_ok to 0, so they read as reviewing.
+    # 6. Label it ours and set the status labels from the LIVE row. `gauntlet-accepted` only when the
+    # (preserved-or-reset) gate is met at THIS head — reviews_ok >= required(tier); otherwise the tallied
+    # reviewing name for what stands. A fresh adoption and a head change both reset reviews_ok to 0, so they
+    # read as `0/<required>`. Whatever the gate says, every OTHER status label the PR wears comes off in the
+    # SAME call: a stale tally, a stale `gauntlet-accepted`, or the legacy bare `gauntlet-reviewing` from a
+    # run that predates the tally. The sweep is `labels.reconcile`'s to compute, so it can never take off the
+    # run-owner label it is being handed alongside.
     final = L.find_row(L.load(Path(args.file))[1], pr) or {}
     reviews_ok = int(final.get("reviews_ok", "0") or "0")
     tier_now = final.get("tier", str(row["tier"]))
-    gate_met = reviews_ok >= RP.required_reviews(tier_now)
-    status_label = ACCEPTED_LABEL if gate_met else REVIEWING_LABEL
-    other_label = REVIEWING_LABEL if gate_met else ACCEPTED_LABEL
-    edit_argv = ["gh", "pr", "edit", pr, "--add-label", run_label,
-                 "--add-label", status_label, "--remove-label", other_label]
+    desired = labels.desired_labels(reviews_ok, RP.required_reviews(tier_now),
+                                    rebase_pending=final.get("base_current") == "no")
+    current = [n.get("name") for n in (view.get("labels") or []) if isinstance(n, dict)]
+    to_add, to_remove = labels.reconcile([n for n in current if isinstance(n, str)], desired)
+    # CREATE BEFORE ADD: `gh pr edit --add-label` fails outright on a label the repository does not have, and
+    # a tallied name is one no bootstrap list could have known to create in advance.
+    for name in to_add:
+        create_argv = labels.create_argv(name, args.repo)
+        proc = _run(create_argv, cwd=gh_cwd)
+        if proc.returncode != 0:
+            return _refuse(f"`gh label create {name}` for PR {pr} failed: {proc.stderr.strip()} "
+                           f"(the ledger row and worktree for PR {pr} were already written)")
+    edit_argv = ["gh", "pr", "edit", pr, "--add-label", run_label]
+    for name in to_add:
+        edit_argv += ["--add-label", name]
+    for name in to_remove:
+        edit_argv += ["--remove-label", name]
     if args.repo:
         edit_argv += ["--repo", args.repo]
     proc = _run(edit_argv, cwd=gh_cwd)
@@ -593,8 +612,8 @@ def cmd_adopt(args) -> int:
         "row_written": True,
         "worktree": worktree,
         "worktree_owned": worktree_owned,
-        "labels_added": [run_label, status_label],
-        "label_removed": other_label,
+        "labels_added": [run_label, *to_add],
+        "labels_removed": to_remove,
         "intent_sync": intent_sync,
     }))
     return 0

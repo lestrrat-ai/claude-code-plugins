@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
-"""Reconcile a PR's STATUS LABEL with its review gate — the ONE way the label swap is done.
+"""Reconcile a PR's STATUS LABELS with its ledger row — the ONE way the label swap is done.
 
 THE RULE THIS ENCODES: the gate and its label move together (`stage-2-review-gate.md`, "Status labels
 mirror the review gate"). A PR whose tip holds `required(tier)` SATISFIED verdicts wears
-`gauntlet-accepted`; otherwise it wears `gauntlet-reviewing`. The label is a PROJECTION of `reviews_ok`,
+`gauntlet-accepted`; otherwise it wears `gauntlet-reviewing <ok>/<required>`, which says how far along it
+is rather than merely that it is not done. The label is a PROJECTION of `reviews_ok`,
 and it is the one piece of run state a human reads on GitHub — a stale `gauntlet-accepted` is a false
 PUBLIC claim that a PR passed a gauntlet it did not.
+
+A SECOND, INDEPENDENT AXIS rides the same reconcile: `gauntlet-rebase-pending`, projected from the row's
+`base_current` reading. It says the PR is behind its base and will be rebased when it reaches the front of
+the serialized drain (`stage-3-merge.md`, "Step 6"). It is INDEPENDENT of the gate — an accepted PR waiting
+its turn wears both labels, and that pair is the normal state, not a contradiction. The vocabulary and the
+two axes belong to `_gauntlet/labels.py`; this tool holds no second copy of either.
 
 WHY THIS IS A COMMAND AND NOT A `gh pr edit` A DRIVER TYPES BY HAND. The swap was a two-command idiom the
 orchestrator ran at every gate-reset site — the verdict tally, a CI/review fix push, a content-changing
@@ -17,11 +24,17 @@ swap — so no driver hand-runs it and no driver runs it wrong.
     label-mirror.py mirror --ledger <state.jsonl> --pr <N> --repo owner/name [--dry-run]
     label-mirror.py self-test   run every fixture (label-mirror-test.py)
 
-It touches EXACTLY the two status labels and nothing else. A run's ownership label (`gauntlet-run-<id>`)
-is adoption's business (`pr-adoption.md`) and is NEVER added or removed here. A terminal row
+It touches EXACTLY the labels `labels.is_status_label` claims and nothing else. A run's ownership label
+(`gauntlet-run-<id>`) is adoption's business (`pr-adoption.md`), `gauntlet-authored` is the review
+handoff's, and NEITHER is ever added or removed here. A terminal row
 (`merged`/`aborted`) is DONE: the tool skips it and makes no GitHub call at all. It FAILS CLOSED — a row
 that is missing, or whose `tier` nobody set, is refused loudly (exit 2), never defaulted; a `gh` call that
 fails or returns output it cannot parse is exit 1 with the stderr shown, never a guess.
+
+EVERY LABEL IT ADDS IS CREATED FIRST (`gh label create … --force`, idempotent). A tallied name is COMPUTED
+from `required(tier)`, so which reviewing labels a repository needs depends on how its PRs get triaged; a
+bootstrap list typed into a doc would go stale the first time that changed, and `gh pr edit --add-label`
+fails outright on a label the repository does not have.
 
 `required(tier)` is REUSED from `nudge.py`, never retyped — the same helper `merge-check.py` borrows. This
 tool holds no second opinion about how many verdicts a tier needs.
@@ -40,6 +53,7 @@ import sys
 from pathlib import Path
 from typing import Callable, NoReturn
 
+from _gauntlet import labels
 from _gauntlet.modules import load_sibling
 from _gauntlet.repository import repo_problem
 from _gauntlet.testing import run_sibling_suite
@@ -57,9 +71,11 @@ L = load_sibling("label_mirror_ledger", _HERE, "ledger.py")
 _N = load_sibling("label_mirror_nudge", _HERE, "nudge.py")
 REQUIRED = _N.required
 
-# --- the two labels, and NOTHING ELSE is ever added or removed ------------------------------------
-ACCEPTED = "gauntlet-accepted"
-REVIEWING = "gauntlet-reviewing"
+# The label VOCABULARY and both axes live in `_gauntlet/labels.py` — imported above, never re-spelled here.
+# The reading that drives the second axis: a row records `yes`/`no`/`-`, and ONLY an explicit `no` claims the
+# PR is behind. `-` (nothing has probed this head yet) and `yes` both mean no rebase is known to be owed, so
+# a row nobody has measured wears no rebase label rather than a guessed one.
+BEHIND_BASE = "no"
 
 # TERMINAL — a DONE row is skipped, no GitHub call at all. `merged`/`aborted` are the two terminal
 # statuses (the ledger `status` field, `files-and-ledger.md`, owns the vocabulary).
@@ -103,15 +119,14 @@ def parse_reviews_ok(row: dict) -> int:
     return int(value)
 
 
-def desired_and_other(tier: str, reviews_ok: int) -> "tuple[str, str]":
-    """(desired label, the OTHER label) for a row whose `tier` is already known-valid. PURE.
+def desired_labels(tier: str, reviews_ok: int, base_current: str) -> list[str]:
+    """Every status label a row should wear, for a row whose `tier` is already known-valid. PURE.
 
-    `gauntlet-accepted` iff the tally meets `required(tier)`, else `gauntlet-reviewing`. The count is
-    `required(tier)`'s to own; this only compares against it.
+    The gate axis is `labels.gate_label`'s to name and `required(tier)`'s to size; the base-currency axis is
+    an explicit `no` reading and nothing else. This function only supplies the row's values to them.
     """
-    if reviews_ok >= REQUIRED(tier):
-        return ACCEPTED, REVIEWING
-    return REVIEWING, ACCEPTED
+    return labels.desired_labels(reviews_ok, REQUIRED(tier),
+                                 rebase_pending=base_current == BEHIND_BASE)
 
 
 def current_labels(run: Runner, pr: str, repo: str) -> list[str]:
@@ -145,21 +160,27 @@ def current_labels(run: Runner, pr: str, repo: str) -> list[str]:
 
 
 def apply_swap(run: Runner, argv: list[str], pr: str) -> None:
-    """Run the canonical idempotent swap. A spawn failure or non-zero exit raises `LabelError` — exit 1."""
+    """Run one prepared `gh` argv. A spawn failure or non-zero exit raises `LabelError` — exit 1.
+
+    Used for BOTH the `gh label create` calls and the single `gh pr edit`, because the failure handling is
+    identical: a create that did not land makes the add that follows it fail anyway, so there is nothing to
+    gain by continuing past either.
+    """
     try:
         proc = run(argv)
     except OSError as exc:
-        raise LabelError(f"could not run `gh pr edit {pr}`: {exc}") from exc
+        raise LabelError(f"could not run `{' '.join(argv[:3])}` for {pr}: {exc}") from exc
     if proc.returncode != 0:
-        raise LabelError(f"`gh pr edit {pr}` exited {proc.returncode}: {proc.stderr.strip()}")
+        raise LabelError(f"`{' '.join(argv[:3])}` for {pr} exited {proc.returncode}: {proc.stderr.strip()}")
 
 
 def mirror(ledger_path: Path, pr: str, repo: str, *, dry_run: bool = False,
            run: Runner = _real_run) -> int:
-    """Reconcile ONE PR's status label with its gate. Print one JSON object; return the exit code.
+    """Reconcile ONE PR's status labels with its row. Print one JSON object; return the exit code.
 
     Order: no row -> refuse (2); a terminal row -> skip, no GitHub call; a tier nobody set -> refuse (2);
-    then read the live labels and apply the idempotent swap only if the label is not already right.
+    then read the live labels, create any label about to be added, and apply ONE `gh pr edit` — only if
+    something actually needs to move.
     """
     _header, rows = L.load(ledger_path)
     pr = str(pr)
@@ -180,8 +201,7 @@ def mirror(ledger_path: Path, pr: str, repo: str, *, dry_run: bool = False,
 
     reviews_ok = parse_reviews_ok(row)
     required = REQUIRED(tier)
-    desired, other = desired_and_other(tier, reviews_ok)
-    argv = ["gh", "pr", "edit", pr, "--repo", repo, "--add-label", desired, "--remove-label", other]
+    desired = desired_labels(tier, reviews_ok, row["base_current"])
 
     try:
         current = current_labels(run, pr, repo)
@@ -189,18 +209,27 @@ def mirror(ledger_path: Path, pr: str, repo: str, *, dry_run: bool = False,
         print(f"label-mirror: {exc}", file=sys.stderr)
         return 1
 
-    # Already right: the desired label is present AND the other absent. Anything else needs the swap —
-    # desired missing, the other lingering, or both labels at once (what a missed swap actually leaves).
-    changed = not (desired in current and other not in current)
+    # What must MOVE, from the live labels alone. A label already right is never re-added, and a label this
+    # tool does not own is never removed — including the run-owner label and a stale tally's neighbours on a
+    # PR two runs have touched.
+    to_add, to_remove = labels.reconcile(current, desired)
+    changed = bool(to_add or to_remove)
+    edit = labels.edit_argv(pr, to_add, to_remove, repo)
+    creates = [labels.create_argv(name, repo) for name in to_add]
 
     out: dict = {"pr": pr, "tier": tier, "reviews_ok": reviews_ok, "required": required,
                  "desired": desired, "current": current, "changed": changed}
     if changed or dry_run:
-        out["argv"] = argv
+        out["argv"] = edit
+        out["create_argv"] = creates
 
     if changed and not dry_run:
         try:
-            apply_swap(run, argv, pr)
+            # CREATE BEFORE ADD, every time: `gh pr edit --add-label` fails outright on a label the
+            # repository does not have, and a tallied name is one no bootstrap could have listed in advance.
+            for create in creates:
+                apply_swap(run, create, pr)
+            apply_swap(run, edit, pr)
         except LabelError as exc:
             print(f"label-mirror: {exc}", file=sys.stderr)
             return 1

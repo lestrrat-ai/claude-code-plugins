@@ -1626,47 +1626,73 @@ def t_verdict_refused_without_base_ok(L: ModuleType, tmp: Path) -> None:
 
 
 def t_head_move_voids_base_ok(L: ModuleType, tmp: Path) -> None:
-    """A genuine head MOVE through `set --head-sha` voids `base_ok_sha` to `-`; a SAME-VALUE write leaves it.
+    """A genuine head MOVE through `set --head-sha` voids BOTH `PREFLIGHT_OWNED` readings to `-`; a
+    SAME-VALUE write leaves them.
 
     A new head is UNVERIFIED until a fresh proceed — so the verdict allowed on the old head is now refused, and
-    only re-running base-preflight (here, `base-ok`) on the new head clears it again. THE MUTATION PIN: delete
-    the `base_ok_sha` reset in `apply_head_sha` and the first block goes red.
+    only re-running base-preflight (here, `base-ok`) on the new head clears it again. `base_current` rides the
+    same reset for the same reason: a rebase IS a head move, so the `no` recorded for the old head is exactly
+    the answer that has just stopped being true. THE MUTATION PIN: delete either reset in `apply_head_sha` and
+    the first block goes red.
     """
     path = write_lines(tmp / "void.jsonl", header_line(L),
-                       row_line(L, pr="1", head_sha=SHA_A, base_ok_sha=SHA_A))
+                       row_line(L, pr="1", head_sha=SHA_A, base_ok_sha=SHA_A, base_current="no"))
     code, out, err = cli(L, ["--file", str(path), "set", "--pr", "1", "--head-sha", SHA_B])
     check(code == 0, f"set exited {code}: {err!r}")
     check(json.loads(out)["base_ok_sha"] == L.ROW_DEFAULTS["base_ok_sha"],
           f"a head MOVE left base_ok_sha standing: {json.loads(out)['base_ok_sha']!r} — the proceed for the "
           f"old head must not authorize the new content")
+    check(json.loads(out)["base_current"] == L.ROW_DEFAULTS["base_current"],
+          f"a head MOVE left base_current standing: {json.loads(out)['base_current']!r} — an ancestry answer "
+          f"about the old head must not label the new one")
     code, _, err = cli(L, ["--file", str(path), "verdict", "--pr", "1", "--head-sha", SHA_B, "--verdict", "satisfied"])
     check(code == 1, "a verdict landed on a moved head whose proceed was voided")
 
-    # …and a SAME-VALUE head write is not a move: a stamp for that head is left standing.
-    cli(L, ["--file", str(path), "base-ok", "--pr", "1", "--head-sha", SHA_B])
+    # …and a SAME-VALUE head write is not a move: the readings for that head are left standing.
+    cli(L, ["--file", str(path), "base-ok", "--pr", "1", "--head-sha", SHA_B, "--base-current", "no"])
     code, out, _ = cli(L, ["--file", str(path), "set", "--pr", "1", "--head-sha", SHA_B])
     check(json.loads(out)["base_ok_sha"] == SHA_B,
           f"a SAME-VALUE head write voided a stamp it must not touch: {json.loads(out)['base_ok_sha']!r}")
+    check(json.loads(out)["base_current"] == "no",
+          f"a SAME-VALUE head write voided a reading it must not touch: {json.loads(out)['base_current']!r}")
 
 
 def t_base_ok_writes_and_refuses(L: ModuleType, tmp: Path) -> None:
-    """`base-ok` records `base_ok_sha` for the row's CURRENT head, and REFUSES a non-40-hex value, a head
-    mismatch, or a missing row — writing NOTHING on any refusal."""
+    """`base-ok` records BOTH readings for the row's CURRENT head, and REFUSES a non-40-hex value, a head
+    mismatch, a missing row, or an ancestry answer outside the closed vocabulary — writing NOTHING on any
+    refusal."""
     path = write_lines(tmp / "bok.jsonl", header_line(L), row_line(L, pr="1", head_sha=SHA_A))
-    code, out, err = cli(L, ["--file", str(path), "base-ok", "--pr", "1", "--head-sha", SHA_A])
+    code, out, err = cli(L, ["--file", str(path), "base-ok", "--pr", "1", "--head-sha", SHA_A, "--base-current", "yes"])
     check(code == 0, f"base-ok on the current head exited {code}: {err!r}")
     check(json.loads(out)["base_ok_sha"] == SHA_A, f"base-ok did not stamp base_ok_sha: {out!r}")
+    check(json.loads(out)["base_current"] == "yes", f"base-ok did not record base_current: {out!r}")
+
+    # A `no` reading lands the same way — the field carries the probe's answer, not a fixed value.
+    code, out, err = cli(L, ["--file", str(path), "base-ok", "--pr", "1", "--head-sha", SHA_A, "--base-current", "no"])
+    check(code == 0 and json.loads(out)["base_current"] == "no",
+          f"base-ok did not record a `no` ancestry reading: {out!r} (exit {code}, {err!r})")
+
+    # `--base-current` is REQUIRED and its vocabulary is CLOSED. `-` is the row's "no reading" spelling and
+    # is refused here: a check that reached `proceed` always saw one answer or the other.
+    code, _, err = cli(L, ["--file", str(path), "base-ok", "--pr", "1", "--head-sha", SHA_A])
+    check(code == 2, f"base-ok with no --base-current was accepted (exit {code}) — the reading is required")
+    for bad in ("-", "maybe", "YES"):
+        code, _, err = cli(L, ["--file", str(path), "base-ok", "--pr", "1", "--head-sha", SHA_A,
+                               "--base-current", bad])
+        check(code == 2, f"base-ok --base-current {bad!r} was accepted (exit {code})")
+    code, out, _ = cli(L, ["--file", str(path), "get", "--pr", "1", "--field", "base_current"])
+    check(out == "no\n", f"a refused base-ok changed base_current: {out!r}")
 
     for bad in (SHA_A[:7], "g" * 40, SHA_A.upper()):
-        code, _, err = cli(L, ["--file", str(path), "base-ok", "--pr", "1", "--head-sha", bad])
+        code, _, err = cli(L, ["--file", str(path), "base-ok", "--pr", "1", "--head-sha", bad, "--base-current", "yes"])
         check(code == 1, f"base-ok --head-sha {bad!r} was accepted (exit {code})")
         check("40 LOWERCASE hex" in err, f"[{bad!r}] refused for the wrong reason: {err!r}")
 
-    code, _, err = cli(L, ["--file", str(path), "base-ok", "--pr", "1", "--head-sha", SHA_B])
+    code, _, err = cli(L, ["--file", str(path), "base-ok", "--pr", "1", "--head-sha", SHA_B, "--base-current", "yes"])
     check(code == 1, "base-ok stamped a head that is not the row's current one")
     check("does not match" in err, f"refused for the wrong reason: {err!r}")
 
-    code, _, err = cli(L, ["--file", str(path), "base-ok", "--pr", "9", "--head-sha", SHA_A])
+    code, _, err = cli(L, ["--file", str(path), "base-ok", "--pr", "9", "--head-sha", SHA_A, "--base-current", "yes"])
     check(code == 1, "base-ok wrote a stamp for a PR with no row")
     check("no row for pr 9" in err, f"refused for the wrong reason: {err!r}")
 
@@ -1682,19 +1708,25 @@ def t_base_ok_sha_has_no_set_door(L: ModuleType, tmp: Path) -> None:
     `--base-ok-sha` flag: argparse refuses it, and only `base-ok` writes the field."""
     check("base_ok_sha" in L.PREFLIGHT_OWNED, "base_ok_sha must be in PREFLIGHT_OWNED, or a set door can forge it")
     check(not L.settable("base_ok_sha"), "settable() must refuse base_ok_sha — PREFLIGHT_OWNED")
+    # `base_current` is closed for a DIFFERENT reason — it is a sensor READING, and a typed reading is a
+    # forged one — but through the SAME mechanism, so the door check covers both fields together.
+    check("base_current" in L.PREFLIGHT_OWNED, "base_current must be in PREFLIGHT_OWNED — no hand-written readings")
+    check(not L.settable("base_current"), "settable() must refuse base_current — PREFLIGHT_OWNED")
     path = write_lines(tmp / "bnodoor.jsonl", header_line(L), row_line(L, pr="1", head_sha=SHA_A))
     for door in (["set", "--pr", "1"], ["add-row", "--pr", "77"]):
-        code, _, err = cli(L, ["--file", str(path), *door, "--base-ok-sha", SHA_A])
-        check(code == 2, f"`{door[0]} --base-ok-sha` was accepted (exit {code}) — a hand-write door can forge a proceed")
-        check("unrecognized arguments" in err,
-              f"`{door[0]} --base-ok-sha` failed, but not because the flag is ABSENT: {err!r}")
+        for flag, value in (("--base-ok-sha", SHA_A), ("--base-current", "yes")):
+            code, _, err = cli(L, ["--file", str(path), *door, flag, value])
+            check(code == 2, f"`{door[0]} {flag}` was accepted (exit {code}) — a hand-write door can forge a reading")
+            check("unrecognized arguments" in err,
+                  f"`{door[0]} {flag}` failed, but not because the flag is ABSENT: {err!r}")
 
 
 def t_base_ok_is_not_activity(L: ModuleType, tmp: Path) -> None:
     """`base-ok` writes with `activity=False` — recording a precondition is not the run doing meaningful work,
     exactly as re-arming the watchdog is not. Also asserts base_ok_sha IS in ACTIVITY_EXEMPT (name the set)."""
-    check("base_ok_sha" in L.ACTIVITY_EXEMPT,
-          "base_ok_sha must be in ACTIVITY_EXEMPT — stamping a precondition must not reset the quiet sensor")
+    for field in L.PREFLIGHT_OWNED:
+        check(field in L.ACTIVITY_EXEMPT,
+              f"{field} must be in ACTIVITY_EXEMPT — stamping a precondition must not reset the quiet sensor")
     path = write_lines(tmp / "boa.jsonl", header_line(L, run_id="r1"),
                        row_line(L, pr="1", head_sha=SHA_A, status="in_review"))
     with frozen_clock(L, FROZEN_A):  # a real change first, to give last_activity a known value
@@ -1702,7 +1734,7 @@ def t_base_ok_is_not_activity(L: ModuleType, tmp: Path) -> None:
         check(code == 0, f"baseline set exited {code}: {err!r}")
     check(last_activity(L, path) == FROZEN_A, "the baseline change did not stamp last_activity")
     with frozen_clock(L, FROZEN_B):  # a base-ok write — must NOT re-stamp
-        code, _, err = cli(L, ["--file", str(path), "base-ok", "--pr", "1", "--head-sha", SHA_A])
+        code, _, err = cli(L, ["--file", str(path), "base-ok", "--pr", "1", "--head-sha", SHA_A, "--base-current", "yes"])
         check(code == 0, f"base-ok exited {code}: {err!r}")
     check(last_activity(L, path) == FROZEN_A,
           f"base-ok re-stamped last_activity to {last_activity(L, path)!r} — stamping a precondition is not "
@@ -1836,7 +1868,7 @@ def verdicts(L: ModuleType, path: Path, seq: str, pr: str = "1", move_head: bool
         if move_head and v == "N":
             sha = f"{i:040x}"
             cli(L, ["--file", str(path), "set", "--pr", pr, "--head-sha", sha])
-            cli(L, ["--file", str(path), "base-ok", "--pr", pr, "--head-sha", sha])  # re-preflight the new head
+            cli(L, ["--file", str(path), "base-ok", "--pr", pr, "--head-sha", sha, "--base-current", "yes"])  # re-preflight the new head
     return len(seq), 0
 
 
@@ -2129,7 +2161,7 @@ def replay(L: ModuleType, tmp: Path, pr: str, stop_after: "int | None" = None) -
         if v == "N":  # a fix was dispatched and pushed: the head MOVED, and base-preflight re-ran on the new tip
             sha = f"{i:040x}"
             cli(L, ["--file", str(path), "set", "--pr", pr, "--head-sha", sha])
-            cli(L, ["--file", str(path), "base-ok", "--pr", pr, "--head-sha", sha])
+            cli(L, ["--file", str(path), "base-ok", "--pr", pr, "--head-sha", sha, "--base-current", "yes"])
     return None
 
 
@@ -3144,7 +3176,7 @@ def _retarget_row(L: ModuleType, tmp: Path, name: str, *, base: str = "fix-a") -
     cli(L, ["--file", str(path), "add-row", "--pr", "36", "--head-sha", "a" * 40, "--base-branch", base])
     cli(L, ["--file", str(path), "set", "--pr", "36", "--status", "in_review", "--ci", "green",
             "--required-set", "declared:[]"])
-    cli(L, ["--file", str(path), "base-ok", "--pr", "36", "--head-sha", "a" * 40])
+    cli(L, ["--file", str(path), "base-ok", "--pr", "36", "--head-sha", "a" * 40, "--base-current", "yes"])
     cli(L, ["--file", str(path), "verdict", "--pr", "36", "--head-sha", "a" * 40, "--verdict", "satisfied"])
     return path
 

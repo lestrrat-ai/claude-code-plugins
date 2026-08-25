@@ -39,8 +39,9 @@ LED = M.L                                   # the ledger schema owner reconcile 
 
 RUN_ID = "grec-0001"
 RUN_LABEL = M.RUN_LABEL_PREFIX + RUN_ID
-REVIEWING = M.REVIEWING_LABEL
-ACCEPTED = M.ACCEPTED_LABEL
+REVIEWING = "gauntlet-reviewing 0/2"        # a tallied gate label, the shape every live PR now wears
+ACCEPTED = "gauntlet-accepted"
+REBASE_PENDING = M.REBASE_PENDING_LABEL
 SHA_A = "a" * 40
 SHA_B = "b" * 40
 
@@ -441,7 +442,7 @@ def t_all_quiet():
     check(res["rows"]["41"] == {
         "absent_from_snapshot": False, "state": "OPEN", "mergeable": "MERGEABLE",
         "mergeStateStatus": "CLEAN",
-        "label_facts": {REVIEWING: True, ACCEPTED: False},
+        "label_facts": {"status_labels": [REVIEWING], REBASE_PENDING: False},
     }, f"a quiet present row must carry ONLY the neutral observations, got {res['rows']['41']!r}")
     check(res["unadopted"] == [], f"nothing unadopted, got {res['unadopted']!r}")
     check(res["counts"] == {
@@ -530,7 +531,7 @@ def t_all_three_changes_together():
         "base_changed": {"ledger": "main", "snapshot": "develop"},
         "branch_mismatch": {"ledger": "b1", "snapshot": "b2"},
         "state": "OPEN", "mergeable": "CONFLICTING", "mergeStateStatus": "DIRTY",
-        "label_facts": {REVIEWING: True, ACCEPTED: False},
+        "label_facts": {"status_labels": [REVIEWING], REBASE_PENDING: False},
     }, f"combined-change facts drifted, got {facts!r}")
 
 
@@ -553,23 +554,35 @@ def t_label_drift_reported_not_judged():
     code, res, err = scenario([row(41)], [entry(41, label_names=[RUN_LABEL, ACCEPTED])])
     check(code == 0, f"exit 0, got {code} (stderr {err!r})")
     facts = res["rows"]["41"]
-    check(facts["label_facts"] == {REVIEWING: False, ACCEPTED: True},
+    check(facts["label_facts"] == {"status_labels": [ACCEPTED], REBASE_PENDING: False},
           f"label_facts must mirror the snapshot labels, got {facts['label_facts']!r}")
     check(set(facts) == {"absent_from_snapshot", "state", "mergeable", "mergeStateStatus", "label_facts"},
           f"a label mismatch must add NO judgment key — keys were {sorted(facts)!r}")
 
 
 def t_both_status_labels_reported():
+    """A missed swap leaves a PR wearing two gate labels at once — the list reports BOTH, in snapshot order.
+    A boolean per fixed name could not have said this once the reviewing name carries a tally."""
     _c, res, _e = scenario([row(41)], [entry(41, label_names=[RUN_LABEL, REVIEWING, ACCEPTED])])
-    check(res["rows"]["41"]["label_facts"] == {REVIEWING: True, ACCEPTED: True},
-          f"a PR wearing BOTH status labels reports both true, got {res['rows']['41']['label_facts']!r}")
+    check(res["rows"]["41"]["label_facts"] == {"status_labels": [REVIEWING, ACCEPTED],
+                                               REBASE_PENDING: False},
+          f"a PR wearing BOTH status labels reports both, got {res['rows']['41']['label_facts']!r}")
 
 
 def t_neither_status_label_reported():
     code, res, err = scenario([row(41)], [entry(41, label_names=[RUN_LABEL])])
     check(code == 0, f"exit 0, got {code} (stderr {err!r})")
-    check(res["rows"]["41"]["label_facts"] == {REVIEWING: False, ACCEPTED: False},
-          f"neither status label -> both false, got {res['rows']['41']['label_facts']!r}")
+    check(res["rows"]["41"]["label_facts"] == {"status_labels": [], REBASE_PENDING: False},
+          f"no status label -> an empty list, got {res['rows']['41']['label_facts']!r}")
+
+
+def t_rebase_pending_reported_on_its_own_axis():
+    """`gauntlet-rebase-pending` is base-currency state, not gate state, so it is reported separately AND
+    appears in the swept set — an accepted PR waiting its turn in the drain wears both."""
+    _c, res, _e = scenario([row(41)], [entry(41, label_names=[RUN_LABEL, ACCEPTED, REBASE_PENDING])])
+    check(res["rows"]["41"]["label_facts"] == {"status_labels": [ACCEPTED, REBASE_PENDING],
+                                               REBASE_PENDING: True},
+          f"the rebase label must be reported on both axes, got {res['rows']['41']['label_facts']!r}")
 
 
 # --- unadopted ----------------------------------------------------------------
@@ -775,6 +788,8 @@ CASES = [
      t_all_three_changes_together),
     ("verbatim-github-fields", "state/mergeable/mergeStateStatus pass through unjudged",
      t_state_and_merge_fields_verbatim),
+    ("rebase-pending-axis", "gauntlet-rebase-pending is reported on its own axis and in the swept set",
+     t_rebase_pending_reported_on_its_own_axis),
     ("label-drift", "accepted shown while reviewing expected -> label_facts, NO judgment key",
      t_label_drift_reported_not_judged),
     ("both-status-labels", "a PR wearing both status labels -> both true", t_both_status_labels_reported),

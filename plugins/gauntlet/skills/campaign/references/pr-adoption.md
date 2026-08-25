@@ -35,14 +35,18 @@ Campaign **never** deletes the adopted PR's **remote** head branch. Stage 3,
 decide whether the worktree/local branch is removed. A reused worktree, the root/main checkout, and a
 reused local branch are always left in place (see "Stage 3 — Merge").
 
-**Ensure the labels exist** first — the two shared status labels plus this run's owner label
-(idempotent — `--force` creates or updates, safe on every resume):
+**Ensure this run's owner label exists** first (idempotent — `--force` creates or updates, safe on every
+resume):
 
 ```
-gh label create gauntlet-reviewing --color FBCA04 --description "gauntlet: under review" --force
-gh label create gauntlet-accepted  --color 0E8A16 --description "gauntlet: passed its reviews" --force
 gh label create gauntlet-run-<run-id> --color 5319E7 --description "gauntlet: run <run-id>" --force
 ```
+
+**The STATUS labels need no bootstrap, and must not get one.** A reviewing label carries its own tally
+(`gauntlet-reviewing 1/2`), so which ones a repository needs depends on how its PRs get triaged — a fixed
+list here would go stale the first time that changed. Every tool that ADDS a status label creates it first,
+in the same step (`pr-adopt.py` at step 4, `label-mirror.py` at every later reconcile).
+`stage-2-review-gate.md`, "Status labels mirror the review gate", owns the vocabulary.
 
 ### Adopt one PR
 
@@ -148,8 +152,9 @@ For each `#PR` to adopt:
    A stack gate makes the recorded base branch disappear: merging the lower PR removes its branch and GitHub
    retargets the upper PR onto the lower PR's own base. That is the ONE divergence the campaign can explain
    without asking, so it **migrates the row in place** and keeps going — the row records the new base, the
-   review tally survives (a retarget moves no content), and the base-preflight rebase onto the new base is
-   the ordinary next step. `base-retarget.py` establishes both the merged parent and GitHub's own recorded retarget of this PR, then
+   review tally survives (a retarget moves no content), and the row simply carries on against the new base —
+   base-preflight measures it there, and the rebase onto it is owed at the merge like any other
+   (`stage-3-merge.md`, "Step 6"). `base-retarget.py` establishes both the merged parent and GitHub's own recorded retarget of this PR, then
    performs the write through `ledger.py retarget`; nothing here is a user decision.
 
    A divergence it CANNOT explain still parks, and a parked row is answered by the user through the ordinary
@@ -192,11 +197,11 @@ For each `#PR` to adopt:
      `reviews_ok` to `0` and re-triage `tier` only if** reconciliation detects a PR-content change
      since the recorded `head_sha` (per the gate's SHA-pinning rules). **That reset is a gate-reset
      site: in the same step, reconcile the label by running `label-mirror.py mirror` for the PR**, which
-     restores `gauntlet-reviewing` on a PR carrying `gauntlet-accepted`
+     restores the reviewing label on a PR carrying `gauntlet-accepted`
      (`stage-2-review-gate.md`, "Status labels mirror the review gate", owns the swap and the tool). A
-     bare `--add-label gauntlet-reviewing` is NOT sufficient: it would leave the stale `gauntlet-accepted`
-     in place, so the PR would carry **both** status labels and still publicly claim it passed — the tool
-     removes the other label in the same call.
+     bare `--add-label` is NOT sufficient: it would leave the stale `gauntlet-accepted`
+     in place, so the PR would carry **two** gate labels and still publicly claim it passed — the tool
+     removes every other status label in the same call.
 
      **PRESERVE EVERY FIELD THIS STEP DOES NOT EXPLICITLY RECOMPUTE.**
      That is a **property, not a list** — and deliberately so, because the list that stood here was one:
@@ -360,34 +365,31 @@ For each `#PR` to adopt:
 
 #### Step 4 — Label it ours, and set the status label from the LIVE gate
 
-4. **Label it ours, and set the status label from the LIVE gate.** Add this run's owner label, then
-   apply the status label that matches the PR's gate state **as it stands after step 3** — never a
-   hardcoded `gauntlet-reviewing`.
+4. **Label it ours, and set the status labels from the LIVE gate.** Add this run's owner label, then
+   apply the status labels that match the PR's row state **as it stands after step 3** — never a
+   hardcoded label name.
 
-   **This ADOPTION-time labeling stays a raw `gh pr edit`, NOT `label-mirror.py mirror`** — because the
-   same call also adds this run's `gauntlet-run-<run-id>` ownership label, which is out of the tool's
-   scope (the tool touches only the two status labels). Once the row is adopted, every LATER status-label
-   reconcile is the tool's job ("Status labels mirror the review gate").
+   **`pr-adopt.py adopt` performs this step**, and it stays a raw `gh pr edit` rather than a call to
+   `label-mirror.py mirror` — because the same call also adds this run's `gauntlet-run-<run-id>` ownership
+   label, which is out of the tool's scope (the tool never touches the ownership label). It computes the
+   same labels the mirror would, from the same shared vocabulary. Once the row is adopted, every LATER
+   status-label reconcile is the mirror's job ("Status labels mirror the review gate").
 
-   **The status labels are mutually exclusive** — a PR carries exactly one — so whichever you apply,
-   remove the other in the same call. Which one you apply is decided by the live gate, not by the fact
-   that you are adopting:
+   **Which labels it applies is decided by the live row, not by the fact that you are adopting:**
 
-   ```
-   # Gate NOT met at the current HEAD — a fresh adoption (reviews_ok = 0), or a non-terminal re-adoption whose
-   # content changed (step 3 just reset reviews_ok). The common case:
-   gh pr edit <pr> --add-label gauntlet-run-<run-id> --add-label gauntlet-reviewing --remove-label gauntlet-accepted
-
-   # Gate ALREADY met at the current HEAD — non-terminal re-adoption of a PR whose content did NOT change, so step 3
-   # preserved reviews_ok >= required(tier). Its acceptance is still valid; do not revoke it:
-   gh pr edit <pr> --add-label gauntlet-run-<run-id> --add-label gauntlet-accepted --remove-label gauntlet-reviewing
-   ```
-
-   Applying the first form unconditionally would **strip a valid `gauntlet-accepted`** from a PR whose
-   verdicts step 3 just preserved, sending an already-passed PR back under review — the mirror-image bug
-   of leaving a stale `gauntlet-accepted` in place. The label tracks the gate in **both** directions.
-   (`--remove-label` on a label the PR does not carry is a harmless no-op, so neither form needs a
-   pre-check for the label's presence — only for the gate's state.)
+   - Gate NOT met at the current HEAD — a fresh adoption (`reviews_ok = 0`), or a non-terminal re-adoption
+     whose content changed (step 3 just reset `reviews_ok`) — gets the reviewing label for the standing
+     tally. This is the common case.
+   - Gate ALREADY met at the current HEAD — a non-terminal re-adoption of a PR whose content did NOT
+     change, so step 3 preserved `reviews_ok >= required(tier)` — gets `gauntlet-accepted`. Its acceptance
+     is still valid; do not revoke it. Applying the reviewing label unconditionally would **strip a valid
+     `gauntlet-accepted`** from a PR whose verdicts step 3 just preserved, sending an already-passed PR
+     back under review — the mirror-image bug of leaving a stale one in place.
+   - Either way, **every OTHER status label the PR currently wears comes off in the same call** — a stale
+     tally, a stale `gauntlet-accepted`, the legacy bare `gauntlet-reviewing`. The run-owner label and
+     `gauntlet-authored` are never swept.
+   - **Each label it adds is created first** (`gh label create … --force`), because a tallied name is one
+     no bootstrap list could have known to create ("Ensure this run's owner label exists", above).
 
 #### Step 5 — Create the PR-head worktree before the first review pass
 
@@ -519,9 +521,10 @@ already matches — so the tier, `required(tier)`, and the public status label m
 (`stage-2-review-gate.md`, "Status labels mirror the review gate", owns the swap and the tool). **Run it
 on an UNCHANGED non-terminal re-adoption too, NOT only a fresh one:** step 4 labelled against the *preserved* tier
 before this decision, so a PR left `gauntlet-accepted` under a preserved lower tier keeps that false label
-until the mirror flips it to `gauntlet-reviewing` (the escalation reset above took the tally below
-`required`). Never skip it as a presumed no-op — a fresh adoption's `reviews_ok=0` is the ONLY case the
-mirror is a guaranteed no-op.
+until the mirror flips it back to a reviewing label (the escalation reset above took the tally below
+`required`). Never skip it as a presumed no-op — and note that a fresh adoption's `reviews_ok=0` is no
+longer even that: step 4 labelled it against the BOOTSTRAP tier, and a decision that changes the tier
+changes `required(tier)`, which is half the label's name.
 
 ```
 python3 <skill-dir>/scripts/label-mirror.py mirror --ledger <state.jsonl> --pr <N> --repo owner/name

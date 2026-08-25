@@ -80,7 +80,7 @@ its `state.jsonl`, and only PRs carrying its `gauntlet-run-<run-id>` label (adop
 branch names, so the **label alone** — not any branch prefix — scopes ownership), and only those
 PRs' branches/worktrees. It MUST NOT reconcile, relabel, review, fix, merge, or clean up another run's
 PRs/branches — **every git/gh scan is filtered to this run's owner label.** The status labels
-`gauntlet-reviewing` / `gauntlet-accepted` describe gate state and are shared across runs; ownership is
+The status labels (`stage-2-review-gate.md` owns them) describe gate and base-currency state and are shared across runs; ownership is
 the per-run label, never a status label. Refuse to adopt a PR already carrying a **different**
 `gauntlet-run-*` label — never steal or transfer another run's marker (see "PR adoption").
 

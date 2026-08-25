@@ -172,7 +172,7 @@
   the head branch, **or a depth-raising tier escalation, which voids the tally on unchanged content**), OR
   a tier **de-escalation** that lowers `required(tier)` on unchanged content — MUST also reconcile the
   label by running `label-mirror.py mirror` for the PR — the ONE way that swap is applied — which restores
-  `gauntlet-reviewing` on a PR carrying `gauntlet-accepted` (`stage-2-review-gate.md`, "Status labels
+  the reviewing label on a PR carrying `gauntlet-accepted` (`stage-2-review-gate.md`, "Status labels
   mirror the review gate", owns the two-direction split). Never defer the swap to the next heartbeat — that leaves the label lying
   until reconcile, and lying forever if the session dies first. A **clean base-only rebase** with an
   unchanged PR diff does NOT reset the gate, so it correctly KEEPS `gauntlet-accepted` — it sets
@@ -224,7 +224,7 @@
   `<rundir>/audit-<pr>-<n>.jsonl` through `finding-audit.py`) and
   **commit it**. A refutation is a COMMIT, a commit is PR CONTENT, and PR content **RESETS THE GATE** and
   is **REVIEWED** — route it through the same "any campaign commit resets the gate" rule (`reviews_ok` →
-  0, restore `gauntlet-reviewing`, re-derive CI for the new tip). **Refutation CI watch action.** Run
+  0, restore the reviewing label, re-derive CI for the new tip). **Refutation CI watch action.** Run
   `liveness`, then ensure or relaunch a watch only when returned `watch_warranted` is `true`
   (`stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE"). Parked status does not override that result. Re-enter
   Stage 2a; never invent a second mechanism. Nothing is slipped past the reviewer: the argument is IN the diff, so a bogus refutation is
@@ -267,7 +267,8 @@
   The user's answer unparks it (`status` → `in_review`, recorded durably per park class; a declined
   API change or a `blocker_ruling` of `abort` → `aborted`), and the ONE machine release — an explained base
   retarget — is defined with the rest at `loop-control.md` step 3, "Who unparks a PR"; a parked PR that fell
-  behind its base stays behind until then. **Held-PR watch action.** Observing a PR is not mutating it. Run
+  behind its base stays behind until then (as does every UNparked one — nothing rebases until it reaches the
+  front of the merge drain, `stage-3-merge.md`, "Step 6"). **Held-PR watch action.** Observing a PR is not mutating it. Run
   `liveness`, then ensure or relaunch a watch only when returned `watch_warranted` is `true`
   (`stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE"). Parked status does not override that result. Do not
   dispatch a CI fix.
@@ -436,7 +437,7 @@
 - **ANY campaign commit to the PR head resets the gate** (`stage-2-ci.md`, "Any campaign commit to the PR
   head resets the gate") — economy-class CI-fix, `session`-class CI-fix, review-fix, or **refutation commit** alike. In the SAME step: reset
   `reviews_ok` to 0 AND reconcile the label by running `label-mirror.py mirror` for the PR (it restores
-  `gauntlet-reviewing` on a PR carrying `gauntlet-accepted`); the new commit
+  the reviewing label on a PR carrying `gauntlet-accepted`); the new commit
   moves `head_sha`, so writing it through the accessor fires the head-move reset at the door
   (`files-and-ledger.md`, the `head_sha` field, "What a genuine head move resets"); re-derive CI for the
   new tip. **Campaign-commit CI watch action.** Run `liveness`, then ensure or relaunch a watch only when

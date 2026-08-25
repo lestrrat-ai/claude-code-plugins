@@ -134,7 +134,7 @@ class Scenario:
         # `verdict` refuses unless a base-preflight `proceed` is on record for this head
         # (base_ok_sha == head_sha); stamp it first, as the real flow does (base-preflight.py -> base-ok).
         if reviews_ok:
-            _ledger("--file", str(self.ledger), "base-ok", "--pr", PR_NUMBER, "--head-sha", self.orig_head)
+            _ledger("--file", str(self.ledger), "base-ok", "--pr", PR_NUMBER, "--head-sha", self.orig_head, "--base-current", "yes")
         for _ in range(reviews_ok):
             _ledger("--file", str(self.ledger), "verdict", "--pr", PR_NUMBER,
                     "--head-sha", self.orig_head, "--verdict", "satisfied")

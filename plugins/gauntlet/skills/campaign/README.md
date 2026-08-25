@@ -130,16 +130,23 @@ It also doesn't wait around. Everything long-running — reviews, CI watches, fi
 in the background across all the adopted PRs at once, so at any moment it's doing all the work that's
 ready to do.
 
-You can follow along on GitHub: each PR is labeled `gauntlet-reviewing` while it's working through
-the loop, and that flips to `gauntlet-accepted` once it has passed the review(s) its tier requires —
-one for a TRIVIAL docs-only PR, two for anything touching code or agent-facing files (the skill
-creates the labels if your repo doesn't have them).
+You can follow along on GitHub. Each PR is labeled `gauntlet-reviewing 0/2` while it's working through
+the loop — the count is how many of the reviews its tier requires have come back clean, so a PR halfway
+there reads `gauntlet-reviewing 1/2` — and that flips to `gauntlet-accepted` once it has them all. A
+TRIVIAL docs-only PR needs one review, anything touching code or agent-facing files needs two. The skill
+creates whichever labels your repo is missing, as it needs them.
 
 The label flips **back** just as readily. Anything that changes a PR's content after it was accepted —
 a CI fix, a rebase that had to resolve conflicts, a stray push to the branch — invalidates the reviews
-it had passed, so the PR returns to `gauntlet-reviewing` and must earn its verdicts again on the new
-content. The label always describes the code that is on the PR *right now*, so `gauntlet-accepted`
+it had passed, so the PR returns to a `gauntlet-reviewing` count and must earn its verdicts again on the
+new content. The label always describes the code that is on the PR *right now*, so `gauntlet-accepted`
 never means "this passed at some point" — it means "this, as it currently stands, passed."
+
+A third label, `gauntlet-rebase-pending`, says a PR has fallen behind its base branch because something
+else merged ahead of it. It is **not** a problem to fix: the PR keeps being reviewed exactly as it is, and
+it gets rebased when its turn to merge comes up. Rebasing every waiting PR every time one merges would
+re-run your whole CI suite over and over for no benefit, so the skill rebases one PR at a time — the one
+it is about to merge. An accepted PR waiting its turn wears both labels at once, and that is normal.
 
 By default it checks with you before changing anything in your public API — exported signatures,
 formats, CLI flags, defaults, or any behavior callers depend on — so it never merges a breaking
