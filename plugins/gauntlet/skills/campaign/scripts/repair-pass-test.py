@@ -1092,7 +1092,7 @@ def t_bundle_refuses_a_header_only_audit(tmp: Path) -> None:
     `finding-audit.py init` writes the header and zero `audit_result` rows. Those bytes are well-formed
     JSONL with a valid header, so `parse_lines` alone would embed them as `present: True` indistinguishably
     from a complete audit — the one landed artifact re-validated only for well-formedness. The bundle now
-    also runs finding-audit.py's header-internal completeness check, so a round whose header names gating
+    also runs finding-audit.py's historical full-schema validator, so a round whose header names gating
     findings but records no result for them fails closed. (Red before the fix: the header-only audit passed
     as complete and the bundle succeeded.)
     """
@@ -1111,15 +1111,14 @@ def t_bundle_refuses_a_header_only_audit(tmp: Path) -> None:
           "a refused bundle must leave no output")
 
 
-def t_bundle_audit_completeness_is_header_internal(tmp: Path) -> None:
-    """The bundle's audit COMPLETENESS check reads only the audit's own header — it NEVER re-anchors.
+def t_bundle_audit_historical_schema_does_not_re_anchor(tmp: Path) -> None:
+    """The bundle's historical audit schema skips current-intent re-anchoring, but validates all rows.
 
     A COMPLETE audit whose source purpose was later dropped from `intent-<pr>.md` must still validate as
     complete, exactly as `t_bundle_audit_read_does_not_re_anchor` requires of the whole bundle. If the new
-    completeness check went through finding-audit.py's re-anchoring door (`verify`/`load_audit`), it would
+    completeness check went through finding-audit.py's current-intent door (`verify`/`load_audit`), it would
     re-read the round's source findings, fail to anchor the dropped purpose, reject the audit, and WEDGE the
-    bundle. This pins that the check stays header-internal: `verify` rejects the same audit, the
-    header-internal check accepts it.
+    bundle. The historical full-schema check accepts the valid audit while retaining its source and row validation.
     """
     case = bundle_setup(tmp, rounds=2, origin="external")  # round 1 non-cap with a REAL complete audit
     audit_path = case["rundir"] / "audit-1-1.jsonl"
@@ -1138,11 +1137,45 @@ def t_bundle_audit_completeness_is_header_internal(tmp: Path) -> None:
     code_v, _, err_v = capture_cli(FA.main, ["verify", "--file", str(audit_path)])
     check(code_v == 1 and "Purpose" in err_v,
           f"the re-anchoring door unexpectedly accepted the post-repair audit — the contrast is moot: {err_v!r}")
-    # The header-internal completeness check reads only the audit's own bytes, so the complete audit passes.
+    # The historical full-schema check uses the landed source purpose, so the complete audit passes.
     try:
-        FA.check_landed_audit_complete(text, audit_path)
+        FA.check_historical_audit_complete(text, audit_path)
     except FA.AuditError as exc:
-        check(False, f"the completeness check re-anchored or mis-read a complete historical audit: {exc}")
+        check(False, f"the historical schema check re-anchored or mis-read a complete audit: {exc}")
+
+
+def t_bundle_refuses_invalid_historical_audit_rows(tmp: Path) -> None:
+    """Historical audits reject malformed verdict, evidence, duplicate, and standoff rows."""
+    variants = {
+        "invalid-verdict": lambda rows: {**json.loads(rows[1]), "verdict": "NOT-A-VERDICT"},
+        "missing-evidence": lambda rows: {**json.loads(rows[1]), "evidence": ""},
+        "duplicate-id": lambda rows: json.loads(rows[1]),
+        "invalid-standoff": lambda rows: {
+            "type": FA.STANDOFF,
+            "finding_id": json.loads(rows[1])["finding_id"],
+            "ruling": "valid",
+            "counter": "the counter",
+            "evidence": "the evidence",
+        },
+    }
+    for name, mutate in variants.items():
+        case = bundle_setup(tmp / name, rounds=2)
+        audit_path = case["rundir"] / "audit-1-1.jsonl"
+        rows = audit_path.read_text().splitlines()
+        changed = mutate(rows)
+        audit_rows = [rows[0], json.dumps(changed)]
+        if name == "duplicate-id":
+            audit_rows.append(json.dumps(changed))
+        elif name == "invalid-standoff":
+            audit_rows = [rows[0], rows[1], json.dumps(changed)]
+        audit_path.write_text("\n".join(audit_rows) + "\n")
+
+        output = case["rundir"] / "bundle.txt"
+        code, _, err = run_bundle(case, output)
+        check(code == 1 and "finding audit is unusable" in err,
+              f"{name} historical audit row was accepted: {err!r}")
+        check(not output.exists() and not R.bundle_manifest_path(output).exists(),
+              f"{name} left bundle output after refusal")
 
 
 def t_bundle_refuses_a_cap_round_with_no_gating_finding(tmp: Path) -> None:
@@ -1747,7 +1780,8 @@ CASES = [
     ("bundle-prior-cap", "a second cap builds; every earlier cap round's absent audit is exempt", t_bundle_exempts_every_prior_cap_round),
     ("bundle-audit-no-re-anchor", "a historical audit reads back after the intent is re-authored (no re-anchor)", t_bundle_audit_read_does_not_re_anchor),
     ("bundle-audit-header-only", "a header-only (incomplete) audit is refused, not embedded as present", t_bundle_refuses_a_header_only_audit),
-    ("bundle-audit-complete-header-internal", "the completeness check is header-internal, never re-anchoring", t_bundle_audit_completeness_is_header_internal),
+    ("bundle-audit-historical-schema", "the historical audit schema skips current-intent re-anchoring", t_bundle_audit_historical_schema_does_not_re_anchor),
+    ("bundle-audit-invalid-rows", "historical audits reject invalid verdict, evidence, duplicate, and standoff rows", t_bundle_refuses_invalid_historical_audit_rows),
     ("bundle-cap-needs-finding", "a cap round with no gating finding is unusable history and refused", t_bundle_refuses_a_cap_round_with_no_gating_finding),
     ("bundle-report-needs-verdict", "a report that is not one valid record fails closed through parse_report", t_bundle_refuses_a_report_with_no_verdict),
     ("bundle-base-sha-pinned", "the base is pinned to one SHA before any read; a racing fetch cannot mix bases", t_bundle_pins_base_sha_against_a_racing_fetch),

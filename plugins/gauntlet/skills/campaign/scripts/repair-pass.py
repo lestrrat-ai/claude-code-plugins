@@ -95,7 +95,7 @@ RP = load_review_pass()
 
 
 def load_finding_audit():
-    """Load `finding-audit.py` BY PATH — it owns the audit schema and its header-internal completeness check.
+    """Load `finding-audit.py` BY PATH — it owns the audit schema and historical validation.
 
     Same reason as the loaders above: the cwd is the driver's worktree, the schema owner lives with the
     installed plugin. The bundle validates a landed audit's COMPLETENESS through this owner, never by
@@ -526,30 +526,11 @@ def collect_rounds(rundir: Path, pr: str, expected_rounds: int) -> "tuple[list[d
                  f"the ledger or artifacts")
         if audit_file.exists():
             audit_text = read_utf8(audit_file, "finding audit")
-            # A landed round's finding audit is HISTORICAL EVIDENCE embedded for the reassessment worker —
-            # NOT re-judged against the current intent. Read it structurally symmetric with the findings read
-            # in `review-pass.py load_historical_findings` right above, through the SAME non-re-anchoring rule:
-            # review-pass.py's
-            # `parse_lines` proves the JSONL is well-formed and loads NO intent. NEVER read the audit through
-            # finding-audit.py's own door (`verify` / `load_audit`), which re-reads the round's source findings
-            # and re-anchors their `purpose` strings to the CURRENT `intent-<pr>.md`. After a REPAIR-INTENT
-            # re-authors that intent and drops a purpose an earlier round anchored to, that door would reject
-            # the round's audit and WEDGE the bundle — the same break `review-pass.py load_historical_findings` and
-            # `t_bundle_exempts_every_prior_cap_round` exist to prevent, on the audit's side.
-            #
-            # Well-formedness alone is NOT soundness: a HEADER-ONLY audit (`finding-audit.py init` with zero
-            # `record` calls) parses cleanly yet has no `audit_result` rows, so `parse_lines` would embed it
-            # as present indistinguishably from a complete one — the one landed artifact re-validated only for
-            # well-formedness while every other soundness gap here fails closed. So ALSO run finding-audit.py's
-            # HEADER-INTERNAL completeness check (`check_landed_audit_complete`): it reads only the audit's own
-            # header and rows — no source findings, no intent — so it stays on the same non-re-anchoring door,
-            # and it REFUSES an incomplete audit rather than embedding it as sound history.
+            # A landed round's finding audit is HISTORICAL EVIDENCE embedded for the reassessment worker.
+            # The historical full-schema validator skips only current-intent re-anchoring while retaining
+            # source binding, result validation, standoff validation, and completeness checks.
             try:
-                RP.parse_lines(audit_text, audit_file.name)
-            except RP.Defect as exc:
-                fail(f"pr {pr} review round {round_no} finding audit is unusable: {exc}")
-            try:
-                FA.check_landed_audit_complete(audit_text, audit_file)
+                FA.check_historical_audit_complete(audit_text, audit_file)
             except FA.AuditError as exc:
                 fail(f"pr {pr} review round {round_no} finding audit is unusable: {exc}")
             audit_artifact = artifact(audit_file, audit_text)
