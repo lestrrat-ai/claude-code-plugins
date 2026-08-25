@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import unicodedata
+
 
 def _hex_escape(ch: str) -> str:
     """``\\xNN`` for a byte-sized code point, ``\\uNNNN`` above it."""
@@ -20,7 +22,8 @@ def escape_cell(value: str) -> str:
     ESCAPING, not quoting: quoting every cell would widen every column by two chars for the common
     (harmless) case and STILL need an escape for an embedded quote. Backslash escapes leave every ordinary
     value byte-identical and give the invariant outright: the returned string contains no BARE ``|``, no
-    line break, no control character, and never starts with ``#``. Each escape is unambiguous because a
+    line break, no control or formatting character, and never starts with ``#``. Each escape is unambiguous
+    because a
     literal backslash is doubled. The display stays reversible by eye, but it is still a DISPLAY form;
     callers read stored values through their schema-owning accessor, never by parsing the table.
 
@@ -50,8 +53,8 @@ def escape_cell(value: str) -> str:
             out.append("\\r")
         elif ch == "\t":
             out.append("\\t")
-        elif ord(ch) < 0x20 or ord(ch) == 0x7F:
-            out.append(f"\\x{ord(ch):02x}")  # any other control char
+        elif unicodedata.category(ch) in {"Cc", "Cf"}:
+            out.append(_hex_escape(ch))  # controls, including C1, and formatting characters
         elif ch.isspace() and ch != " ":
             out.append(_hex_escape(ch))  # NBSP, NEL, U+2028, ideographic space, and other invisible space
         elif ch == " " and (i < lead or i >= trail):

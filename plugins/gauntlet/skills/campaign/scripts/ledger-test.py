@@ -41,6 +41,7 @@ import json
 import os
 import sys
 import tempfile
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType
@@ -82,6 +83,8 @@ HOSTILE_BASE = {
     "nul": "a\x00b",
     "del": "a\x7fb",
     "esc": "a\x1bb",                        # an ANSI escape: control chars never reach the terminal raw
+    "c1-control": "a\x80b",                  # C1 control: must not reach the terminal raw
+    "bidi-override": "a\u202eb",             # bidi formatting: must not reorder terminal output
     "leading-hash": "#x",                   # forge a RUN-CONFIG line
     "escaped-hash": "\\#x",                 # collides with the above unless `\` is doubled
     "row-forge": "x\n1 | pwned | | | | | |",
@@ -385,8 +388,8 @@ def bare(cell: str) -> "list[str]":
     """The characters in `cell` that are NOT part of an escape sequence and can forge the layout.
 
     Walk the escaped text the way a reader does: a `\\` opens a two-character escape, so skip both. Every
-    OTHER character stands on its own — and a `|`, a line break or a control character standing on its
-    own is a grid metacharacter the sanitizer failed to defuse.
+    OTHER character stands on its own — and a `|`, a line break, a control or formatting character standing
+    on its own is a grid metacharacter the sanitizer failed to defuse.
 
     This is the check, and NOT `'|' not in cell`: the escaped form of a pipe IS `\\|`, which contains one.
     What must never appear is a BARE one — and it is the bare one that can spell the ` | ` separator.
@@ -396,15 +399,17 @@ def bare(cell: str) -> "list[str]":
         if cell[i] == "\\":
             i += 2  # an escape sequence: its introducer plus the character it escapes
             continue
-        if cell[i] == "|" or cell[i] == "\n" or cell[i] == "\r" or ord(cell[i]) < 0x20 or ord(cell[i]) == 0x7F:
+        if (cell[i] == "|" or cell[i] == "\n" or cell[i] == "\r"
+                or unicodedata.category(cell[i]) in {"Cc", "Cf"}):
             out.append(cell[i])
         i += 1
     return out
 
 
 def t_escape_invariant(L: ModuleType, _: Path) -> None:
-    """The escaped cell holds NO BARE grid metacharacter: no unescaped `|`, no line break, no control
-    char — and it never opens with `#`. This is what makes the ` | ` separator and the `# ` config prefix
+    """The escaped cell holds NO BARE grid metacharacter: no unescaped `|`, no line break, no control or
+    formatting character — and it never opens with `#`. This is what makes the ` | ` separator and the `# `
+    config prefix
     mean ONE thing wherever they appear.
 
     …and NO EDGE WHITESPACE, which is the layout's metacharacter rather than the syntax's: `ljust()` and
@@ -421,8 +426,8 @@ def t_escape_invariant(L: ModuleType, _: Path) -> None:
               f"escape_cell({raw!r}) = {cell!r} spells the column separator — it can forge a COLUMN")
         check("\n" not in cell and "\r" not in cell,
               f"escape_cell({raw!r}) = {cell!r} still carries a line break — it can forge a ROW")
-        check(not any(ord(c) < 0x20 or ord(c) == 0x7F for c in cell),
-              f"escape_cell({raw!r}) = {cell!r} still carries a control character")
+        check(not any(unicodedata.category(c) in {"Cc", "Cf"} for c in cell),
+              f"escape_cell({raw!r}) = {cell!r} still carries a control or formatting character")
         check(not cell.startswith("#"),
               f"escape_cell({raw!r}) = {cell!r} opens with '#' — it can forge a RUN-CONFIG line")
         check(cell == cell.strip(),
@@ -451,6 +456,9 @@ def t_escape_mapping(L: ModuleType, _: Path) -> None:
         "\x00": "\\x00",      # anything else that is a control char: \xNN, lowercase hex
         "\x1b": "\\x1b",
         "\x7f": "\\x7f",
+        "\x80": "\\x80",
+        "\x9f": "\\x9f",
+        "\u202e": "\\u202e",
     }.items():
         check(L.escape_cell(raw) == want, f"escape_cell({raw!r}) = {L.escape_cell(raw)!r}, not {want!r}")
 
@@ -3396,7 +3404,7 @@ def t_table_shows_the_effective_base(L: ModuleType, tmp: Path) -> None:
 CASES = [
     ("escape-injective", "escape_cell is INJECTIVE — no two values collide", t_escape_injective),
     ("render-injective", "the PRINTED ROWS are injective too — no two values print the same line", t_render_injective),
-    ("escape-invariant", "the escaped cell holds no bare |, newline, control char, or leading #", t_escape_invariant),
+    ("escape-invariant", "the escaped cell holds no bare |, newline, control or formatting char, or leading #", t_escape_invariant),
     ("escape-mapping", "the escape table, char by char — and ordinary values left byte-identical", t_escape_mapping),
     ("grid-integrity", "no hostile value forges a column, a row, or a config line", t_grid_integrity),
     ("widths-from-escaped", "column widths measure the ESCAPED text — what is printed", t_widths_from_escaped),
