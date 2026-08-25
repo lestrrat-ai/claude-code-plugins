@@ -42,6 +42,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import cast
 
 from _gauntlet import labels
 from _gauntlet.atomic import replace_text
@@ -49,6 +50,7 @@ from _gauntlet.git_refs import branch_problem
 from _gauntlet.modules import load_sibling
 from _gauntlet.repository import repo_problem
 from _gauntlet.testing import run_sibling_suite
+from _gauntlet.view import field_problem
 
 DESCRIPTION = next(iter((__doc__ or "").splitlines()), "")
 
@@ -90,6 +92,66 @@ LIVENESS_COUNTERS = L.LIVENESS_COUNTERS
 # release a park the evidence has answered, so a second spelling here would silently stop that release from
 # recognising the park this tool opened. Search `not supported mid-run` to reach every site.
 BASE_CHANGE_PARK_REASON = L.BASE_CHANGE_PARK_REASON
+
+# The GitHub boundary returns exactly the metadata requested below. `build_plan` consumes every field in the
+# view, so validate the complete shape before any decision branch can dereference it.
+VIEW_FIELDS = (
+    "number,title,headRefName,headRefOid,baseRefName,labels,state,"
+    "isCrossRepository,headRepositoryOwner,headRepository"
+)
+_VIEW_STR_FIELDS = ("title", "headRefName", "headRefOid", "baseRefName", "state")
+
+
+def _labels_problem(view: dict) -> "str | None":
+    """Return the first malformed label shape, or None when every label has a usable string name."""
+    if "labels" not in view:
+        return "missing field 'labels'"
+    raw = view["labels"]
+    if not isinstance(raw, list):
+        return f"field 'labels' must be a list, got {type(raw).__name__}"
+    for item in raw:
+        if isinstance(item, dict):
+            if "name" not in item:
+                return "field 'labels' contains an object without a 'name'"
+            name = item["name"]
+        else:
+            name = item
+        if not isinstance(name, str):
+            return f"field 'labels' must hold string names, got {type(name).__name__}"
+    return None
+
+
+def _repository_problem(view: dict, field: str, child: str) -> "str | None":
+    if field not in view:
+        return f"missing field {field!r}"
+    value = view[field]
+    if not isinstance(value, dict):
+        return f"field {field!r} must be an object, got {type(value).__name__}"
+    if child not in value:
+        return f"missing field {field}.{child}"
+    if not isinstance(value[child], str):
+        return f"field {field}.{child} must be a string, got {type(value[child]).__name__}"
+    return None
+
+
+def validate_view(view: object) -> "str | None":
+    """Return None for a complete `gh pr view` payload, or a refusal reason for its first shape defect."""
+    problem = field_problem(view, strings=_VIEW_STR_FIELDS, bools=("isCrossRepository",))
+    if problem is not None:
+        return problem
+    shaped = cast(dict, view)
+    if "number" not in shaped:
+        return "missing field 'number'"
+    if not isinstance(shaped["number"], int) or isinstance(shaped["number"], bool):
+        return f"field 'number' must be an integer, got {type(shaped['number']).__name__}"
+    problem = _labels_problem(shaped)
+    if problem is not None:
+        return problem
+    for field, child in (("headRepositoryOwner", "login"), ("headRepository", "name")):
+        problem = _repository_problem(shaped, field, child)
+        if problem is not None:
+            return problem
+    return None
 
 
 # --- pure decision surface ----------------------------------------------------
@@ -160,16 +222,21 @@ def _fork_ref(view: dict) -> str:
     return f"{owner_s}/{repo_s}"
 
 
-def build_plan(view: dict, *, run_id: str, tier: str, worktrees_root: str) -> dict:
+def build_plan(view: object, *, run_id: str, tier: str, worktrees_root: str) -> dict:
     """Decide adoptability and compute the row — PURE, from a parsed `gh pr view` dict.
 
     Returns `{"verdict": "refuse", "reason": ...}` for a PR that must NOT be adopted (pr-adoption.md
     step 2), else `{"verdict": "adopt", "row": {...computed fields...}, "labels_add": [...], "branch": ...,
-    "worktree": ..., "base": ...}`. FAIL CLOSED: every refusal is checked before any adopt field is built.
+    "worktree": ..., "base": ...}`. FAIL CLOSED: every refusal, including a malformed view, is checked
+    before any adopt field is built.
     """
     if tier not in TIER_VALUES:
         return {"verdict": "refuse",
                 "reason": f"tier {tier!r} is not one of {', '.join(sorted(TIER_VALUES))}"}
+    problem = validate_view(view)
+    if problem is not None:
+        return {"verdict": "refuse", "reason": f"malformed GitHub PR view: {problem}"}
+    view = cast(dict, view)
 
     # A fork PR is untrusted, attacker-controllable content this autonomous pipeline would read and act on,
     # and it has no push target for fix commits — campaign gates SAME-REPO PRs only (step 2).
@@ -353,8 +420,7 @@ def cmd_adopt(args) -> int:
     view_argv = ["gh", "pr", "view", pr]
     if args.repo:
         view_argv += ["--repo", args.repo]
-    view_argv += ["--json", "number,title,headRefName,headRefOid,baseRefName,labels,state,"
-                            "isCrossRepository,headRepositoryOwner,headRepository"]
+    view_argv += ["--json", VIEW_FIELDS]
     proc = _run(view_argv, cwd=gh_cwd)
     if proc.returncode != 0:
         return _refuse(f"`gh pr view {pr}` exited {proc.returncode}: {proc.stderr.strip()}")
