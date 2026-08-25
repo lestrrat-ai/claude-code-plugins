@@ -432,8 +432,9 @@ or **Adjusted** finding only (skip Refuted and Uncertain), in its own branch off
    trigger, impact, and fix. Do **NOT** apply any `gauntlet-run-*` owner label — review does not know
    a campaign run-id, and pre-labelling with a fabricated run-id would make campaign's adoption refuse
    the PR (pr-adoption rejects a PR already owned by a *different* run). Leave each PR with **no
-   run-owner label**; a neutral `gauntlet-reviewing` status label is fine but is not required. Create
-   the status label with `gh label create` if you apply it and the repo lacks it.
+   run-owner label**, and apply **no status label either**: a gate label carries the PR's verdict tally
+   (`campaign/references/stage-2-review-gate.md`, "Status labels mirror the review gate"), which review has
+   not run and cannot know. Campaign applies the right one at adoption, creating it if the repo lacks it.
 
    **DO apply the `gauntlet-authored` label to every PR you open here** (`gh label create
    gauntlet-authored --force`, then `gh pr create … --label gauntlet-authored`). It is not a status and it

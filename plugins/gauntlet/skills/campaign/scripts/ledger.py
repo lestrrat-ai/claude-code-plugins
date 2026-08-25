@@ -248,6 +248,22 @@ ROW_FIELDS = (
     # The default is `-`, the schema's own "not set" spelling: an old ledger, or a head with no `proceed` yet,
     # reads back `-`, which never equals a 40-hex head, so `verdict` fails CLOSED until base-preflight runs.
     "base_ok_sha",
+    # WHETHER THAT SAME `proceed` FOUND THE BASE INSIDE THE HEAD — `yes`, `no`, or `-` for no reading.
+    # `base-preflight.py check` records it through `base-ok`, in the SAME write as `base_ok_sha`, from the
+    # Git ancestry probe it already runs. A `no` means the base has advanced past this head, so the PR owes
+    # a rebase BEFORE IT MERGES — not before it is reviewed (stage-2-review-gate.md, "2a preconditions"; a
+    # base that merely ADVANCED no longer blocks a review, only a CONFLICT does).
+    #
+    # IT DECIDES NOTHING, and that is deliberate. No gate reads it: `merge-check.py` runs its OWN live probe
+    # at the merge, so the one decision that turns on base currency is made from a fresh reading rather than
+    # a remembered one. This field exists so `label-mirror.py` can PROJECT `gauntlet-rebase-pending` onto
+    # GitHub — it is display state, and a stale value costs a wrong label, never a wrong merge.
+    #
+    # SHA-bound exactly like `base_ok_sha` beside it: `apply_head_sha` voids it to `-` on a genuine head
+    # move (a rebase moves the head, so the old reading describes a commit that is no longer the tip), it has
+    # NO `set` door (`PREFLIGHT_OWNED`), and its writes are activity-EXEMPT. `-` makes NO claim in either
+    # direction, so a row nothing has probed yet wears no rebase label rather than a guessed one.
+    "base_current",
     # THE BASE THIS ROW MERGES INTO — the target `baseRefName` from live GitHub, written once at row
     # creation (`add-row --base-branch`; adoption records it). A run may hold rows on
     # DIFFERENT bases (`v3`, `main`), so the base is per-ROW, not per-run: the header `base_branch` is only
@@ -326,7 +342,7 @@ ROW_DEFAULTS = {
     "tier": "-", "attempts": "0", "started": "-", "api_approval": "-", "status": "pending",
     "ci_fingerprint": "-", "settled_strikes": "0", "unusable_refetches": "0",
     "ci_stalled_since": "-", "ci_reason": "-", "blocker_ruling": "-",
-    "review_rounds": "0", "ns_streak": "0", "base_ok_sha": "-",
+    "review_rounds": "0", "ns_streak": "0", "base_ok_sha": "-", "base_current": "-",
     "base_branch": "-", "required_set": "-", "intent": "-",
     "pr_origin": "external", "repair_count": "0", "repair_decision": "-",
 }
@@ -354,7 +370,8 @@ LIVENESS_COUNTERS = ("ci_fingerprint", "settled_strikes", "unusable_refetches", 
 #   * `base_ok_sha` — the base-preflight `proceed` stamp. Recording that the base is current for a head is a
 #     PRECONDITION being met, not the run advancing: `base-ok` writes it with `activity=False`, and this
 #     exemption is what guarantees a bare stamp cannot masquerade as activity and reset the quiet sensor.
-ACTIVITY_EXEMPT = frozenset(LIVENESS_COUNTERS + ("last_activity", "watchdog_due", "base_ok_sha"))
+ACTIVITY_EXEMPT = frozenset(
+    LIVENESS_COUNTERS + ("last_activity", "watchdog_due", "base_ok_sha", "base_current"))
 
 # THE HEADER FIELDS WITH NO HAND-WRITE DOOR — `header set <field>` is REFUSED for each, mapped to the exact
 # refusal message. Both are TOOL-STAMPED: `last_activity` by `save()`'s side effect on a real change,
@@ -396,13 +413,24 @@ VERDICT_OWNED = ("review_rounds", "ns_streak")
 # forever. The tool that decides a repair is the only thing that writes what it spent.
 REPAIR_OWNED = ("repair_count", "repair_decision")
 
-# The base-preflight stamp `base-ok` OWNS — settable through NO flag, the same mechanism as VERDICT_OWNED and
-# REPAIR_OWNED, for the same reason. `base_ok_sha` is the MECHANICAL base-currency precondition `verdict`
+# The base-preflight readings `base-ok` OWNS — settable through NO flag, the same mechanism as VERDICT_OWNED
+# and REPAIR_OWNED, for the same reason. `base_ok_sha` is the MECHANICAL base-currency precondition `verdict`
 # enforces (it refuses unless the stamp equals the row's head). A door that can hand-write it is a door that
-# can FORGE a `proceed` no base-preflight ever decided — recording a verdict over a conflicting or stale base,
+# can FORGE a `proceed` no base-preflight ever decided — recording a verdict over a conflicting base,
 # the exact waste this guard exists to stop. So there is no `--base-ok-sha` flag: `base-preflight.py check`
 # writes it, through `base-ok`, only when it actually decides `proceed`, and nothing else writes it at all.
-PREFLIGHT_OWNED = ("base_ok_sha",)
+#
+# `base_current` rides the SAME door for a DIFFERENT reason. It gates nothing, so nothing could be forged
+# with it; it is closed to `set` because it is a SENSOR READING — the answer to a Git ancestry probe — and a
+# hand-typed reading is exactly the forged-sensor failure `last_activity` and `review_rounds` are closed
+# against. Writing it beside `base_ok_sha`, in the one call, also keeps the two coherent: they describe the
+# same probe of the same head, and a door that could write one without the other would let them disagree.
+PREFLIGHT_OWNED = ("base_ok_sha", "base_current")
+
+# The CLOSED vocabulary `base-ok --base-current` accepts. The row's third value, `-` (its `ROW_DEFAULTS`
+# spelling for "no reading"), is deliberately ABSENT: `-` is what `apply_head_sha` writes when a head move
+# voids the old answer, and a `proceed` that reached the probe always has one of these two instead.
+BASE_CURRENT_VALUES = ("yes", "no")
 
 # The row fields that `add-row` may write ONCE, at row creation, and that `set` may NEVER change afterward.
 # `base_branch` is the target `baseRefName` recorded from live GitHub at adoption, and it is TOOL-OWNED: no
@@ -1070,7 +1098,7 @@ def guard_default_non_goals_change(header: dict, rows: "list[dict]", new_default
     So a broadening change is refused whenever any non-terminal PR holds credit (`prs_with_review_credit`);
     the operator resets those rows first (`set --pr N --reviews-ok 0`, re-opening them for a fresh review
     under the wider scope) and, in that same step, runs `label-mirror.py mirror` for each to restore its
-    `gauntlet-reviewing` label (a `reviews_ok`->0 reset owes the relabel; `stage-2-review-gate.md`), then
+    reviewing label (a `reviews_ok`->0 reset owes the relabel; `stage-2-review-gate.md`), then
     re-declares. The asymmetry is deliberate and load-bearing: ADDING a
     default NARROWS scope, under which banked credit stays valid, so an add is always allowed. This is ONE
     guard, not a per-pass versioning subsystem — the single-user operator resets and re-declares.
@@ -1094,7 +1122,7 @@ def guard_default_non_goals_change(header: dict, rows: "list[dict]", new_default
          f"with the now-in-scope area never reviewed. Reset each first "
          f"(`ledger.py set --pr <N> --reviews-ok 0`, re-opening it for a fresh review under the broadened "
          f"scope) AND, in that same step, run `label-mirror.py mirror --pr <N>` to restore its "
-         f"`gauntlet-reviewing` label; then re-run `header set default_non_goals`. The ledger is unchanged")
+         f"reviewing label; then re-run `header set default_non_goals`. The ledger is unchanged")
 
 
 # --- subcommands --------------------------------------------------------------
@@ -1278,27 +1306,28 @@ def cmd_add_row(path: Path, args) -> int:
 
 
 def apply_head_sha(row: dict, new_sha: str) -> None:
-    """Write `new_sha` to `row['head_sha']`, resetting THE LIVENESS COUNTERS and the base-preflight stamp
-    `base_ok_sha` on a genuine head MOVE.
+    """Write `new_sha` to `row['head_sha']`, resetting THE LIVENESS COUNTERS and both base-preflight
+    readings (`base_ok_sha`, `base_current`) on a genuine head MOVE.
 
     THE PROPERTY, enforced at the write door rather than by prose at each caller (stage-2-ci.md, "THE
     LIVENESS COUNTERS", reset-site class 1): a NEW `head_sha` is NEW evidence, so the old head's CI-liveness
     says nothing about it — and neither does a `proceed` decided for the old head. When `new_sha !=
-    row['head_sha']` this writes the head AND resets every `LIVENESS_COUNTERS` field, AND `base_ok_sha`, to its
-    `ROW_DEFAULTS` value — READ from the defaults, never retyped — mutating the SAME `row` dict, so the
-    caller's single `dump()` lands the head move and the reset in ONE atomic write. A SAME-VALUE write
-    (`new_sha == row['head_sha']`) is not a move and changes NOTHING.
+    row['head_sha']` this writes the head AND resets every `LIVENESS_COUNTERS` field, AND both
+    `PREFLIGHT_OWNED` readings, to its `ROW_DEFAULTS` value — READ from the defaults, never retyped —
+    mutating the SAME `row` dict, so the caller's single `dump()` lands the head move and the reset in ONE
+    atomic write. A SAME-VALUE write (`new_sha == row['head_sha']`) is not a move and changes NOTHING.
 
     The shape is validated with `SHA_RE` FIRST and REFUSED otherwise (40 lowercase hex): a value that cannot
     be a commit id has no business becoming a row's head, and refusing before any mutation keeps a bad
     `--head-sha` from resetting the counters.
 
     PRECEDENCE — an explicit counter flag in the SAME `set` call WINS over the automatic reset. This helper
-    resets `head_sha`, the liveness counters, AND `base_ok_sha`; `cmd_set` calls it and THEN applies the
-    remaining named updates, so an explicit liveness-counter flag is written AFTER the reset. `set --head-sha
-    <new> --settled-strikes 5` records 5, while every counter NOT named still resets to its default (pinned by
-    `t_head_sha_explicit_counter_wins`). This precedence concerns the liveness-counter flags ALONE:
-    `base_ok_sha` has no `set` door of its own, so it is reset here and can never be re-set in the same call.
+    resets `head_sha`, the liveness counters, AND the `PREFLIGHT_OWNED` readings; `cmd_set` calls it and THEN
+    applies the remaining named updates, so an explicit liveness-counter flag is written AFTER the reset.
+    `set --head-sha <new> --settled-strikes 5` records 5, while every counter NOT named still resets to its
+    default (pinned by `t_head_sha_explicit_counter_wins`). This precedence concerns the liveness-counter
+    flags ALONE: neither `PREFLIGHT_OWNED` field has a `set` door of its own, so both are reset here and
+    neither can be re-set in the same call.
     """
     if not SHA_RE.match(new_sha):
         fail(f"--head-sha {new_sha!r} is not a git object id (40 LOWERCASE hex) — a value that cannot be a "
@@ -1308,11 +1337,15 @@ def apply_head_sha(row: dict, new_sha: str) -> None:
     row["head_sha"] = new_sha
     for field in LIVENESS_COUNTERS:
         row[field] = ROW_DEFAULTS[field]  # fresh head, fresh budget — the value comes from ROW_DEFAULTS
-    # A new head is UNVERIFIED until a fresh base-preflight `proceed`: void the recorded proceed here too, so a
-    # `proceed` decided for the OLD head can never authorize a `verdict` on new content (the `base_ok_sha`
-    # field definition; `cmd_verdict`). Read from `ROW_DEFAULTS`, never a retyped literal, exactly like the
-    # counters above — a fresh-head `base_ok_sha` is its default `-`, which no 40-hex head equals.
-    row["base_ok_sha"] = ROW_DEFAULTS["base_ok_sha"]
+    # A new head is UNVERIFIED until a fresh base-preflight `proceed`: void BOTH recorded readings here too,
+    # so a `proceed` decided for the OLD head can never authorize a `verdict` on new content (the
+    # `base_ok_sha` field definition; `cmd_verdict`), and an ancestry answer about the OLD head can never
+    # label the new one (the `base_current` field definition — a rebase is precisely a head move that makes
+    # the previous `no` wrong). Read from `ROW_DEFAULTS`, never a retyped literal, exactly like the counters
+    # above — a fresh-head `base_ok_sha` is its default `-`, which no 40-hex head equals, and a fresh-head
+    # `base_current` is `-`, which makes no claim.
+    for field in PREFLIGHT_OWNED:
+        row[field] = ROW_DEFAULTS[field]
 
 
 def cmd_set(path: Path, args) -> int:
@@ -1472,14 +1505,20 @@ def cmd_verdict(path: Path, args) -> int:
 
 
 def cmd_base_ok(path: Path, args) -> int:
-    """Record a base-preflight `proceed` for the row's CURRENT head — the ONLY sanctioned writer of
-    `base_ok_sha`, and the MECHANICAL half of the rebase-before-review precondition.
+    """Record a base-preflight `proceed` for the row's CURRENT head — the ONLY sanctioned writer of the two
+    `PREFLIGHT_OWNED` readings, and the MECHANICAL half of the rebase-before-review precondition.
 
     `cmd_verdict` refuses unless `base_ok_sha == head_sha`; this is what makes that pass. It is written by
     `base-preflight.py check` when — and ONLY when — the decider reaches `proceed` for the live head, so the
     stamp is a BYPRODUCT of the check actually running, never a value a driver types in (there is no `set`
     flag: `PREFLIGHT_OWNED`). A forged stamp would authorize a verdict over a base no `proceed` ever cleared,
     which is the waste this guard exists to stop.
+
+    `--base-current` carries the OTHER half of the same probe: `yes` when the fetched base is an ancestor of
+    that head, `no` when it is not. It is REQUIRED, and its vocabulary is closed (`BASE_CURRENT_VALUES`),
+    because a `proceed` that forgot to say which it saw would leave the row claiming the previous head's
+    answer — and `-`, the "no reading" spelling, is deliberately NOT accepted here: a check that ran and
+    reached `proceed` always has an answer.
 
     Refusals, none of which write anything:
       * no row — `fail` (exit 1);
@@ -1489,7 +1528,7 @@ def cmd_base_ok(path: Path, args) -> int:
       * a `--head-sha` that is not the row's current head — a `proceed` is meaningful for the LIVE head only,
         so a stamp for any other SHA is refused (the same coherence rule `verdict` enforces).
 
-    The write is activity-EXEMPT (`base_ok_sha` is in `ACTIVITY_EXEMPT`): stamping a precondition is not the
+    The write is activity-EXEMPT (both fields are in `ACTIVITY_EXEMPT`): stamping a precondition is not the
     run doing meaningful work, exactly as re-arming the watchdog is not.
     """
     header, rows = load(path)
@@ -1506,6 +1545,7 @@ def cmd_base_ok(path: Path, args) -> int:
              f"clears the LIVE head only, so a stamp for any other SHA is refused. Reconcile the row against "
              f"`gh` and re-run base-preflight on the current tip")
     row["base_ok_sha"] = args.head_sha
+    row["base_current"] = args.base_current
     save(path, header, rows, activity=False)  # exempt: stamping a precondition is not meaningful activity
     print(json.dumps(row))
     return 0
@@ -2062,15 +2102,20 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--verdict", required=True, choices=VERDICTS,
                    help="the reviewer's VERDICT line, as the orchestrator read it")
 
-    # The ONLY sanctioned writer of `base_ok_sha` — there is no `--base-ok-sha` flag at `set`/`add-row`
-    # (PREFLIGHT_OWNED). `base-preflight.py check` calls this on a real `proceed`; nothing else records it.
+    # The ONLY sanctioned writer of the two PREFLIGHT_OWNED readings — there is no `--base-ok-sha` or
+    # `--base-current` flag at `set`/`add-row`. `base-preflight.py check` calls this on a real `proceed`;
+    # nothing else records either field.
     b = sub.add_parser("base-ok", help="record a base-preflight `proceed` for the row's current head "
-                                       "(base_ok_sha) — the precondition `verdict` enforces; written only by "
-                                       "base-preflight.py on a real proceed, never hand-set")
+                                       "(base_ok_sha + base_current) — the precondition `verdict` enforces; "
+                                       "written only by base-preflight.py on a real proceed, never hand-set")
     b.add_argument("--pr", required=True, help="PR number (row key)")
     b.add_argument("--head-sha", dest="head_sha", required=True,
                    help="the head the `proceed` was decided for — must equal the row's head_sha, or the "
                         "stamp describes a base check for content that is not the live tip and is refused")
+    b.add_argument("--base-current", dest="base_current", required=True, choices=BASE_CURRENT_VALUES,
+                   help="what the ancestry probe saw for that head: `yes` if the fetched base is an "
+                        "ancestor of it, `no` if the base has advanced past it. Display state only — it "
+                        "projects the rebase-pending status label; no gate reads it")
 
     d = sub.add_parser("dispatch-check", help="may campaign ACT on this PR? run before every action that "
                                               f"MUTATES a PR; an ALLOW-LIST — exits {EXIT_STOP} unless the "

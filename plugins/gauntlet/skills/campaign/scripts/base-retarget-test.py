@@ -508,7 +508,7 @@ def t_resolve_migrates_the_row():
         # The gate state a live row accumulates, EARNED through the real doors: a base-preflight stamp for
         # the head, two landed verdicts on it (a hand-raised tally is refused), a green ci and a read
         # required set. All of it describes the OLD base.
-        _run_ledger(ledger, "base-ok", "--pr", "36", "--head-sha", "a" * 40)
+        _run_ledger(ledger, "base-ok", "--pr", "36", "--head-sha", "a" * 40, "--base-current", "yes")
         for _ in range(2):
             _run_ledger(ledger, "verdict", "--pr", "36", "--head-sha", "a" * 40, "--verdict", "satisfied")
         _run_ledger(ledger, "set", "--pr", "36", "--ci", "green",

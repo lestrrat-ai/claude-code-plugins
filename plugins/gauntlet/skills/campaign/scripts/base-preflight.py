@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
-"""DECIDE whether a PR's branch is current with its base BEFORE a review or a fix is authored on it.
+"""DECIDE whether a PR's branch can be reviewed or fixed as it stands — and RECORD how it sits on its base.
 
 This enforces the rebase-before-review/fix precondition `stage-2-review-gate.md` states in prose: if a PR
-conflicts with `<base>` or lacks its refreshed tip, rebase it before reviewing or fixing. GitHub may still
-report MERGEABLE/CLEAN after another campaign PR advances an unprotected base, so the check combines its
-merge states with fetched Git ancestry. A fix authored on a stale/conflicting base is wasted — it is
-re-reviewed against the rebased tip anyway. This turns the prose into an enforced check.
+CONFLICTS with `<base>`, rebase it before reviewing or fixing, because a fix authored on a conflicting base
+fights the merge and may not even apply.
+
+A base that has merely ADVANCED is NOT that case and no longer withholds `proceed`. GitHub still reports
+MERGEABLE/CLEAN after another campaign PR advances an unprotected base, so the fetched Git ancestry probe is
+the only sound reading of base currency — but the rebase it calls for is owed before the MERGE, not before
+the review. Rebasing every behind PR the moment a sibling merges is how one N-PR run pays for N(N-1)/2 CI
+cycles, and each of those rebases is undone by the next merge into the base. So the probe's answer is
+RECORDED on the row (`base_current`) instead of being turned into a refusal: `label-mirror.py` projects it
+as `gauntlet-rebase-pending`, and the serialized drain (`stage-3-merge.md`, "Step 6") rebases the ONE PR at
+the front. The merge gate (`merge-check.py`) runs its own live probe and there base currency IS a hard
+precondition, so nothing merges over a base it does not contain.
 
 It DECIDES one of `proceed` / `rebase-first` / `recheck` / `park` from the live PR view plus fetched base ancestry
 and PERFORMS NO REBASE: the driver rebases when told `rebase-first`, then re-runs this. Deciding and doing
@@ -23,10 +31,11 @@ retargeted to a different branch NAME, so it fails closed to `recheck` with the 
 wording every base-change park records. This tool never decides WHY the base moved and never migrates a row —
 that is `base-retarget.py`, which the heartbeat runs first and which releases the park when GitHub's own
 retarget explains the move; this stays a pure fail-closed refusal so a divergence can never be reviewed past.
-(A base that merely ADVANCED — same branch, new commits — is NOT a retarget; that stays the ancestry
-`rebase-first` below.)
+(A base that merely ADVANCED — same branch, new commits — is NOT a retarget; that is the recorded
+`base_current` reading below.)
 
-With `--file <ledger>`, a final `proceed` records that base check through `ledger.py base-ok`, while `park`
+With `--file <ledger>`, a final `proceed` records that base check through `ledger.py base-ok` — both the
+`base_ok_sha` stamp and the `base_current` ancestry reading, in one write — while `park`
 records an unrecognized enum through `ledger.py park`. The latter is the existing machine-blocker transition:
 it atomically sets `status = awaiting-user`, names the unrecognized value in `ci_reason`, and clears
 `blocker_ruling`. Without `--file` the tool is the pure decider it always was (it writes nothing, and `--base`
@@ -73,10 +82,12 @@ def _base_change_reason(recorded: str, live: str) -> str:
 
 # --- the verdicts -------------------------------------------------------------
 #
-# `proceed` is the ONLY verdict that clears a review/fix onto this branch; `rebase-first` says the base is
-# stale/conflicting and a rebase must land first; `recheck` is NEVER a verdict — it says the mergeability is
-# not yet computed, so re-poll and decide again; `park` says an enum value is unrecognized and records the
-# existing machine-blocker transition when a ledger is supplied. Every non-`proceed` outcome fails CLOSED.
+# `proceed` is the ONLY verdict that clears a review/fix onto this branch, and it carries a `base_current`
+# reading (`yes`/`no`) saying whether the branch holds the fetched base; `rebase-first` says the branch
+# CONFLICTS with its base and a rebase must land first; `recheck` is NEVER a verdict — it says the
+# mergeability is not yet computed, so re-poll and decide again; `park` says an enum value is unrecognized and
+# records the existing machine-blocker transition when a ledger is supplied. Every non-`proceed` outcome fails
+# CLOSED.
 PROCEED = "proceed"
 REBASE_FIRST = "rebase-first"
 RECHECK = "recheck"
@@ -94,13 +105,15 @@ MERGEABLE_VALUES = frozenset({"MERGEABLE", "CONFLICTING", "UNKNOWN"})
 MERGE_STATE_STATUS_VALUES = frozenset(
     {"DIRTY", "UNKNOWN", "BLOCKED", "BEHIND", "UNSTABLE", "HAS_HOOKS", "CLEAN"})
 
-# The `mergeStateStatus` values that pass the ENUM screen. UNSTABLE and BLOCKED are about
-# CHECKS/PERMISSIONS, not a stale base. This is not proof the branch contains the refreshed base; the graph
-# check in `check` supplies that proof. DIRTY/BEHIND/UNKNOWN are deliberately ABSENT: each is handled by an
-# earlier rule in `decide`. NOTE: the downstream merge gate (`merge-check.py`) now runs this SAME
-# `check_base_ancestry` probe on BLOCKED before it parks — a BLOCKED PR that is only behind its base rebases
-# rather than escalating — so both gates treat BLOCKED identically (enum screen, then graph proof).
-BASE_CURRENT_STATES = frozenset({"CLEAN", "HAS_HOOKS", "UNSTABLE", "BLOCKED"})
+# The `mergeStateStatus` values that pass the ENUM screen — the ones that do not block REVIEWING or FIXING
+# this branch. UNSTABLE and BLOCKED are about CHECKS/PERMISSIONS, not the base. BEHIND says the base has
+# advanced, which this gate deliberately does NOT treat as a blocker: the rebase it calls for is owed before
+# the MERGE, and taking it now would only be undone by the next merge into the base (`stage-3-merge.md`,
+# "Step 6"). The graph check in `check` still runs and RECORDS what it saw, so a behind branch is labelled
+# rather than stopped. Only DIRTY and UNKNOWN are absent: each is handled by an earlier rule in `decide`.
+# NOTE: the downstream merge gate (`merge-check.py`) runs the SAME `check_base_ancestry` probe and DOES
+# insist on it — that gate is where base currency is a real precondition, and this one is not.
+REVIEWABLE_STATES = frozenset({"CLEAN", "HAS_HOOKS", "UNSTABLE", "BLOCKED", "BEHIND"})
 
 
 def _verdict(verdict: str, reason: str) -> dict:
@@ -169,19 +182,17 @@ def decide(view: dict) -> dict:
     if mergeable == "UNKNOWN" or mss == "UNKNOWN":
         return _verdict(RECHECK, "mergeability not computed yet — re-poll")
 
-    # 3. CONFLICTS WITH BASE — the branch cannot combine with its base. A fix authored here fights the merge.
+    # 3. CONFLICTS WITH BASE — the branch cannot combine with its base. A fix authored here fights the merge,
+    #    and this is the ONLY thing that still forces a rebase before a review or a fix.
     if mergeable == "CONFLICTING" or mss == "DIRTY":
         return _verdict(REBASE_FIRST, "conflicts with base — rebase before reviewing/fixing")
 
-    # 4. BASE MOVED AHEAD — no conflict, but the base has commits this branch lacks; rebase to review the tip.
-    if mss == "BEHIND":
-        return _verdict(REBASE_FIRST, "base has moved ahead — rebase first")
-
-    # 5. ENUM SCREEN PASSES — the graph check in `check` decides whether this becomes final `proceed`.
-    if mergeable == "MERGEABLE" and mss in BASE_CURRENT_STATES:
+    # 4. ENUM SCREEN PASSES — the graph check in `check` records base currency; it no longer withholds
+    #    `proceed`. A base that merely MOVED AHEAD is in `REVIEWABLE_STATES` (which owns why).
+    if mergeable == "MERGEABLE" and mss in REVIEWABLE_STATES:
         return _verdict(PROCEED, "GitHub merge state permits base check")
 
-    # 6. DEFENSIVE CATCH-ALL — unreachable after step 1 pinned both enums to their schema sets and steps 2-5
+    # 5. DEFENSIVE CATCH-ALL — unreachable after step 1 pinned both enums to their schema sets and steps 2-4
     #    covered every recognised combination. Fail closed rather than fall off the end of the function.
     return _verdict(RECHECK, "mergeability not computed yet — re-poll")
 
@@ -231,9 +242,11 @@ def load_view(pr: str, repo: "str | None", view_json: "str | None",
     return cast(dict, view)
 
 
-def record_base_ok(ledger_file: str, pr: str, worktree: "str | None") -> "str | None":
-    """On a `proceed`, stamp the ledger's `base_ok_sha` for the worktree's CURRENT head. Returns an error
-    string on failure, else `None`. Called ONLY from `check`'s proceed branch, so it never touches `decide`.
+def record_base_ok(ledger_file: str, pr: str, worktree: "str | None",
+                   base_current: str) -> "str | None":
+    """On a `proceed`, stamp the ledger's `base_ok_sha` and `base_current` for the worktree's CURRENT head.
+    Returns an error string on failure, else `None`. Called ONLY from `check`'s proceed branch, so it never
+    touches `decide`.
 
     A `proceed` clears a review or fix onto THIS head, and the stamp is what lets the later `ledger.py verdict`
     land: that door refuses unless `base_ok_sha == head_sha`. Resolving the head HERE (never trusting a caller
@@ -249,7 +262,8 @@ def record_base_ok(ledger_file: str, pr: str, worktree: "str | None") -> "str | 
         return f"could not resolve HEAD in {worktree}: {head.stderr.strip()}"
     sha = head.stdout.strip()
     stamp = subprocess.run(  # noqa: S603
-        [sys.executable, str(LEDGER), "--file", ledger_file, "base-ok", "--pr", str(pr), "--head-sha", sha],
+        [sys.executable, str(LEDGER), "--file", ledger_file, "base-ok", "--pr", str(pr), "--head-sha", sha,
+         "--base-current", base_current],
         capture_output=True, text=True, check=False)
     if stamp.returncode != 0:
         return f"`ledger.py base-ok` exited {stamp.returncode}: {stamp.stderr.strip()}"
@@ -336,16 +350,23 @@ def check(pr: str, repo: "str | None", view_json: "str | None", project_root: "s
         err = record_park(ledger_file, pr, result["reason"])
         if err is not None:
             result = _verdict(RECHECK, f"could not record machine-blocker park: {err}")
+    base_current = None
     if result["verdict"] == PROCEED:
         ancestry, detail = check_base_ancestry(worktree, base, remote)
-        if ancestry == "stale":
-            result = _verdict(REBASE_FIRST, "base has moved ahead — rebase first")
-        elif ancestry == "unverified":
+        # A base that has ADVANCED past this head no longer withholds `proceed` — the rebase it calls for is
+        # owed before the MERGE, not before the review (`REVIEWABLE_STATES` owns why). The reading is carried
+        # on the verdict and recorded, so the driver can label the PR rather than stop it. `unverified` is
+        # still fail-CLOSED: an ancestry question we could not ask is not an answer of `no`.
+        if ancestry == "unverified":
             result = _verdict(RECHECK, f"could not verify base ancestry: {detail}")
-    # ONLY on a final `proceed`, and ONLY when a ledger was named, record the proceed as `base_ok_sha` for the
-    # live head. Fail CLOSED to `recheck` on a recording failure so a `proceed` always implies the stamp landed.
-    if result["verdict"] == PROCEED and ledger_file is not None:
-        err = record_base_ok(ledger_file, pr, worktree)
+        else:
+            base_current = "yes" if ancestry == "current" else "no"
+            result = dict(result, base_current=base_current)
+    # ONLY on a final `proceed`, and ONLY when a ledger was named, record the proceed as `base_ok_sha` plus the
+    # ancestry reading for the live head. Fail CLOSED to `recheck` on a recording failure so a `proceed`
+    # always implies both landed.
+    if result["verdict"] == PROCEED and ledger_file is not None and base_current is not None:
+        err = record_base_ok(ledger_file, pr, worktree, base_current)
         if err is not None:
             result = _verdict(RECHECK, f"could not record base_ok_sha: {err}")
     print(json.dumps(result))

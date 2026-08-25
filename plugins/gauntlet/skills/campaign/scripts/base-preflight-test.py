@@ -73,8 +73,15 @@ def t_dirty_rebases():
     expect(view(mergeStateStatus="DIRTY"), "rebase-first", "conflicts with base — rebase before reviewing/fixing")
 
 
-def t_behind_rebases():
-    expect(view(mergeStateStatus="BEHIND"), "rebase-first", "base has moved ahead — rebase first")
+def t_behind_reaches_the_enum_screen():
+    """BEHIND does NOT block a review. It is a base that ADVANCED, not one that conflicts, and the rebase it
+    calls for is owed at the MERGE (`REVIEWABLE_STATES` owns why). `decide` therefore passes it to the graph
+    check exactly like CLEAN; what the probe SEES is then recorded, never turned into a refusal.
+
+    THE MUTATION PIN: put `BEHIND` back on a `rebase-first` rule and this goes red — which is the whole
+    serialized-drain change, so it must not be reintroduced by accident.
+    """
+    expect(view(mergeStateStatus="BEHIND"), "proceed", "GitHub merge state permits base check")
 
 
 def t_unknown_mergestate_rechecks():
@@ -370,8 +377,13 @@ _GIT = GitFixture(M.SelfTestFailure)
 _git = _GIT.run
 
 
-def t_clean_view_with_stale_base_rebases():
-    """A prior campaign merge advances main while GitHub still calls the second PR CLEAN."""
+def t_clean_view_with_stale_base_records_no():
+    """A prior campaign merge advances main while GitHub still calls the second PR CLEAN.
+
+    The enums cannot see it; the fetched graph can. What changed is what the tool DOES with that: the PR is
+    still cleared to be reviewed (`proceed`), and the staleness is carried as `base_current: no` for the
+    label and the drain to act on. The rebase is owed at the merge, not here.
+    """
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
         remote = root / "remote.git"
@@ -415,10 +427,11 @@ def t_clean_view_with_stale_base_rebases():
             ["check", "--pr", "9", "--view-json", str(vjson), "--worktree", str(candidate),
              "--base", "main"],
         )
-        check(code != 0,
-              f"a CLEAN view whose worktree lacks the advanced base must stop for rebase (stderr: {err})")
-        check(json.loads(out) == {"verdict": "rebase-first", "reason": "base has moved ahead — rebase first"},
-              f"a stale base must rebase despite CLEAN GitHub enums, got {out!r}")
+        check(code == 0,
+              f"a CLEAN view whose worktree lacks the advanced base is still reviewable (stderr: {err})")
+        check(json.loads(out) == {"verdict": "proceed", "reason": "GitHub merge state permits base check",
+                                  "base_current": "no"},
+              f"a stale base must proceed and REPORT the staleness, got {out!r}")
 
 
 def t_clean_view_with_current_base_proceeds():
@@ -446,8 +459,9 @@ def t_clean_view_with_current_base_proceeds():
              "--base", "main"],
         )
         check(code == 0, f"a candidate containing the fetched base must proceed (stderr: {err})")
-        check(json.loads(out) == {"verdict": "proceed", "reason": "GitHub merge state permits base check"},
-              f"a current base must permit the candidate, got {out!r}")
+        check(json.loads(out) == {"verdict": "proceed", "reason": "GitHub merge state permits base check",
+                                  "base_current": "yes"},
+              f"a current base must permit the candidate and report it, got {out!r}")
 
 
 def t_force_rewritten_base_refreshes_and_rebases():
@@ -595,19 +609,21 @@ def t_dash_leading_current_base_refreshes_and_proceeds():
         code, result, err, refreshed, remote_head = _dash_base_ancestry(Path(d), current=True)
         check(code == 0,
               f"a current candidate on a dash-leading base must pass the CLI (code={code}, err={err!r})")
-        check(result == {"verdict": "proceed", "reason": "GitHub merge state permits base check"},
+        check(result == {"verdict": "proceed", "reason": "GitHub merge state permits base check",
+                         "base_current": "yes"},
               f"a current candidate on a dash-leading base must proceed, got {result!r}")
         check(refreshed == remote_head,
               "the dash-leading base fetch must refresh its remote-tracking ref before the current verdict")
 
 
-def t_dash_leading_stale_base_refreshes_and_rebases():
+def t_dash_leading_stale_base_refreshes_and_reports_no():
     with tempfile.TemporaryDirectory() as d:
         code, result, err, refreshed, remote_head = _dash_base_ancestry(Path(d), current=False)
-        check(code != 0,
-              f"a stale candidate on a dash-leading base must stop the CLI (code={code}, err={err!r})")
-        check(result == {"verdict": "rebase-first", "reason": "base has moved ahead — rebase first"},
-              f"a stale candidate on a dash-leading base must request a rebase, got {result!r}")
+        check(code == 0,
+              f"a stale candidate on a dash-leading base is still reviewable (code={code}, err={err!r})")
+        check(result == {"verdict": "proceed", "reason": "GitHub merge state permits base check",
+                         "base_current": "no"},
+              f"a stale candidate on a dash-leading base must report the staleness, got {result!r}")
         check(refreshed == remote_head,
               "the dash-leading base fetch must refresh its remote-tracking ref before the stale verdict")
 
@@ -750,9 +766,59 @@ def _current_base_worktree(root: Path) -> "tuple[Path, str]":
     return candidate, head
 
 
+def _stale_base_worktree(root: Path) -> "tuple[Path, str]":
+    """A candidate clone whose HEAD does NOT contain fetched main — main advanced after the clone, exactly
+    as it does when a sibling campaign PR merges. Returns (worktree, HEAD sha)."""
+    remote, seed, candidate = root / "remote.git", root / "seed", root / "candidate"
+    _GIT.init_bare(remote)
+    _GIT.clone(remote, seed)
+    (seed / "f").write_text("base\n", encoding="utf-8")
+    _git(seed, "add", "f")
+    _git(seed, "commit", "-m", "base")
+    _git(seed, "push", "origin", "main")
+    _GIT.clone(remote, candidate)
+    head = _git(candidate, "rev-parse", "HEAD").stdout.strip()
+    (seed / "later").write_text("sibling merged\n", encoding="utf-8")
+    _git(seed, "add", "later")
+    _git(seed, "commit", "-m", "a sibling PR merged")
+    _git(seed, "push", "origin", "main")
+    return candidate, head
+
+
+def t_stale_base_with_file_still_stamps_and_records_no():
+    """A BEHIND PR is cleared to be reviewed, and BOTH readings land in one write.
+
+    This is the pin on the deadlock the serialized drain would otherwise create. `ledger.py verdict` refuses
+    unless `base_ok_sha == head_sha`, so if a behind PR could not reach `proceed` it could never record a
+    verdict — and a PR that cannot be reviewed can never reach the front of the drain to be rebased. So the
+    stamp MUST land for a stale base, and the staleness must ride along as `base_current: no` for the label
+    to project.
+
+    THE MUTATION PIN: make a stale ancestry withhold `proceed` again and this goes red.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        candidate, head = _stale_base_worktree(root)
+        vjson = root / "clean.json"
+        vjson.write_text(json.dumps(view()), encoding="utf-8")
+        ledger = root / "state.jsonl"
+        _ledger_row(ledger, "9", head)
+        code, out, err = capture_cli(M.main, ["check", "--pr", "9", "--view-json", str(vjson),
+                                              "--worktree", str(candidate), "--base", "main",
+                                              "--file", str(ledger)])
+        check(code == 0, f"a behind PR must still be cleared to review (stderr: {err})")
+        check(json.loads(out)["base_current"] == "no", f"the staleness must be reported, got {out!r}")
+        check(_base_ok_sha(ledger, "9") == head,
+              f"a behind PR must still be stamped, or its verdicts can never land: "
+              f"{_base_ok_sha(ledger, '9')!r}")
+        check(_ledger_field(ledger, "9", "base_current") == "no",
+              f"the ledger must record the staleness: {_ledger_field(ledger, '9', 'base_current')!r}")
+
+
 def t_proceed_with_file_records_base_ok():
-    """A final `proceed` with `--file` stamps `base_ok_sha` = the worktree HEAD; the SAME check WITHOUT `--file`
-    writes nothing (the pure decider is preserved)."""
+    """A final `proceed` with `--file` stamps `base_ok_sha` = the worktree HEAD AND records the ancestry
+    reading in the same write; the SAME check WITHOUT `--file` writes nothing (the pure decider is
+    preserved)."""
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
         candidate, head = _current_base_worktree(root)
@@ -766,10 +832,13 @@ def t_proceed_with_file_records_base_ok():
         code, out, err = capture_cli(M.main, ["check", "--pr", "9", "--view-json", str(vjson),
                                               "--worktree", str(candidate), "--base", "main", "--file", str(ledger)])
         check(code == 0, f"a current base with --file must proceed (stderr: {err})")
-        check(json.loads(out) == {"verdict": "proceed", "reason": "GitHub merge state permits base check"},
+        check(json.loads(out) == {"verdict": "proceed", "reason": "GitHub merge state permits base check",
+                                  "base_current": "yes"},
               f"a current base must proceed, got {out!r}")
         check(_base_ok_sha(ledger, "9") == head,
               f"proceed with --file did not record base_ok_sha = {head!r}: {_base_ok_sha(ledger, '9')!r}")
+        check(_ledger_field(ledger, "9", "base_current") == "yes",
+              f"proceed with --file did not record base_current: {_ledger_field(ledger, '9', 'base_current')!r}")
 
         # WITHOUT --file: still proceed, but NOTHING is written to a ledger.
         ledger2 = root / "state2.jsonl"
@@ -1080,7 +1149,8 @@ CASES = [
     ("unstable-proceeds", "UNSTABLE is a check signal and reaches the graph check", t_unstable_proceeds),
     ("blocked-proceeds", "BLOCKED is a permission signal and reaches the graph check", t_blocked_proceeds),
     ("dirty-rebases", "DIRTY -> rebase-first", t_dirty_rebases),
-    ("behind-rebases", "BEHIND -> rebase-first", t_behind_rebases),
+    ("behind-reviewable", "BEHIND -> proceed: an advanced base no longer blocks a review",
+     t_behind_reaches_the_enum_screen),
     ("unknown-mergestate-rechecks", "UNKNOWN merge state -> recheck", t_unknown_mergestate_rechecks),
     ("mergestate-total", "every mergeStateStatus value maps to a verdict (totality)",
      t_every_mergestate_value_is_mapped),
@@ -1121,9 +1191,9 @@ CASES = [
      t_cli_legacy_view_errors_keep_their_exact_wording),
     ("gh-writing-restores-absent-path", "gh_writing restores an absent PATH by deleting it, never as ''",
      t_gh_writing_restores_an_absent_path),
-    ("clean-view-stale-base", "a CLEAN second candidate behind a merged sibling rebases",
-     t_clean_view_with_stale_base_rebases),
-    ("clean-view-current-base", "a CLEAN candidate containing fetched base proceeds",
+    ("clean-view-stale-base", "a CLEAN second candidate behind a merged sibling proceeds, reporting no",
+     t_clean_view_with_stale_base_records_no),
+    ("clean-view-current-base", "a CLEAN candidate containing fetched base proceeds, reporting yes",
      t_clean_view_with_current_base_proceeds),
     ("force-rewritten-base", "a rewritten remote base is refreshed before ancestry reports stale",
      t_force_rewritten_base_refreshes_and_rebases),
@@ -1133,11 +1203,13 @@ CASES = [
     ("dash-base-current", "a dash-leading base refreshes its tracking ref and reports current ancestry",
      t_dash_leading_current_base_refreshes_and_proceeds),
     ("dash-base-stale", "a dash-leading base refreshes its tracking ref and reports stale ancestry",
-     t_dash_leading_stale_base_refreshes_and_rebases),
+     t_dash_leading_stale_base_refreshes_and_reports_no),
     ("candidate-revision-not-head", "an explicit candidate revision is checked instead of a moved local HEAD",
      t_candidate_revision_is_checked_instead_of_moved_head),
     ("proceed-file-records-base-ok", "a proceed with --file stamps base_ok_sha = HEAD; without --file writes nothing",
      t_proceed_with_file_records_base_ok),
+    ("stale-base-still-stamps", "a BEHIND PR still stamps base_ok_sha and records base_current=no",
+     t_stale_base_with_file_still_stamps_and_records_no),
     ("non-proceed-file-no-stamp", "rebase-first/recheck never stamp base_ok_sha, even with --file",
      t_non_proceed_with_file_leaves_base_ok),
     ("file-base-assertion-mismatch", "--file: --base disagreeing with the row's effective base rechecks",

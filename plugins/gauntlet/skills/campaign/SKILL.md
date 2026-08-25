@@ -234,7 +234,9 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
 
 24. A merge candidate is not held, on a live SHA, with `reviews_ok >= required(tier)` and
     `ci == green`. Merge one at a time until no candidate remains immediately ready after base
-    refresh. Campaign never passes `--delete-branch` — the repo's *Automatically delete head branches*
+    refresh. **REBASES are serialized with the merges, and only the candidate rebases**: after a merge,
+    other PRs are re-measured and labelled `gauntlet-rebase-pending`, never rebased
+    (`references/stage-3-merge.md`, "Step 6"). Campaign never passes `--delete-branch` — the repo's *Automatically delete head branches*
     setting governs the remote branch; local cleanup follows the per-PR `worktree_owned` /
     `branch_owned` flags. Execute each candidate through `merge.py run`; re-run that command after any
     partial failure instead of hand-running its later phases.
@@ -294,7 +296,7 @@ a line the tool writes.
 | `emit-amendment.py` | Reviewer's door: raise one plan amendment (the only sanctioned way; `ts` is tool-stamped, the proposed unit is validated like a plan unit) | `references/stage-2-review-gate.md` |
 | `emit-report.py` | Reviewer's door: write the pass's ONE report record and its verdict (the only sanctioned way, on every route — the report was the last free-text artifact) | `references/stage-2-review-gate.md` |
 | `reviewer-liveness.py` | Probe whether a dispatched reviewer's output stream is still moving; decides nothing, always exits 0 | `references/stage-2-review-gate.md` |
-| `base-preflight.py` | Decide proceed / rebase-first / recheck / park from live merge-state plus fetched base ancestry before review or fix; performs no rebase — with `--file`, `proceed` records `base_ok_sha` and `park` records the ledger-owned machine blocker | `references/stage-2-review-gate.md` |
+| `base-preflight.py` | Decide proceed / rebase-first / recheck / park from live merge-state plus fetched base ancestry before review or fix; `rebase-first` means a CONFLICT — a base that merely ADVANCED proceeds and is RECORDED, never refused. Performs no rebase — with `--file`, `proceed` records `base_ok_sha` + `base_current` and `park` records the ledger-owned machine blocker | `references/stage-2-review-gate.md` |
 | `base-retarget.py` | `resolve` — decide what a live base divergence MEANS for one row and perform the one ledger write it implies: MIGRATE the row (`ledger.py retarget`) when GitHub's own retarget explains it — the recorded base's PR merged AND GitHub's timeline records that merge moving THIS PR — and PARK it on the user otherwise; `decide` is the pure surface | `references/loop-control.md`, `references/pr-adoption.md` |
 | `format-preflight.py` | `check` — refuse to format any file whose formatter-write could escape the worktree (the file, or any path component, is a symlink); reads only, formats nothing | `references/stage-2-ci.md` |
 | `worker-prompt.py` | `fix` — bind one complete review/CI fix prompt and logical model class, then atomically publish its exact bytes + metadata | `references/fix-subagent-contract.md` |
@@ -304,7 +306,7 @@ a line the tool writes.
 | `mutate-ci-snapshot.py` | Mutation harness proving `ci-snapshot.py`'s rules are fixture-pinned; run by validation/CI, not the driver | `references/ci-derivation-spec.md` |
 | `merge-check.py` | `check` — decide merge-readiness (`merge` / `not-yet <reason>`) from the ledger row, live PR view, and fetched base ancestry | `references/stage-3-merge.md` |
 | `merge.py` | `run` — resumably execute one merge-check-approved PR merge, base sync, owned local cleanup, and terminal ledger write | `references/stage-3-merge.md` |
-| `label-mirror.py` | `mirror` — reconcile a PR's status label with its review gate (the canonical idempotent `gauntlet-accepted`/`gauntlet-reviewing` swap), computed from the ledger row; touches only the two status labels | `references/stage-2-review-gate.md` |
+| `label-mirror.py` | `mirror` — reconcile a PR's status labels with its ledger row: the gate label (`gauntlet-accepted`, else the tallied `gauntlet-reviewing <ok>/<required>`) and `gauntlet-rebase-pending`, creating each label it adds and sweeping off every other status label; never touches the run-owner label | `references/stage-2-review-gate.md` |
 | `reconcile.py` | `fetch` — construct, validate, and atomically promote the canonical run-scoped PR snapshot; `detect` — compare it against the ledger and emit per-PR FACTS. Names no action; routing is skill policy | `references/files-and-ledger.md`, `references/loop-control.md` |
 | `repair-pass.py` | Reassessment pass's door: `permitted` / `bundle` / `decide` — deterministic complete-history prompt, bundle hash binding, closed decision enum, ownership guardrail, repair cap | `references/repair-pass.md` |
 | `followups.py` | Schema-owning accessor for the follow-up store (`.gauntlet/followups.jsonl`) — a durable work QUEUE, not an archive: entries are deleted once recorded elsewhere, kept when nothing else would remember | `references/followups.md` |

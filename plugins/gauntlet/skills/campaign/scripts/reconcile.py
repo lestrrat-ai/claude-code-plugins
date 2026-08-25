@@ -64,6 +64,7 @@ import tempfile
 from pathlib import Path
 from typing import Callable
 
+from _gauntlet import labels
 from _gauntlet.modules import load_sibling
 from _gauntlet.testing import run_sibling_suite
 
@@ -88,12 +89,11 @@ CANONICAL_FIELDS: tuple[str, ...] = (
 SNAPSHOT_LIMIT = 1000
 SNAPSHOT_STATE = "open"
 
-# The run-owner label prefix (`gauntlet-run-<run-id>`) and the two mutually-exclusive status labels whose
-# presence reconcile REPORTS (never judges). These mirror `pr-adopt.py`/loop-control.md; the labels are a
-# tiny, stable vocabulary, reported verbatim.
-RUN_LABEL_PREFIX = "gauntlet-run-"
-REVIEWING_LABEL = "gauntlet-reviewing"
-ACCEPTED_LABEL = "gauntlet-accepted"
+# The run-owner label prefix (`gauntlet-run-<run-id>`), from the shared vocabulary owner. The status labels
+# reconcile REPORTS (never judges) are whatever `labels.is_status_label` claims — a SET, not a fixed pair,
+# because a reviewing label now carries its own tally and there is no finite list to retype here.
+RUN_LABEL_PREFIX = labels.RUN_PREFIX
+REBASE_PENDING_LABEL = labels.REBASE_PENDING
 
 # The two TERMINAL row statuses. A terminal row is DONE and reconcile does not compare it against the
 # snapshot at all (see `detect`). The status taxonomy is owned by `references/files-and-ledger.md`,
@@ -401,9 +401,13 @@ def _facts_for_present_row(row: dict, effective_base: str, entry: dict) -> dict:
     facts["state"] = entry["state"]
     facts["mergeable"] = entry["mergeable"]
     facts["mergeStateStatus"] = entry["mergeStateStatus"]
+    # The status labels the PR is WEARING, verbatim and in the order GitHub returned them, plus the
+    # base-currency flag on its own. A tallied reviewing name has no fixed spelling to key a boolean on, so
+    # the fact is the LIST — which also reports the pathological cases a boolean pair could not, such as a
+    # PR wearing two different tallies at once after a missed swap.
     facts["label_facts"] = {
-        REVIEWING_LABEL: REVIEWING_LABEL in entry["label_names"],
-        ACCEPTED_LABEL: ACCEPTED_LABEL in entry["label_names"],
+        "status_labels": [n for n in entry["label_names"] if labels.is_status_label(n)],
+        REBASE_PENDING_LABEL: REBASE_PENDING_LABEL in entry["label_names"],
     }
     return facts
 

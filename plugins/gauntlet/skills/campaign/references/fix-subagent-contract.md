@@ -27,11 +27,15 @@ is an **assertion** that must equal the row's effective base, and the helper als
 `baseRefName` against it. It fetches the base and prints ONE of four verdicts, and the action
 **splits by verdict** — only `proceed` clears the dispatch:
 
-- **`proceed`** → the base is current; **dispatch the fix**. The `--file` makes the `proceed` record
-  `base_ok_sha` for the current head — the MECHANICAL precondition `ledger.py verdict` enforces
-  (`stage-2-review-gate.md`, "Recording a verdict"): a review verdict is refused for a head with no fresh
-  `proceed`.
-- **`rebase-first`** → the branch conflicts with its base or lacks the refreshed base; do **NOT** dispatch.
+- **`proceed`** → the branch does not conflict with its base; **dispatch the fix**. The `--file` makes the
+  `proceed` record `base_ok_sha` for the current head — the MECHANICAL precondition `ledger.py verdict`
+  enforces (`stage-2-review-gate.md`, "Recording a verdict"): a review verdict is refused for a head with no
+  fresh `proceed` — **and `base_current` in the same write**, so run `label-mirror.py mirror` for the PR
+  after the check (`stage-2-review-gate.md`, "`gauntlet-rebase-pending` — the SECOND label axis").
+  **A `proceed` carrying `base_current: no` still dispatches.** The base advanced under this PR; that owes a
+  rebase before the MERGE, not before the fix, and the fix is not wasted by it — a clean base-only rebase at
+  the front of the drain carries the work forward unchanged.
+- **`rebase-first`** → the branch CONFLICTS with its base; do **NOT** dispatch.
   **REBASE the PR onto `<base>`** through `stage-2-review-gate.md`'s base-currency handling, which runs
   `clean-rebase.py` FIRST: a clean base-only rebase (exit 0) PRESERVES the verdicts and label, and only its
   **exit 3** — conflict OR diff-changed — falls back to the JUDGMENT path that resets the gate and re-mirrors
@@ -48,9 +52,9 @@ is an **assertion** that must equal the row's effective base, and the helper als
   helper has already written the `ledger.py park` machine-blocker transition, naming the value verbatim.
   Do **NOT** dispatch or re-poll; leave the held candidate until the user rules on the blocker.
 
-A fix authored on a stale or conflicting base is wasted work: it is re-reviewed against the rebased tip
-anyway, and its diff may not even apply. The tool fetches and decides only — it performs no rebase; the
-driver rebases only on `rebase-first`, exactly as at the review-gate site.
+A fix authored on a CONFLICTING base is wasted work: its diff may not even apply, and it fights the merge.
+That is why a conflict — and only a conflict — withholds the dispatch. The tool fetches and decides only; it
+performs no rebase, and the driver rebases only on `rebase-first`, exactly as at the review-gate site.
 
 ### Materialize the exact prompt bundle
 

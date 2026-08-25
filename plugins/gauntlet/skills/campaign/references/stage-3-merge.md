@@ -45,7 +45,9 @@ the row when GitHub's own retarget explains it and parking it otherwise. Act on 
 - `not-yet <reason>` → do **NOT** merge; the reason names the block. Route on the reason's **action**
   (the phrase the tool emits), never on a hand-copied list of enum values — a value the tool newly parks
   then routes correctly with no edit here:
-  - `rebase` reasons (base moved ahead / conflicts) → refresh the PR per step 6. A `BLOCKED` merge state
+  - `rebase` reasons (base moved ahead / conflicts) → refresh the PR per **step 6b**. **This is the ONE
+    place a merely-behind PR rebases** — at its own merge, having reached the front of the drain, not when
+    some sibling merged (step 6a owns why). A `BLOCKED` merge state
     that is merely **behind its base** emits a `rebase` reason here (the tool probes ancestry before
     parking), so it refreshes and re-gates rather than escalating to the user.
   - the tool's **`— park`** reasons (any `not-yet` reason that ends in `— park` / `park awaiting-user`)
@@ -100,8 +102,9 @@ green, no CI event will ever fire, campaign never approves PRs and never asks th
 settled PR forever. **Probe the base ancestry before parking: a `BLOCKED` PR that is only behind its base
 rebases (`merge-check.py` emits the `rebase` reason, verdicts carried), and only a `BLOCKED` PR proven up to
 date parks — name the blocker instead.** GitHub's merge-state enum is not a reliable "behind" signal (a
-behind PR can read `CLEAN` or `BLOCKED` under the same ruleset), so the Git ancestry check is the sound one,
-which is why `base-preflight.py` already runs it and the merge gate now matches.
+behind PR can read `CLEAN` or `BLOCKED` under the same ruleset), so the Git ancestry check is the sound one.
+`base-preflight.py` runs the same probe, but **RECORDS** its answer rather than acting on it; here the answer
+is a hard precondition, and this is the gate that keeps a PR from merging over a base it does not contain.
 
 **`UNSTABLE` means non-*passing*, which includes *pending*.** Treating it as red would dispatch a CI-fix
 subagent at a check that is merely **still running**.
@@ -172,9 +175,12 @@ foreign refs, root/reused cleanup targets, and cleanup before confirmed `MERGED`
 
 Never hand-run a later phase after this command fails. Fix the named cause, then re-run the command so its
 ownership checks and phase order remain in force.
-6. After each merge+sync+cleanup, reconcile other open PRs (write any `reviews_ok`/`head_sha`/`ci`
+6. After each merge+sync+cleanup, reconcile other open PRs — **REMEASURE them; do NOT rebase them**
+   (write any `reviews_ok`/`head_sha`/`ci`
    change below through `scripts/ledger.py … set --pr <N> --<field> <val>` by field name, never by
-   hand-editing the row by column position).
+   hand-editing the row by column position). Step 6 is TWO jobs, and separating them is the point of this
+   step: **6a** re-measures every other open PR against the base that just moved, and **6b** refreshes the
+   ONE PR whose merge the base is actually blocking.
 
    **SKIP HELD PRs FIRST — before any base refresh, rebase, or conflict handling.** A **HELD** PR
    (`ledger.py … dispatch-check --pr <N>` — parked on a human, or `repairing`) is **FROZEN**
@@ -193,13 +199,31 @@ ownership checks and phase order remain in force.
    only when returned `watch_warranted` is `true` (`stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE"). Parked
    status does not override that result.
 
+   **6a — REMEASURE, and LABEL. One PR rebases per merge, and it is the one at the front.**
    For each **non-parked** open PR, run `python3 scripts/base-preflight.py check --pr <pr> --worktree
    <worktree> --base <base> --file <state.jsonl>`, where `<base>` is that row's **effective base** (its
    explicit `base_branch`, else the legacy header — a run may hold PRs on different bases, so it is resolved
-   per PR, and `--base` is asserted against it). It fetches the base and requires it to be an ancestor
-   of `HEAD` even when GitHub still reports CLEAN. On `recheck`, re-poll and leave the candidate alone. On
+   per PR, and `--base` is asserted against it). It fetches the base and records whether it is an ancestor
+   of `HEAD` even when GitHub still reports CLEAN. Then **run `label-mirror.py mirror` for that PR**, which
+   projects the fresh reading as `gauntlet-rebase-pending` (`stage-2-review-gate.md`,
+   "`gauntlet-rebase-pending` — the SECOND label axis").
+
+   **A `proceed` carrying `base_current: no` is NOT a reason to rebase here.** Leave that PR exactly where it
+   is: behind, labelled, and fully reviewable. It rebases when it reaches the front of this drain and
+   `merge-check.py` says its merge is blocked on the base — **once**, not once per sibling merge. Rebasing
+   every behind PR after every merge is what turns an N-PR run into N(N-1)/2 force-pushes and the same number
+   of full CI cycles, and each of those rebases is undone by the very next merge into the base. It also buys
+   nothing: the reviews carried forward across a clean base-only rebase are the SAME reviews either way, and
+   the merge gate re-proves base currency from a live probe before anything merges.
+
+   On `recheck`, re-poll and leave the candidate alone. On
    `park`, the helper has already sent the unrecognized enum value through `ledger.py park`; leave the
-   now-held candidate alone. On `rebase-first`, rebase before considering the candidate for another review or merge:
+   now-held candidate alone. On `rebase-first` — **a CONFLICT, which is the only thing that still yields
+   it** — the branch cannot be reviewed or fixed as it stands, so refresh it now per 6b.
+
+   **6b — REFRESH the ONE PR that needs it.** Two things route here, and nothing else: a `rebase-first` from
+   6a (a conflict), and a `rebase` reason from `merge-check.py` on the PR the drain is currently trying to
+   merge (base moved ahead, or conflicts — "The merge precondition", above). Refresh that PR:
    - Clean rebase (no conflicts, PR diff unchanged) → **EXECUTED — not hand-run — by `python3
      scripts/clean-rebase.py run --ledger <state.jsonl> --pr <N> --worktree <worktree> --base <base>`**: it
      does the fetch/rebase/`--force-with-lease` push, verifies the PR's own diff is unchanged, and writes the
@@ -216,8 +240,8 @@ ownership checks and phase order remain in force.
 
    - Judgment-path rebase — a conflict resolved by hand, OR a no-conflict rebase that reshaped the PR's own
      diff (both `clean-rebase.py` exit-3 subcases) → PR content changed → **reset `reviews_ok` to 0 AND, in that
-     same step, reconcile the label by running `label-mirror.py mirror` for the PR** (it restores
-     `gauntlet-reviewing` on a PR carrying `gauntlet-accepted`) — the gate and its
+     same step, reconcile the label by running `label-mirror.py mirror` for the PR** (it restores the
+     reviewing label on a PR carrying `gauntlet-accepted`) — the gate and its
      label move together (`stage-2-review-gate.md`, "Status labels mirror the review gate", owns the swap
      and the tool). Update
      `head_sha` to the
@@ -235,5 +259,19 @@ The drain stays **serialized — one PR at a time across the whole run**, even w
 (`v3`, `main`). There is no run-wide checkout pinned to one branch: each merge resolves, validates, and syncs
 its own row's base, so a mixed-base run drains in one serial order and each merge updates only its base's
 local ref. Stop the merge loop only when no remaining PR is immediately mergeable after the latest base refresh.
+
+**The REBASES are serialized by the same drain, and that is the whole reason 6a does not rebase.** A PR is
+rebased when it is the one being merged, so a run pays **one** rebase and **one** CI cycle per PR rather than
+one per PR per sibling merge. Reviews are untouched by this: they run concurrently across PRs
+(`stage-2-review-gate.md`, Preconditions) on whatever base each PR currently sits on, because a base that
+merely advanced blocks no review. What is serialized is the **rebase-and-remerge**, not the gate.
+
+**What this deliberately gives up, stated plainly:** a PR can be reviewed against a base that a sibling PR
+has since advanced, and if its later rebase is clean with the diff unchanged, those verdicts carry forward
+without a re-review against the new base. That exposure is NOT new — the carry-forward rule has always
+allowed a clean base-only rebase after the verdicts landed ("Status labels mirror the review gate", the
+clean-base-only exception) — but deferring the rebase makes it the common case rather than the rare one.
+What still holds: nothing merges over a base it does not contain (`merge-check.py` proves ancestry from a
+live probe), and a rebase that CONFLICTS or reshapes the PR's own diff resets the gate and re-reviews.
 
 ---

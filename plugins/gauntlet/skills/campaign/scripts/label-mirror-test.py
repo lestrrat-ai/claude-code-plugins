@@ -12,6 +12,7 @@ promise there.
 
 from __future__ import annotations
 
+import ast
 import json
 import subprocess
 import tempfile
@@ -33,13 +34,14 @@ check = checker(M.SelfTestFailure)
 
 
 class FakeGh:
-    """A recorded `gh` runner. Answers `pr view` and `pr edit` from canned responses, records every argv,
-    and REFUSES any other command — a fixture that reaches an unexpected `gh` call is a fixture testing
-    something it did not mean to."""
+    """A recorded `gh` runner. Answers `pr view`, `pr edit` and `label create` from canned responses, records
+    every argv, and REFUSES any other command — a fixture that reaches an unexpected `gh` call is a fixture
+    testing something it did not mean to."""
 
-    def __init__(self, *, view=None, edit=(0, "", "")) -> None:
+    def __init__(self, *, view=None, edit=(0, "", ""), create=(0, "", "")) -> None:
         self.view = view          # (returncode, stdout, stderr) for `gh pr view`, or None to refuse it
         self.edit = edit          # (returncode, stdout, stderr) for `gh pr edit`
+        self.create = create      # (returncode, stdout, stderr) for `gh label create`
         self.calls: list[list[str]] = []
 
     def __call__(self, argv: list[str]) -> "subprocess.CompletedProcess[str]":
@@ -48,6 +50,8 @@ class FakeGh:
             resp = self.view
         elif argv[:3] == ["gh", "pr", "edit"]:
             resp = self.edit
+        elif argv[:3] == ["gh", "label", "create"]:
+            resp = self.create
         else:
             raise AssertionError(f"unexpected gh call: {argv}")
         if resp is None:
@@ -59,18 +63,24 @@ class FakeGh:
     def edited(self) -> bool:
         return any(a[:3] == ["gh", "pr", "edit"] for a in self.calls)
 
+    @property
+    def created(self) -> "list[str]":
+        """The label NAMES this fixture created, in call order."""
+        return [a[3] for a in self.calls if a[:3] == ["gh", "label", "create"]]
+
 
 def view_with(*labels: str) -> tuple:
     """A successful `gh pr view --json labels` response carrying exactly these label names."""
     return (0, json.dumps({"labels": [{"name": n} for n in labels]}), "")
 
 
-def build_ledger(d: Path, *, status="in_review", tier="STANDARD", reviews_ok="0", pr="9") -> Path:
+def build_ledger(d: Path, *, status="in_review", tier="STANDARD", reviews_ok="0", pr="9",
+                 base_current="-") -> Path:
     led = d / "state.jsonl"
     header = dict(L.HEADER_DEFAULTS)
     header["run_id"] = "g1"
     row = dict(L.ROW_DEFAULTS)
-    row.update(pr=pr, status=status, tier=tier, reviews_ok=reviews_ok)
+    row.update(pr=pr, status=status, tier=tier, reviews_ok=reviews_ok, base_current=base_current)
     L.dump(led, header, [row])
     return led
 
@@ -101,10 +111,12 @@ def drive(led: Path, pr: str, repo: str, fake: FakeGh, *,
 
 
 REPO = "o/n"
+ACCEPTED = "gauntlet-accepted"
+REBASE_PENDING = "gauntlet-rebase-pending"
 SWAP_TO_ACCEPTED = ["gh", "pr", "edit", "9", "--repo", REPO,
-                    "--add-label", "gauntlet-accepted", "--remove-label", "gauntlet-reviewing"]
+                    "--add-label", ACCEPTED, "--remove-label", "gauntlet-reviewing 1/2"]
 SWAP_TO_REVIEWING = ["gh", "pr", "edit", "9", "--repo", REPO,
-                     "--add-label", "gauntlet-reviewing", "--remove-label", "gauntlet-accepted"]
+                     "--add-label", "gauntlet-reviewing 1/2", "--remove-label", ACCEPTED]
 
 
 # --- the swap is applied, with the EXACT argv ---------------------------------
@@ -112,17 +124,35 @@ SWAP_TO_REVIEWING = ["gh", "pr", "edit", "9", "--repo", REPO,
 def t_reviewing_to_accepted_swaps():
     with tempfile.TemporaryDirectory() as d:
         led = build_ledger(Path(d), tier="STANDARD", reviews_ok="2")   # 2/2 -> accepted
-        fake = FakeGh(view=view_with("gauntlet-reviewing", "gauntlet-run-g1"))
+        fake = FakeGh(view=view_with("gauntlet-reviewing 1/2", "gauntlet-run-g1"))
         code, out, _err = drive(led, "9", REPO, fake)
         out = verdict(out)
     check(code == 0, f"a met gate must reconcile and exit 0, got {code}")
     out = verdict(out)
     check(out["changed"] is True, f"a reviewing->accepted swap must report changed, got {out!r}")
-    check(out["desired"] == "gauntlet-accepted", f"desired must be accepted, got {out!r}")
+    check(out["desired"] == [ACCEPTED], f"desired must be accepted alone, got {out!r}")
     check(out["required"] == 2 and out["reviews_ok"] == 2, f"tier/tally must be reported, got {out!r}")
-    check(out["current"] == ["gauntlet-reviewing", "gauntlet-run-g1"], f"current labels must be reported, got {out!r}")
+    check(out["current"] == ["gauntlet-reviewing 1/2", "gauntlet-run-g1"], f"current labels must be reported, got {out!r}")
     check(out["argv"] == SWAP_TO_ACCEPTED, f"the argv must be the canonical idempotent swap, got {out.get('argv')!r}")
+    check(fake.created == [ACCEPTED], f"the label added must be created first, got {fake.created!r}")
     check(fake.edited, "the swap must actually call `gh pr edit`")
+
+
+# --- the run-owner label is never swept, whatever else moves -------------------
+
+def t_run_label_is_never_removed():
+    """A sweep that took `gauntlet-run-<id>` off would drop the PR out of its own run — every later
+    label-scoped query stops seeing it. `gauntlet-authored` is another owner's state for the same reason.
+    Both must survive a reconcile that moves everything around them."""
+    with tempfile.TemporaryDirectory() as d:
+        led = build_ledger(Path(d), tier="STANDARD", reviews_ok="2")
+        fake = FakeGh(view=view_with("gauntlet-reviewing 0/2", "gauntlet-run-g1", "gauntlet-authored"))
+        code, out, _err = drive(led, "9", REPO, fake)
+        out = verdict(out)
+    check(code == 0, f"the reconcile must exit 0, got {code}")
+    removed = [out["argv"][i + 1] for i, a in enumerate(out["argv"]) if a == "--remove-label"]
+    check(removed == ["gauntlet-reviewing 0/2"],
+          f"only the stale gate label may be removed, got {removed!r}")
 
 
 # --- already right: no swap, no edit call -------------------------------------
@@ -130,7 +160,7 @@ def t_reviewing_to_accepted_swaps():
 def t_accepted_stays():
     with tempfile.TemporaryDirectory() as d:
         led = build_ledger(Path(d), tier="STANDARD", reviews_ok="2")
-        fake = FakeGh(view=view_with("gauntlet-accepted"), edit=None)  # edit=None => any edit is a failure
+        fake = FakeGh(view=view_with(ACCEPTED), edit=None, create=None)  # any edit/create is a failure
         code, out, _err = drive(led, "9", REPO, fake)
         out = verdict(out)
     check(code == 0, f"an already-accepted PR reconciles to a no-op, got {code}")
@@ -142,11 +172,12 @@ def t_accepted_stays():
 def t_reviewing_stays():
     with tempfile.TemporaryDirectory() as d:
         led = build_ledger(Path(d), tier="STANDARD", reviews_ok="1")   # 1/2 -> reviewing
-        fake = FakeGh(view=view_with("gauntlet-reviewing"), edit=None)
+        fake = FakeGh(view=view_with("gauntlet-reviewing 1/2"), edit=None, create=None)
         code, out, _err = drive(led, "9", REPO, fake)
         out = verdict(out)
     check(code == 0, f"a short gate already reviewing is a no-op, got {code}")
-    check(out["desired"] == "gauntlet-reviewing" and out["changed"] is False, f"expected reviewing no-op, got {out!r}")
+    check(out["desired"] == ["gauntlet-reviewing 1/2"] and out["changed"] is False,
+          f"expected reviewing no-op, got {out!r}")
     check(not fake.edited, "an already-reviewing label must trigger NO edit")
 
 
@@ -160,16 +191,16 @@ def t_readopt_escalation_flips_accepted_to_reviewing():
     # "Adoption-time tier decision", is what makes that happen. It is NOT a no-op here.
     with tempfile.TemporaryDirectory() as d:
         led = build_ledger(Path(d), tier="STANDARD", reviews_ok="1")   # 1/2 -> reviewing
-        fake = FakeGh(view=view_with("gauntlet-accepted", "gauntlet-run-g1"))
+        fake = FakeGh(view=view_with(ACCEPTED, "gauntlet-run-g1"))
         code, out, _err = drive(led, "9", REPO, fake)
         out = verdict(out)
     check(code == 0, f"a short gate after escalation must reconcile and exit 0, got {code}")
     out = verdict(out)
     check(out["changed"] is True,
           f"an accepted->reviewing swap must report changed, got {out!r}")
-    check(out["desired"] == "gauntlet-reviewing", f"desired must be reviewing after escalation, got {out!r}")
+    check(out["desired"] == ["gauntlet-reviewing 1/2"], f"desired must be reviewing after escalation, got {out!r}")
     check(out["required"] == 2 and out["reviews_ok"] == 1, f"tier/tally must be reported, got {out!r}")
-    check(out["current"] == ["gauntlet-accepted", "gauntlet-run-g1"],
+    check(out["current"] == [ACCEPTED, "gauntlet-run-g1"],
           f"current labels must be reported, got {out!r}")
     check(out["argv"] == SWAP_TO_REVIEWING,
           f"the argv must be the canonical reviewing-restoring swap, got {out.get('argv')!r}")
@@ -229,7 +260,7 @@ def t_gh_view_failure_exit_1():
 def t_gh_edit_failure_exit_1():
     with tempfile.TemporaryDirectory() as d:
         led = build_ledger(Path(d), tier="STANDARD", reviews_ok="2")
-        fake = FakeGh(view=view_with("gauntlet-reviewing"), edit=(1, "", "gh: label not found"))
+        fake = FakeGh(view=view_with("gauntlet-reviewing 0/2"), edit=(1, "", "gh: label not found"))
         code, out, err = drive(led, "9", REPO, fake)
     check(code == 1, f"a failed `gh pr edit` must fail closed (exit 1), got {code}")
     check(out is None, "a failed edit prints no success JSON — the swap did not land")
@@ -242,7 +273,7 @@ def t_gh_edit_failure_exit_1():
 def t_dry_run_no_edit():
     with tempfile.TemporaryDirectory() as d:
         led = build_ledger(Path(d), tier="STANDARD", reviews_ok="2")
-        fake = FakeGh(view=view_with("gauntlet-reviewing"), edit=None)  # any edit fails the fixture
+        fake = FakeGh(view=view_with("gauntlet-reviewing 1/2"), edit=None, create=None)  # any write fails the fixture
         code, out, _err = drive(led, "9", REPO, fake, dry_run=True)
         out = verdict(out)
     check(code == 0, f"a dry-run exits 0, got {code}")
@@ -254,23 +285,110 @@ def t_dry_run_no_edit():
 # --- the required(tier) boundary, exactly, for TRIVIAL(1) and STANDARD(2) -----
 
 def t_required_boundary():
-    # (tier, reviews_ok, expected desired) — each straddles required(tier) by exactly one.
+    # (tier, reviews_ok, expected desired) — each straddles required(tier) by exactly one, and each short
+    # gate spells its OWN tally, which is the whole point of the tallied name: 0/1 and 1/2 are different
+    # labels, so a reader sees how far along a PR is, not merely that it is not done.
     for tier, ok, desired in [
-        ("TRIVIAL", "1", "gauntlet-accepted"),    # 1/1 meets the floor
-        ("TRIVIAL", "0", "gauntlet-reviewing"),   # 0/1 short
-        ("STANDARD", "2", "gauntlet-accepted"),   # 2/2 meets the floor
-        ("STANDARD", "1", "gauntlet-reviewing"),  # 1/2 short
-        ("HIGH", "2", "gauntlet-accepted"),       # HIGH needs 2, like STANDARD
+        ("TRIVIAL", "1", ACCEPTED),                 # 1/1 meets the floor
+        ("TRIVIAL", "0", "gauntlet-reviewing 0/1"),  # 0/1 short
+        ("STANDARD", "2", ACCEPTED),                 # 2/2 meets the floor
+        ("STANDARD", "1", "gauntlet-reviewing 1/2"),  # 1/2 short — one verdict in
+        ("STANDARD", "0", "gauntlet-reviewing 0/2"),  # 0/2 short — none yet
+        ("HIGH", "2", ACCEPTED),                     # HIGH needs 2, like STANDARD
     ]:
         with tempfile.TemporaryDirectory() as d:
             led = build_ledger(Path(d), tier=tier, reviews_ok=ok)
-            # Seed current with the OTHER label so the swap is always "changed" and observable.
-            other = "gauntlet-reviewing" if desired == "gauntlet-accepted" else "gauntlet-accepted"
+            # Seed current with a DIFFERENT gate label so the swap is always "changed" and observable.
+            other = "gauntlet-reviewing 9/9" if desired == ACCEPTED else ACCEPTED
             fake = FakeGh(view=view_with(other))
             code, out, _err = drive(led, "9", REPO, fake)
             out = verdict(out)
         check(code == 0, f"[{tier} {ok}] exit 0, got {code}")
-        check(out["desired"] == desired, f"[{tier} {ok}/{out['required']}] desired must be {desired}, got {out!r}")
+        check(out["desired"] == [desired],
+              f"[{tier} {ok}/{out['required']}] desired must be {desired!r}, got {out!r}")
+        check(fake.created == [desired], f"[{tier} {ok}] the added label must be created, got {fake.created!r}")
+
+
+def t_rebase_pending_is_an_independent_axis():
+    """`gauntlet-rebase-pending` tracks `base_current`, NOT the gate — so an ACCEPTED PR that is behind its
+    base wears both labels at once. That pair is the normal state of a PR waiting its turn in the serialized
+    drain, and a reconcile that treated the two axes as one label would keep swapping them forever.
+
+    Only an explicit `no` claims the PR is behind: `-` means nothing has probed this head yet, which is not
+    a claim in either direction, so no label is applied for it.
+    """
+    cases = [
+        # (reviews_ok, base_current, desired labels)
+        ("2", "no", [ACCEPTED, REBASE_PENDING]),        # accepted AND behind — both, together
+        ("2", "yes", [ACCEPTED]),                       # accepted and current — gate label alone
+        ("2", "-", [ACCEPTED]),                         # no reading yet — never a guessed label
+        ("1", "no", ["gauntlet-reviewing 1/2", REBASE_PENDING]),   # short AND behind
+    ]
+    for ok, base_current, desired in cases:
+        with tempfile.TemporaryDirectory() as d:
+            led = build_ledger(Path(d), tier="STANDARD", reviews_ok=ok, base_current=base_current)
+            fake = FakeGh(view=view_with())            # a bare PR: everything desired must be added
+            code, out, _err = drive(led, "9", REPO, fake)
+            out = verdict(out)
+        check(code == 0, f"[{ok},{base_current}] exit 0, got {code}")
+        check(out["desired"] == desired, f"[{ok},{base_current}] desired must be {desired!r}, got {out!r}")
+        added = [out["argv"][i + 1] for i, a in enumerate(out["argv"]) if a == "--add-label"]
+        check(added == desired, f"[{ok},{base_current}] the argv must add exactly those, got {added!r}")
+
+
+def t_rebase_pending_is_swept_when_the_row_says_current():
+    """A PR whose rebase LANDED must lose the label in the same reconcile that sees the row say so —
+    a `gauntlet-rebase-pending` left behind is a false public claim that a PR is still stuck."""
+    with tempfile.TemporaryDirectory() as d:
+        led = build_ledger(Path(d), tier="STANDARD", reviews_ok="2", base_current="yes")
+        fake = FakeGh(view=view_with(ACCEPTED, REBASE_PENDING, "gauntlet-run-g1"))
+        code, out, _err = drive(led, "9", REPO, fake)
+        out = verdict(out)
+    check(code == 0, f"the reconcile must exit 0, got {code}")
+    check(out["argv"] == ["gh", "pr", "edit", "9", "--repo", REPO, "--remove-label", REBASE_PENDING],
+          f"only the stale rebase label may move, got {out.get('argv')!r}")
+    check(fake.created == [], f"a reconcile that ADDS nothing must create nothing, got {fake.created!r}")
+
+
+def t_no_tool_spells_a_label_itself():
+    """NO bundled tool may carry a label NAME as a string literal — `_gauntlet/labels.py` owns every
+    spelling and every tool computes from it.
+
+    This is the mechanical form of a rule that would otherwise be an exhortation. The vocabulary used to be
+    two fixed strings copied into three tools, which was survivable; a tallied name is COMPUTED, so a
+    second copy of the computation is a second answer to "which label does this row wear", and the copy
+    goes wrong silently — on GitHub, where a human reads it.
+
+    It reads STRING LITERALS through `ast`, not raw text: comments and docstrings explaining the labels are
+    exactly what a doc-heavy tree is made of, and flagging those would make the check unusable. A docstring
+    is a string literal, so docstrings are skipped explicitly. Sibling `*-test.py` suites are exempt —
+    a fixture must be able to name the label it asserts, or it is asserting the code's own opinion.
+    """
+    names = (M.labels.ACCEPTED, M.labels.REVIEWING, M.labels.REBASE_PENDING)
+    owner = Path(M.labels.__file__).resolve()
+    offenders: list[str] = []
+    for path in sorted(OWNER.parent.rglob("*.py")):
+        if path.name.endswith("-test.py") or path.resolve() == owner:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        docstrings: set[int] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if not node.body:
+                continue
+            first = node.body[0]
+            if (isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant)
+                    and isinstance(first.value.value, str)):
+                docstrings.add(id(first.value))
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                    and id(node) not in docstrings
+                    and any(name in node.value for name in names)):
+                offenders.append(f"{path.name}:{node.lineno}: {node.value!r}")
+    check(not offenders,
+          "a label name is spelled inside a tool instead of coming from `_gauntlet/labels.py`:\n  "
+          + "\n  ".join(offenders))
 
 
 def t_malformed_repo_fails_before_any_gh_call():
@@ -299,5 +417,9 @@ CASES = [
     ("view-failure", "a failed `gh pr view` fails closed (exit 1), never reaches the edit", t_gh_view_failure_exit_1),
     ("edit-failure", "a failed `gh pr edit` fails closed (exit 1), no success JSON", t_gh_edit_failure_exit_1),
     ("dry-run", "a dry-run shows the swap argv but applies nothing", t_dry_run_no_edit),
-    ("required-boundary", "reviews_ok at exactly required(tier) picks accepted; one under picks reviewing", t_required_boundary),
+    ("required-boundary", "reviews_ok at exactly required(tier) picks accepted; one under spells its own tally", t_required_boundary),
+    ("run-label-never-removed", "a reconcile never sweeps gauntlet-run-<id> or gauntlet-authored", t_run_label_is_never_removed),
+    ("rebase-pending-axis", "gauntlet-rebase-pending tracks base_current independently of the gate", t_rebase_pending_is_an_independent_axis),
+    ("rebase-pending-swept", "a row that says current loses a standing gauntlet-rebase-pending", t_rebase_pending_is_swept_when_the_row_says_current),
+    ("no-tool-spells-a-label", "no bundled tool carries a label name as a string literal — labels.py owns every spelling", t_no_tool_spells_a_label_itself),
 ]

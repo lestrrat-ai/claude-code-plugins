@@ -237,8 +237,9 @@ earned under the **narrower** scope, and a header write moves **no head SHA**, s
 that tally — the PR could otherwise merge with the now-in-scope area **never reviewed**. Reset those rows
 first (`ledger.py set --pr <N> --reviews-ok 0`, re-opening each for a fresh review under the broadened
 scope) and, **in that same step, run `label-mirror.py mirror` for each** so its public status label is
-restored to `gauntlet-reviewing` — a `reviews_ok`→0 reset owes the relabel exactly like any other
-(`stage-2-review-gate.md`, status-label projection); then re-declare. **ADDING** a default **narrows** scope, under which banked credit stays valid, so an
+restored to the reviewing label for the voided tally — a `reviews_ok`→0 reset owes the relabel exactly like
+any other (`stage-2-review-gate.md`, "Status labels mirror the review gate", owns the label and its
+spelling); then re-declare. **ADDING** a default **narrows** scope, under which banked credit stays valid, so an
 add is always allowed. This banked-credit guard covers a PR that has **already** banked SATISFIED credit;
 the complementary window — a PR at `reviews_ok = 0` with a review **in flight** — is closed at tally time,
 not here: `verify --ledger` refuses a verdict whose DISPATCH-TIME `pass_identity.default_non_goals` binding
@@ -331,7 +332,8 @@ Header field notes (the header fields above; per-row fields follow):
 
   **What a genuine head move resets — THE CANONICAL SET; every other site POINTS here and re-lists
   nothing:** the liveness counters (`stage-2-ci.md`, "THE LIVENESS COUNTERS", owns that set and every
-  member) **and** the base-preflight stamp `base_ok_sha` (the `base_ok_sha` field below owns it) — both
+  member) **and** the base-preflight readings (`PREFLIGHT_OWNED` in `ledger.py` names that set; the
+  `base_ok_sha` and `base_current` fields below own what each means) — all
   read from `ROW_DEFAULTS` by `apply_head_sha`, never a list retyped anywhere. The review **gate** is a
   SEPARATE decision and is NOT in this set: `reviews_ok` carries forward on a clean base-only rebase, and
   every other reset of the gate tally is owned by `stage-2-review-gate.md`, "Status labels mirror the
@@ -364,17 +366,32 @@ Header field notes (the header fields above; per-row fields follow):
   fix, a rebase or a content change: a **SATISFIED** verdict, and a **non-abort reassessment decision**
   (`repair-pass.py decide`, which `repair-pass.md` owns). Same absent flag as `review_rounds`, same reason —
   the second writer is a tool that must SPEND a repair to clear it, not a door a driver can type at.
-- `base_ok_sha` — the head a base-preflight **`proceed`** was last decided for: the **MECHANICAL** form of the
-  rebase-before-review precondition. **`ledger.py verdict` refuses unless `base_ok_sha == head_sha`** — for a
+- `base_ok_sha` — the head a base-preflight **`proceed`** was last decided for: the **MECHANICAL** form of
+  "a review is measured only against a head a preflight has cleared".
+  **`ledger.py verdict` refuses unless `base_ok_sha == head_sha`** — for a
   SATISFIED **or** a NOT SATISFIED, since a counted NOT SATISFIED spends `review_rounds`/`ns_streak` toward the
   caps just the same — so a review verdict can never be recorded over a base no fresh `proceed` cleared.
   **Written by exactly one thing: `base-preflight.py check`**, through `ledger.py base-ok`, when — and only
   when — it decides `proceed` for the live head. It has **no `set`/`add-row` flag** (the same absent-door
   mechanism as `review_rounds`): a hand-written stamp would forge a `proceed` no preflight ever decided,
-  recording a verdict over a conflicting or stale base, which is the exact waste this guard exists to stop. It
+  recording a verdict over a conflicting base, which is the exact waste this guard exists to stop. It
   is SHA-bound and voided on a head move exactly like the liveness counters (`head_sha` above, the reset
   family), and stamping it is **not activity** (it records a precondition, like re-arming the watchdog). The
   default is `-`, which no 40-char head equals, so `verdict` **fails closed** until base-preflight runs.
+- `base_current` — **`yes`**, **`no`**, or **`-`**: what that same `proceed`'s Git ancestry probe saw for that
+  head. `no` means the base has advanced past this head, so the PR owes a rebase **before it merges** — a base
+  that merely advanced does **not** block a review (`stage-2-review-gate.md`, "2a preconditions"; only a
+  CONFLICT does). Written by the same one writer through the same one door, `ledger.py base-ok`, in the SAME
+  write as `base_ok_sha` — they describe one probe of one head, so they can never disagree — and closed to
+  `set`/`add-row` for a different reason than its neighbour: it gates nothing, so nothing could be forged with
+  it, but it is a **sensor reading**, and a hand-typed reading is the forged-sensor failure `last_activity` is
+  closed against.
+
+  **NO GATE READS IT.** `merge-check.py` runs its own live probe at the merge, so the one decision that turns
+  on base currency is made from a fresh reading rather than a remembered one. This field exists so
+  `label-mirror.py` can project `gauntlet-rebase-pending` onto GitHub: a stale value costs a wrong label,
+  never a wrong merge. `-` makes **no claim in either direction**, so a head nothing has probed yet wears no
+  rebase label rather than a guessed one.
 
   **What READS these counters is `ledger.py verdict` itself, and at a cap it STOPS THE LOOP.** They are
   sensors, and the reader is fused into the one door that cannot be skipped — deliberately: a cap
@@ -722,7 +739,8 @@ ledger.py --file <state.jsonl> add-row --pr N [--<field> <val> …] # register a
 ledger.py --file <state.jsonl> set --pr N --<field> <val> [--<field> <val> …]  # update named fields on the row for PR N
 ledger.py --file <state.jsonl> verdict --pr N --head-sha <sha> --verdict satisfied|not-satisfied
                                                                   # record ONE landed review verdict — the ONLY sanctioned path (refused unless base_ok_sha == head_sha)
-ledger.py --file <state.jsonl> base-ok --pr N --head-sha <sha>    # record a base-preflight `proceed` for the head (base_ok_sha) — written only by base-preflight.py, never hand-set
+ledger.py --file <state.jsonl> base-ok --pr N --head-sha <sha> --base-current yes|no
+                                                                  # record a base-preflight `proceed` for the head (base_ok_sha + base_current) — written only by base-preflight.py, never hand-set
 ledger.py --file <state.jsonl> get --pr N [--field <f>]           # print the row as JSON, or one field
 ledger.py --file <state.jsonl> list [--where <field>=<val>]       # print matching rows' pr numbers (all if no filter)
 ledger.py --file <state.jsonl> table [--all] [--fields <f>,<f>,…] # print run header + the live rows as an aligned table (read-only; the header status_verbosity decides whether the run-config block prints)

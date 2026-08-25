@@ -110,8 +110,8 @@ def t_adopt_same_repo():
     check(row["status"] == "in_review", "status initializes to in_review")
     check(row["reviews_ok"] == "0", "reviews_ok initializes to 0 (no verdicts yet)")
     check(row["pr_origin"] == "external", "pr_origin = the input")
-    check(p["labels_add"] == ["gauntlet-run-g1", "gauntlet-reviewing"],
-          "labels_add == [our owner label, gauntlet-reviewing]")
+    check(p["labels_add"] == ["gauntlet-run-g1", "gauntlet-reviewing 0/2"],
+          "labels_add == [our owner label, the ZERO tally for this tier]")
     check(p["worktree"] == str(Path("/wt") / "feat-x"), "worktree == worktrees_root / headRefName")
     check(p["base"] == "main", "base == baseRefName, carried under `base` for the executor to record per-row")
     # teeth: base/worktree/ownership flags are NOT in the PLAN row — the executor writes the row base_branch
@@ -123,7 +123,7 @@ def t_adopt_same_repo():
 
 
 def t_adopt_when_already_ours():
-    p = plan(labels=[lbl("gauntlet-run-g1"), lbl("gauntlet-reviewing")])
+    p = plan(labels=[lbl("gauntlet-run-g1"), lbl("gauntlet-reviewing 0/2")])
     check(p["verdict"] == "adopt", "a PR already carrying OUR run label re-adopts, never refuses")
     check(p["row"]["status"] == "in_review", "re-adoption still yields the computed row")
 
@@ -166,8 +166,8 @@ def t_cli_plan_adopts():
         check(p["verdict"] == "adopt", "`plan` prints the adopt verdict")
         check(p["row"]["tier"] == "HIGH", "the printed row carries the input tier")
         check(p["row"]["head_sha"] == "c" * 40, "the printed row's head_sha = headRefOid")
-        check(p["labels_add"] == ["gauntlet-run-g1", "gauntlet-reviewing"],
-              "the printed labels_add == [owner label, gauntlet-reviewing]")
+        check(p["labels_add"] == ["gauntlet-run-g1", "gauntlet-reviewing 0/2"],
+              "the printed labels_add == [owner label, the zero tally]")
 
 
 # --- pr_origin is DERIVED from labels, never a caller flag (fix 3) -------------
@@ -253,7 +253,7 @@ def _set_row(ledger: Path, pr, **fields) -> None:
 def _record_verdict(ledger: Path, pr, head_sha, verdict="satisfied") -> None:
     # `verdict` refuses unless a base-preflight `proceed` is on record for THIS head
     # (base_ok_sha == head_sha); stamp it first, exactly as the real flow does (base-preflight.py -> base-ok).
-    _ledger("--file", str(ledger), "base-ok", "--pr", str(pr), "--head-sha", head_sha)
+    _ledger("--file", str(ledger), "base-ok", "--pr", str(pr), "--head-sha", head_sha, "--base-current", "yes")
     _ledger("--file", str(ledger), "verdict", "--pr", str(pr), "--head-sha", head_sha, "--verdict", verdict)
 
 
@@ -410,7 +410,10 @@ def t_gh_scoped_to_project_root():
         code, _, err, rec = _adopt(d, ledger, view(), wroot=d / "wt")
         check(code == 0, f"adopt succeeds (got {code}: {err})")
         ghs = rec.gh_calls()
-        check(len(ghs) == 3, f"expected 3 gh calls (view, label create, pr edit); got {len(ghs)}")
+        # view, the run-owner label create, the gate label create, then the one pr edit. Every label this
+        # adoption ADDS is created first, and a fresh adoption adds exactly one gate label.
+        check(len(ghs) == 4,
+              f"expected 4 gh calls (view, run-label create, gate-label create, pr edit); got {len(ghs)}")
         for c in ghs:
             check(c["cwd"] == str(d),
                   f"every gh call must run in project-root {d}, not the invoking cwd; "
@@ -584,15 +587,18 @@ def t_readopt_accepted_unchanged_head_labels():
                  tier="HIGH")
         _record_verdict(ledger, 12, sha)
         _record_verdict(ledger, 12, sha)          # reviews_ok=2 == required(HIGH)
-        code, _, err, rec = _adopt(d, ledger, view(headRefOid=sha), wroot=wroot, worktree_head=sha,
+        # The PR is WEARING a stale tally, so the sweep has something real to take off. (The removal used to
+        # be unconditional, which meant no fixture ever proved the label was actually there.)
+        live = view(headRefOid=sha, labels=[lbl("gauntlet-run-g1"), lbl("gauntlet-reviewing 1/2")])
+        code, _, err, rec = _adopt(d, ledger, live, wroot=wroot, worktree_head=sha,
                                    checkouts=[(str(wt), "refs/heads/feat-x")])
         check(code == 0, f"accepted re-adopt succeeds (got {code}: {err})")
         e = rec.one("gh", "pr", "edit")
         check(e is not None, "a gh pr edit is issued")
         check(_labelset(e, "--add-label") == {"gauntlet-run-g1", "gauntlet-accepted"},
               f"an already-passed PR (gate met, unchanged head) ADDS run+accepted; got {e}")
-        check(_labelset(e, "--remove-label") == {"gauntlet-reviewing"},
-              f"and REMOVES the other status label in the same call; got {e}")
+        check(_labelset(e, "--remove-label") == {"gauntlet-reviewing 1/2"},
+              f"and REMOVES the stale tally in the same call; got {e}")
 
 
 def t_readopt_changed_head_labels():
@@ -605,11 +611,12 @@ def t_readopt_changed_head_labels():
         _add_row(ledger, 12, head_sha=old, tier="HIGH")
         _record_verdict(ledger, 12, old)
         _record_verdict(ledger, 12, old)          # was accepted at the OLD head
-        code, _, err, rec = _adopt(d, ledger, view(headRefOid=new), wroot=wroot, worktree_head=new)
+        live = view(headRefOid=new, labels=[lbl("gauntlet-accepted")])   # the label it earned at the OLD head
+        code, _, err, rec = _adopt(d, ledger, live, wroot=wroot, worktree_head=new)
         check(code == 0, f"changed-head re-adopt succeeds (got {code}: {err})")
         e = rec.one("gh", "pr", "edit")
-        check(_labelset(e, "--add-label") == {"gauntlet-run-g1", "gauntlet-reviewing"},
-              f"a moved head (reviews_ok reset) goes back under review; got {e}")
+        check(_labelset(e, "--add-label") == {"gauntlet-run-g1", "gauntlet-reviewing 0/2"},
+              f"a moved head (reviews_ok reset) goes back under review at a zero tally; got {e}")
         check(_labelset(e, "--remove-label") == {"gauntlet-accepted"},
               f"and the stale gauntlet-accepted is removed in the same call; got {e}")
 
@@ -1026,7 +1033,7 @@ def t_mixed_base_end_to_end():
             return {"number": number, "headRefName": branch, "headRefOid": head, "title": f"t{number}",
                     "baseRefName": base, "state": "OPEN", "mergeable": "MERGEABLE",
                     "mergeStateStatus": "CLEAN",
-                    "labels": [{"name": run_label}, {"name": M.REVIEWING_LABEL}]}
+                    "labels": [{"name": run_label}, {"name": "gauntlet-reviewing 0/2"}]}
 
         prs.write_text(json.dumps([entry(41, "fix-v3", "main", sha_v3),
                                    entry(52, "fix-main", "main", sha_main)]), encoding="utf-8")
