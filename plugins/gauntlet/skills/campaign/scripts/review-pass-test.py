@@ -2907,6 +2907,43 @@ def run_status_cases(mod: types.ModuleType, T: Tables, tmp: Path) -> int:
             print(f"ok       [status] {name:24} {case['why'][:58]}")
         else:
             failures += 1
+
+    # `status --ledger` is advisory, but its tally still has to come from the selected run. The path check
+    # catches a sibling run, and the identity check catches a copied ledger placed under the selected run.
+    # A matching in-tree ledger proves the guard does not reject the normal status invocation.
+    d = tmp / "status-ledger-scope"
+    d.mkdir(parents=True, exist_ok=True)
+    build(tmp, d.name, T.PLAN, T.WORKED, report=None)
+    foreign = d.parent / "status-ledger-foreign"
+    foreign.mkdir(parents=True, exist_ok=True)
+    foreign_ledger = foreign / "state.jsonl"
+    foreign_ledger.write_text("\n".join([
+        json.dumps({"type": "header", "run_id": foreign.name, "default_non_goals": "[]"}),
+        json.dumps({"type": "row", "pr": "41", "tier": "HIGH", "reviews_ok": "2"}),
+    ]) + "\n", encoding="utf-8")
+    cases = [
+        ("foreign-path", foreign_ledger, 2, "does not resolve under selected run"),
+        ("foreign-identity", d / "state.jsonl", 2, "has run_id"),
+        ("matching-identity", d / "state.jsonl", 0, "2/2"),
+    ]
+    for name, ledger, want_code, needle in cases:
+        if name == "foreign-identity":
+            ledger.write_text("\n".join([
+                json.dumps({"type": "header", "run_id": foreign.name, "default_non_goals": "[]"}),
+                json.dumps({"type": "row", "pr": "41", "tier": "HIGH", "reviews_ok": "2"}),
+            ]) + "\n", encoding="utf-8")
+        elif name == "matching-identity":
+            ledger.write_text("\n".join([
+                json.dumps({"type": "header", "run_id": d.name, "default_non_goals": "[]"}),
+                json.dumps({"type": "row", "pr": "41", "tier": "HIGH", "reviews_ok": "2"}),
+            ]) + "\n", encoding="utf-8")
+        code, text = run_cli(mod, ["status", "--run", str(d), "--ledger", str(ledger), "--history",
+                                   "--now", "2026-07-06T00:03:00Z"])
+        if code != want_code or needle not in text:
+            print(f"FAIL     [status] {name}: exit {code}, expected {want_code}, missing {needle!r}\n{text}")
+            failures += 1
+        else:
+            print(f"ok       [status] {name:24} selected-run ledger scope and identity")
     return failures
 
 

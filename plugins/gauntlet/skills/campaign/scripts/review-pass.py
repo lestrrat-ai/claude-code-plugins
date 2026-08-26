@@ -3046,6 +3046,29 @@ def load_ledger_module() -> types.ModuleType:
     return mod
 
 
+def load_status_ledger(ledger_path: Path, rundir: Path, ledger_module: types.ModuleType) -> tuple[dict, list[dict]]:
+    """Load a status tally only from the selected run's resolved tree and identity."""
+    run_root = rundir.resolve()
+    resolved_ledger = ledger_path.resolve()
+    try:
+        resolved_ledger.relative_to(run_root)
+    except ValueError as exc:
+        raise OperatorError(
+            f"--ledger {ledger_path} does not resolve under selected run {rundir} — status must render "
+            f"the selected run's own ledger"
+        ) from exc
+
+    header, rows = ledger_module.load(resolved_ledger)
+    expected_run_id = run_root.name
+    actual_run_id = header.get("run_id")
+    if actual_run_id != expected_run_id:
+        raise OperatorError(
+            f"--ledger {ledger_path} has run_id {actual_run_id!r}, but selected run {rundir} has run_id "
+            f"{expected_run_id!r} — status must render the selected run's own ledger"
+        )
+    return header, rows
+
+
 def status_row(progress: Path, now: datetime, want_verify: bool,
                ledger_rows: "list[dict] | None", superseded: bool = False) -> "list[str]":
     """One pass's cells, rendered in isolation so ONE malformed pass cannot crash the whole table.
@@ -3137,7 +3160,7 @@ def cmd_status(args) -> int:
     reviewer: "str | None" = None
     if args.ledger:
         L = load_ledger_module()
-        _header, ledger_rows = L.load(Path(args.ledger))
+        _header, ledger_rows = load_status_ledger(Path(args.ledger), rundir, L)
         reviewer = _header.get("reviewer")
 
     columns = ["pass", "units", "now", "find", "elapsed", "health", "verdict"]
@@ -3478,7 +3501,7 @@ def build_parser() -> "tuple[argparse.ArgumentParser, list[str]]":
     st.add_argument("--pr", help="show only this PR's passes")
     st.add_argument("--verify", action="store_true",
                     help="add evaluate()'s authoritative verdict column (ok/incomplete/amended/unusable)")
-    st.add_argument("--ledger", help="a state.jsonl — adds a reviews_ok/required(tier) tally column")
+    st.add_argument("--ledger", help="the selected run's state.jsonl — adds a reviews_ok/required(tier) tally column")
     st.add_argument("--history", dest="history", action="store_true",
                     help="show TERMINAL passes too — done (finished) and gone (superseded/relaunched) — plus "
                          "superseded launch attempts, dimmed on a TTY. The default hides them and prints a "
