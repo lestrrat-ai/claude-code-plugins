@@ -547,6 +547,23 @@ def t_widths_from_escaped(L: ModuleType, tmp: Path) -> None:
           f"was measured on the RAW value ({len(raw)}), not the printed one")
 
 
+def t_grid_rejects_wrong_width(L: ModuleType, _: Path) -> None:
+    """A grid row must contain exactly one cell per declared field, with one documented error shape."""
+    fields = ("first", "second")
+    for cells, actual in ((["one"], 1), (["one", "two", "three"], 3)):
+        try:
+            L.grid_lines(fields, [cells])
+        except ValueError as exc:
+            check(str(exc) == f"grid row 1 has {actual} cells; expected 2",
+                  f"wrong-width row raised the wrong ValueError: {exc!r}")
+        except Exception as exc:  # noqa: BLE001 — the regression requires one documented ValueError
+            raise SelfTestFailure(
+                f"wrong-width row raised {type(exc).__name__}, not ValueError: {exc}"
+            ) from exc
+        else:
+            raise SelfTestFailure(f"wrong-width row with {actual} cells was accepted")
+
+
 def t_config_cannot_be_forged(L: ModuleType, tmp: Path) -> None:
     """A hostile header value cannot inject a line that READS AS a run-config line.
 
@@ -3408,6 +3425,7 @@ CASES = [
     ("escape-mapping", "the escape table, char by char — and ordinary values left byte-identical", t_escape_mapping),
     ("grid-integrity", "no hostile value forges a column, a row, or a config line", t_grid_integrity),
     ("widths-from-escaped", "column widths measure the ESCAPED text — what is printed", t_widths_from_escaped),
+    ("grid-width", "each grid row has exactly one cell per declared field", t_grid_rejects_wrong_width),
     ("config-not-forgeable", "a hostile header value cannot inject a `# <field>:` line", t_config_cannot_be_forged),
     ("truncation-display-only", "table truncates head_sha; disk and `get` keep all 40 — and the cut precedes the escape", t_truncation_is_display_only),
     ("table-missing-file", "a missing ledger is a fresh start: defaults, `# (no rows)`", t_table_missing_file),
