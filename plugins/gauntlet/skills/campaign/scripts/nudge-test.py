@@ -625,15 +625,19 @@ def t_repairing_splits_on_decision():
 
 # --- per-PR in-flight ---------------------------------------------------------
 
-def t_intent_missing_fires_only_without_the_file():
+def t_intent_missing_fires_only_without_a_regular_file():
     with tempfile.TemporaryDirectory() as d:
         rd = Path(d)
         r = [row(9, "in_review", reviews_ok=0, tier="HIGH")]
         check(has(fire(r, rundir=rd), "no intent-9.md"),
               "a review-due PR with no intent file must nudge to write it")
+        (rd / "intent-9.md").mkdir()
+        check(has(fire(r, rundir=rd), "no intent-9.md"),
+              "an intent directory is not a usable intent file and must keep the nudge active")
+        (rd / "intent-9.md").rmdir()
         (rd / "intent-9.md").write_text("x", encoding="utf-8")
         check(not has(fire(r, rundir=rd), "no intent-9.md"),
-              "once the intent file exists the nudge must STOP")
+              "once a regular intent file exists the nudge must STOP")
 
 
 def t_ci_pending_fires():
@@ -853,7 +857,7 @@ CASES = [
      t_notes_cap_truncates_and_discloses_the_hidden_count),
     ("parked-short-circuits", "a parked PR fires only its held reminder", t_parked_pr_fires_only_its_own_reminder),
     ("repairing-splits", "repairing splits on whether a decision is recorded", t_repairing_splits_on_decision),
-    ("intent-missing", "intent nudge fires only without the file", t_intent_missing_fires_only_without_the_file),
+    ("intent-missing", "intent nudge fires only with a regular intent file", t_intent_missing_fires_only_without_a_regular_file),
     ("ci-pending", "pending CI nudges to re-derive", t_ci_pending_fires),
     ("work-due", "the work-due nudge fires whenever review is due (fu25)", t_work_due_fires_whenever_review_is_due),
     ("mergeable", "mergeable nudge respects required(tier)", t_mergeable_fires_when_counters_are_met),

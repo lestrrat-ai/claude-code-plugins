@@ -349,7 +349,7 @@ def notes_lines(notes: list, notes_unread: "str | None", path: "Path | None") ->
 
 
 def rundir_has(rundir: "Path | None", name: str) -> bool:
-    return rundir is not None and (rundir / name).exists()
+    return rundir is not None and (rundir / name).is_file()
 
 
 def resolve_rundir(file_arg: str, rundir_arg: "str | None") -> Path:
