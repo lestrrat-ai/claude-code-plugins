@@ -16,7 +16,7 @@ import tempfile
 from pathlib import Path
 
 from _gauntlet.modules import load_sibling
-from _gauntlet.testing import checker
+from _gauntlet.testing import capture_cli, checker
 
 OWNER = Path(__file__).resolve().parent / "reviewer-liveness.py"
 
@@ -61,6 +61,26 @@ def t_future_mtime_reads_alive():
     # A future mtime (clock skew, or a write mid-stat) is a FRESH write — never 'quiet'.
     v = classify(exists=True, size=10, mtime_epoch=1000.0, now_epoch=1000.0 - 60)
     check(v["verdict"] == "alive", "a future mtime (negative age) must read 'alive', never 'quiet'")
+
+
+def t_zero_window_is_internal_only():
+    # The pure classifier keeps zero available for deterministic boundary fixtures; the CLI rejects it.
+    v = classify(exists=True, size=1, mtime_epoch=1000.0, now_epoch=1000.0, quiet_window=0)
+    check(v["verdict"] == "quiet", "the internal zero-window seam must keep its exact-boundary behavior")
+
+    code, out, err = capture_cli(R.main, ["probe", "--stream", "unused", "--quiet-window-seconds", "0"])
+    check(code == 2, f"the CLI must reject a zero quiet window, got exit {code}")
+    check(out == "", f"a rejected quiet window must not print JSON, got {out!r}")
+    check("must be a positive integer" in err,
+          f"the zero-window refusal must name the positive constraint, got {err!r}")
+
+
+def t_negative_window_is_rejected():
+    code, out, err = capture_cli(R.main, ["probe", "--stream", "unused", "--quiet-window-seconds", "-1"])
+    check(code == 2, f"the CLI must reject a negative quiet window, got exit {code}")
+    check(out == "", f"a rejected quiet window must not print JSON, got {out!r}")
+    check("must be a positive integer" in err,
+          f"the negative-window refusal must name the positive constraint, got {err!r}")
 
 
 # --- absent stream ------------------------------------------------------------
@@ -142,6 +162,8 @@ CASES = [
     ("quiet-past-window", "no write past the window reads quiet", t_quiet_past_window_reads_quiet),
     ("boundary-closed-quiet", "age == window is quiet; window-1 is alive", t_window_boundary_is_closed_on_quiet),
     ("future-mtime-alive", "a future mtime reads alive, never quiet", t_future_mtime_reads_alive),
+    ("zero-window-internal", "zero stays available only to the internal classifier seam", t_zero_window_is_internal_only),
+    ("negative-window-rejected", "the CLI rejects a negative quiet window", t_negative_window_is_rejected),
     ("absent-reads-absent", "a missing stream reads absent with no size/age", t_absent_stream_reads_absent),
     ("reports-size", "size reported when present, None when absent", t_reports_size_when_present_and_none_when_absent),
     ("stats-never-reads", "probe stats the real file (size from stat), never reads it", t_probe_uses_real_stat_never_reads_content),
