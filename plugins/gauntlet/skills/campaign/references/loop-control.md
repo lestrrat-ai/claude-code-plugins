@@ -54,7 +54,7 @@ rules keep their own wording; these are illustrations of them, not a second copy
    Once you own the run and have loaded its ledger, run
    `scripts/nudge.py --file <rundir>/state.jsonl --followups <project_root>/.gauntlet/followups.jsonl --rundir <rundir>`
    and **READ its output** before reconciling. It is the **advisory reminder list** — computed from durable
-   state, then the hand-written standing notes in `.gauntlet/nudges.md` appended verbatim after them
+   state, then the hand-written standing notes in `.gauntlet/nudges.md` appended through nudge's shared safe encoder
    (`files-and-ledger.md`) — so an amnesiac fresh-context heartbeat is HANDED its obligations rather than
    told to remember them. It **decides nothing and always exits 0**; each reminder just points at the owner
    of the actual check (labels, caps, the health pass below — including its `watchdog due` reminder). Act

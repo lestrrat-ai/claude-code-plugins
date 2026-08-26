@@ -219,8 +219,8 @@ def t_unread_followup_store_is_disclosed():
 
 
 # --- standing notes -----------------------------------------------------------
-# `<project_root>/.gauntlet/nudges.md` — hand-written standing lessons, delivered verbatim after every
-# computed reminder. Its path is DERIVED from `--followups`, never a flag, so these fixtures pin the
+# `<project_root>/.gauntlet/nudges.md` — hand-written standing lessons, rendered through nudge's shared safe
+# encoder after every computed reminder. Its path is DERIVED from `--followups`, never a flag, so these fixtures pin the
 # derivation as hard as the content rules: a wrong path reads the wrong file, or none. The notes ride on
 # the DIRECTORY, so which part of `--followups` is wrong decides what is lost, and only a directory that
 # is genuinely there and holds no notes file is allowed to say nothing.
@@ -601,6 +601,23 @@ def t_notes_cap_truncates_and_discloses_the_hidden_count():
           "exactly at the cap nothing is hidden, so nothing may be disclosed")
 
 
+def t_dynamic_values_are_encoded_as_one_output_line():
+    """Durable and standing-note values cannot add output lines or terminal controls to the reminder stream."""
+    payload = "line\nnext\r\nansi\x1b[31mnel\u0085ls\u2028ps\u2029"
+    rows = [row(payload, "awaiting-user", ci_reason=payload),
+            row(payload + "-repair", "repairing", repair_decision=payload)]
+    out = N.render(header(run_id=payload, base_branch=payload, required_set=payload), rows,
+                   N.FollowupsRead(0, None), None, notes=[payload])
+    encoded = N.encode_dynamic(payload)
+    check(encoded in out, "the shared encoder must preserve dynamic content as escaped text")
+    check(payload not in out, "raw durable content must not reach nudge output")
+    check(all(not any(ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F for char in line)
+              for line in out.splitlines()),
+          "nudge output lines must not carry raw terminal controls")
+    check(all(line.startswith("NUDGE") or line.startswith("  - ") for line in out.splitlines()),
+          "a dynamic value must not create a forged output line")
+
+
 # --- held PRs short-circuit ---------------------------------------------------
 
 def t_parked_pr_fires_only_its_own_reminder():
@@ -855,6 +872,8 @@ CASES = [
      t_notes_come_after_every_computed_reminder),
     ("notes-cap-disclosed", "the note cap truncates and discloses the hidden count",
      t_notes_cap_truncates_and_discloses_the_hidden_count),
+    ("dynamic-output-safe", "durable and standing-note values render as one escaped output line",
+     t_dynamic_values_are_encoded_as_one_output_line),
     ("parked-short-circuits", "a parked PR fires only its held reminder", t_parked_pr_fires_only_its_own_reminder),
     ("repairing-splits", "repairing splits on whether a decision is recorded", t_repairing_splits_on_decision),
     ("intent-missing", "intent nudge fires only with a regular intent file", t_intent_missing_fires_only_without_a_regular_file),

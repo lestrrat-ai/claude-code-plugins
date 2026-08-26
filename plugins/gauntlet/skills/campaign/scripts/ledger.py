@@ -17,6 +17,7 @@ import os
 import re
 import sys
 import tempfile
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import NoReturn
@@ -413,6 +414,11 @@ VERDICT_OWNED = ("review_rounds", "ns_streak")
 # forever. The tool that decides a repair is the only thing that writes what it spent.
 REPAIR_OWNED = ("repair_count", "repair_decision")
 
+# These values cross from durable state into nudge output and filesystem names. The write door rejects
+# terminal controls, format controls and Unicode line separators; readers still encode hand-edited state.
+DURABLE_OUTPUT_FIELDS = ("run_id", "pr", "ci_reason", "repair_decision")
+_DURABLE_OUTPUT_CATEGORIES = frozenset(("Cc", "Cf", "Zl", "Zp"))
+
 # The base-preflight readings `base-ok` OWNS — settable through NO flag, the same mechanism as VERDICT_OWNED
 # and REPAIR_OWNED, for the same reason. `base_ok_sha` is the MECHANICAL base-currency precondition `verdict`
 # enforces (it refuses unless the stamp equals the row's head). A door that can hand-write it is a door that
@@ -657,6 +663,16 @@ def _coerce_field(value: object, default: str) -> str:
     return default if value is None else str(value)
 
 
+def validate_durable_output_field(name: str, value: str) -> str:
+    """Reject durable values that could carry output controls or a second line into nudge rendering."""
+    if name not in DURABLE_OUTPUT_FIELDS:
+        return value
+    bad = next((char for char in value if unicodedata.category(char) in _DURABLE_OUTPUT_CATEGORIES), None)
+    if bad is not None:
+        fail(f"`{name}` contains U+{ord(bad):04X}, which is a control, format, or line-separator character")
+    return value
+
+
 def _header_store_field(src: "dict", f: str) -> object:
     """The ONE rule for a header field's stored form, shared by `load()` (ingest) and `dump()` (serialize)
     so NO serialization door heals what another preserves. `default_non_goals` is special: a PRESENT value
@@ -764,10 +780,12 @@ def dump(path: Path, header: dict, rows: list[dict]) -> None:
     # malformed `default_non_goals` (`null` / native `[]`) is written back RAW, never healed to `"[]"`. Coercing
     # it here (as `_coerce_field` would) is what silently repaired a fail-closed store on any unrelated write.
     out = [json.dumps({"type": "header",
-                       **{f: _header_store_field(header, f) for f in HEADER_FIELDS}})]
+                       **{f: validate_durable_output_field(f, _header_store_field(header, f))
+                          for f in HEADER_FIELDS}})]
     for row in rows:
         out.append(json.dumps({"type": "row",
-                               **{f: _coerce_field(row.get(f), ROW_DEFAULTS[f]) for f in ROW_FIELDS}}))
+                               **{f: validate_durable_output_field(f, _coerce_field(row.get(f), ROW_DEFAULTS[f]))
+                                  for f in ROW_FIELDS}}))
     path.parent.mkdir(parents=True, exist_ok=True)
     # `mkstemp` creates the file 0600. That is the right default for a TEMP file and the wrong one for the
     # store it is about to become: the ledger is `cat`-able bookkeeping, and making it atomic must not
