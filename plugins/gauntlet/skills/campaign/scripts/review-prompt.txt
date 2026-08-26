@@ -25,7 +25,8 @@ THE QUESTION YOU ARE ANSWERING IS: does this PR achieve its stated Purpose, with
    stage-2-review-gate.md, "Review work-plan ledger", owns this rule; this prompt is self-contained —
    you need not read that file.) If an important dimension
    is missing, a unit is wrong, or a waiver's reason does not hold, raise it by running
-   RUN_ARGV(["python3", TRANSPORT.emit_amendment_path, "--file", TRANSPORT.progress_path,
+   RUN_ARGV(["python3", TRANSPORT.emit_amendment_path, "--run-dir", TRANSPORT.review_root,
+   "--file", TRANSPORT.progress_path,
    "--reason", reason, "--id", unit_id, "--kind", kind, "--target", target, "--check", check]) naming
    the gap — --check may repeat, and the tool STAMPS the timestamp so you supply no clock; a non-zero
    exit means your inputs were rejected (fix them and re-run). Hand-writing the event instead does NOT
@@ -37,7 +38,8 @@ THE QUESTION YOU ARE ANSWERING IS: does this PR achieve its stated Purpose, with
    through a tool any longer: EVERY artifact you write reaches disk through one — unit progress via
    emit-progress, findings via emit-finding, plan amendments via emit-amendment (above), and your REPORT
    via emit-report (below). Run
-   RUN_ARGV(["python3", TRANSPORT.emit_progress_path, "--file", TRANSPORT.progress_path,
+   RUN_ARGV(["python3", TRANSPORT.emit_progress_path, "--run-dir", TRANSPORT.review_root,
+   "--file", TRANSPORT.progress_path,
    "--unit", unit_id, "--status", "started"]) when a planned unit begins, and the same argv with
    "--status", "done", "--evidence", evidence when it finishes. The tool appends the canonical
    progress event; a non-zero exit means your inputs
@@ -64,7 +66,8 @@ THE QUESTION YOU ARE ANSWERING IS: does this PR achieve its stated Purpose, with
    RECORD EVERY FINDING BY RUNNING THE TOOL. It is the ONLY way to report one, and your VERDICT and your
    FINDINGS must agree — the tool checks it BOTH WAYS, and either mismatch is a DEFECTIVE PASS that cannot
    count: a NOT SATISFIED with no recorded GATING finding, and a SATISFIED with one. Invoke
-   RUN_ARGV(["python3", TRANSPORT.emit_finding_path, "--file", TRANSPORT.findings_path,
+   RUN_ARGV(["python3", TRANSPORT.emit_finding_path, "--run-dir", TRANSPORT.review_root,
+   "--file", TRANSPORT.findings_path,
    "--path", file, "--line", line, "--writer", writer, "--purpose", purpose,
    "--base", base, "--base-repro", base_repro, "--repro", repro, "--fix", fix]) for each finding.
    EVERY FINDING MUST ANCHOR. Name EITHER the Purpose line it defends (--purpose, quoted VERBATIM — the
@@ -102,7 +105,8 @@ THE QUESTION YOU ARE ANSWERING IS: does this PR achieve its stated Purpose, with
    DELIVER YOUR REPORT BY RUNNING THE TOOL — ONCE, WHEN YOU ARE DONE, AND ON EVERY ROUTE. It is the
    ONLY producer of TRANSPORT.report.path: returning the report as your final message and writing that
    path by hand BOTH produce no report, and a pass with no report cannot count. Invoke
-   RUN_ARGV(["python3", TRANSPORT.emit_report_path, "--file", TRANSPORT.report.path,
+   RUN_ARGV(["python3", TRANSPORT.emit_report_path, "--run-dir", TRANSPORT.review_root,
+   "--file", TRANSPORT.report.path,
    "--verdict", verdict, "--deferred-reason", deferred_reason, "--summary", summary]) with zero or more
    "--residual-risk", record members. A non-zero exit means your inputs were rejected — fix them and
    re-run. Run it EXACTLY ONCE: a pass yields ONE report, so the tool refuses a second call rather than

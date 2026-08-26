@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Append one canonical reviewer progress event — the reviewer's door into `review-pass.py`.
 
-**THIS FILE'S CLI IS A PUBLIC CONTRACT AND IT HAS NOT MOVED.** `--file --unit --status --evidence`: same
+**THIS FILE'S CLI IS A PUBLIC CONTRACT AND IT HAS NOT MOVED.** `--run-dir --file --unit --status --evidence`: same
 flags, same meanings, same "a non-zero exit means your inputs were rejected — fix them and re-run". It is
 named in SKILL.md, in `stage-2-review-gate.md`, in `files-and-ledger.md`, and — the reason it can never be
 renamed on a whim — inside every review prompt the orchestrator dispatches. Those prompts are already

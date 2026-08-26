@@ -67,7 +67,7 @@ reachable from a real GitHub response, found in code an earlier fix round had it
 `writer=network`, it defends the PR's whole purpose, and it GATES. Look for its kind.
 
 A non-zero exit means the finding was REJECTED, not that the tool is broken: read the message, fix the call,
-re-run. The flags are `--file --path --line --writer --purpose --base --base-repro --repro --fix`, and they
+re-run. The flags are `--run-dir --file --path --line --writer --purpose --base --base-repro --repro --fix`, and they
 are defined in ONE
 place — `review-pass.py`'s `add_finding_args`, which this door and the owner's `finding-add` subcommand both
 call, so `--help` here can never advertise a command the tool refuses.

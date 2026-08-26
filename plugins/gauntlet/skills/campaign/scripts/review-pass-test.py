@@ -1221,6 +1221,7 @@ class Tables:
             "--reason": ["no unit covers the harness"],
             "--dimension": ["docs"], "--tier": ["TRIVIAL"],
             "--amendments-ruled": ["0"], "--verdict": [R.SATISFIED],
+            "--run-dir": ["."],
             "--path": ["scripts/ci-status.py"], "--line": ["769"], "--writer": ["network"],
             "--purpose": [PURPOSE_GREEN], "--repro": ["a reply with no rows"], "--fix": ["refuse it"],
             "--base": [R.INTRODUCED], "--base-repro": [R.NO_BASE_REPRO],
@@ -1592,6 +1593,7 @@ RULE_FUNCTIONS = (
     "plan_records", "load_plan",
     "check_event", "check_progress", "walk_progress", "check_identity_shape", "check_identity",
     "check_head", "check_scope", "check_progress_file", "check_plan_file", "parse_report", "decide", "parse_name", "check_ruled",
+    "check_writer_path",
     "before_text", "write_line", "cmd_emit", "cmd_identity", "cmd_plan_add", "cmd_plan_waive",
     "cmd_plan_check", "cmd_verify",
     # …and the FINDINGS side: the intent, the anchor, the writer, and the artifact they live in.
@@ -1614,6 +1616,10 @@ def check(cond: bool, msg: str) -> None:
 
 def run_cli_streams(mod: types.ModuleType, argv: "list[str]") -> "tuple[int, str, str]":
     """Drive the REAL CLI in-process: (exit code, stdout, stderr), never its internals."""
+    if argv and argv[0] in {"emit", "amend", "finding-add", "report-write"} and "--run-dir" not in argv:
+        file_value_index = argv.index("--file") + 1
+        target = Path(argv[file_value_index])
+        argv = [*argv[:file_value_index + 1], "--run-dir", str(target.parent), *argv[file_value_index + 1:]]
     out, err = io.StringIO(), io.StringIO()
     try:
         with redirect_stdout(out), redirect_stderr(err):
@@ -1909,6 +1915,7 @@ def run_cases(mod: types.ModuleType, T: Tables, tmp: Path) -> "dict[str, tuple[s
             got[f"[ledger] {name}"] = (f"crash:{type(exc).__name__}", str(exc))
     got.update(round_trip(mod, T, tmp))
     got.update(cross_door(mod, tmp))
+    got.update(writer_path_cases(mod, T, tmp))
     return got
 
 
@@ -1947,6 +1954,13 @@ def expectations(T: Tables) -> "dict[str, tuple[str, str, str]]":
         f"`plan-add --id {uid!r}` then `emit --unit {uid!r}`: the PLAN door must refuse the id, or the "
         f"EMIT door must be able to name the unit it planned")
         for uid in CROSS_DOOR_IDS.values()})
+    out.update({f"[writer-path] {name}": ("exit1", needle,
+                                           "reviewer artifact writers stay inside the active run directory")
+                for name, needle in (
+                    ("emit", "outside"), ("amend", "outside"), ("finding-add", "outside"),
+                    ("report-write", "outside"), ("relative-run-root", "absolute"),
+                    ("missing-run-root", "active run directory"),
+                )})
     return out
 
 
@@ -2238,6 +2252,8 @@ def check_door(T: Tables, door: str, parser: argparse.ArgumentParser, tmp: Path)
         for flag in sorted(flags):
             if flag == "--file":
                 argv += seed_door(T, tmp, door, case)
+            elif flag == "--run-dir":
+                argv += ["--run-dir", str(tmp / f"door-{door}-{case}")]
             elif door in ("intent-check", "verify") and flag == "--ledger":
                 # `--ledger` must name a REAL ledger in the SAME run dir as the seeded --file (a static
                 # FLAG_VALUES path could satisfy neither the same-dir guard nor F1's existence guard), so
@@ -2773,7 +2789,7 @@ def check_amendment_door(R: types.ModuleType, tmp: Path) -> int:
     progress = d / PROGRESS_FILE
     run_cli(R, ["identity", "--file", str(progress), "--head-sha", SHA, "--dispatched-at", TS, "--default-non-goals", "[]"])
     run = subprocess.run(  # noqa: S603 - our own script
-        [sys.executable, str(AMENDMENT_WRAPPER), "--file", str(progress), "--reason", "harness gap",
+        [sys.executable, str(AMENDMENT_WRAPPER), "--run-dir", str(d), "--file", str(progress), "--reason", "harness gap",
          "--id", "u09", "--kind", "docs", "--target", "y.md", "--check", "b"],
         capture_output=True, text=True, check=False)
     if run.returncode != 0 or run.stdout:
@@ -2986,6 +3002,72 @@ def check_unwritable_target(R: types.ModuleType, T: Tables, tmp: Path) -> int:
     return failures
 
 
+def writer_path_cases(R: types.ModuleType, T: Tables, tmp: Path) -> "dict[str, tuple[str, str]]":
+    """Return mutation-matrix cases for reviewer destinations outside their bound run root."""
+    root = tmp / "writer-case-root"
+    outside = tmp / "writer-case-outside"
+    root.mkdir()
+    cases = (
+        ("emit", ["--unit", "u01", "--status", "started"], PROGRESS_FILE),
+        ("amend", ["--reason", "gap", "--id", "u09", "--kind", "file", "--target", "x.py",
+                    "--check", "a"], PROGRESS_FILE),
+        ("finding-add", T.FINDING_CLI_CASES[0][1], FINDINGS_FILE),
+        ("report-write", ["--verdict", R.SATISFIED, "--deferred-reason", R.NO_DEFERRED_REASON,
+                           "--summary", "Report body."], REPORT_FILE),
+    )
+    got: "dict[str, tuple[str, str]]" = {}
+    for command, args, filename in cases:
+        target = outside / filename
+        code, text = run_cli(R, [command, "--file", str(target), "--run-dir", str(root), *args])
+        got[f"[writer-path] {command}"] = (f"exit{code}", text)
+
+    for name, run_dir in (("relative-run-root", Path("relative-run-root")),
+                          ("missing-run-root", tmp / "missing-run-root")):
+        target = (root if name == "relative-run-root" else run_dir) / REPORT_FILE
+        code, text = run_cli(R, ["report-write", "--file", str(target), "--run-dir", str(run_dir),
+                                 "--verdict", R.SATISFIED, "--deferred-reason", R.NO_DEFERRED_REASON,
+                                 "--summary", "Report body."])
+        got[f"[writer-path] {name}"] = (f"exit{code}", text)
+    return got
+
+
+def check_writer_path_boundaries(R: types.ModuleType, T: Tables, tmp: Path) -> int:
+    """Every reviewer writer rejects a valid artifact basename outside the bound run root."""
+    root = tmp / "writer-root"
+    outside = tmp / "writer-outside"
+    root.mkdir()
+    cases = (
+        ("emit", ["--unit", "u01", "--status", "started"], PROGRESS_FILE),
+        ("amend", ["--reason", "gap", "--id", "u09", "--kind", "file", "--target", "x.py",
+                    "--check", "a"], PROGRESS_FILE),
+        ("finding-add", T.FINDING_CLI_CASES[0][1], FINDINGS_FILE),
+        ("report-write", ["--verdict", R.SATISFIED, "--deferred-reason", R.NO_DEFERRED_REASON,
+                           "--summary", "Report body."], REPORT_FILE),
+    )
+    failures = 0
+    for command, args, filename in cases:
+        target = outside / filename
+        code, text = run_cli(R, [command, "--file", str(target), "--run-dir", str(root), *args])
+        if code == 0 or target.exists() or outside.exists():
+            print(f"FAIL     [writer-path] {command} accepted or created {target} outside {root}: {text.strip()}")
+            failures += 1
+        else:
+            print(f"ok       [writer-path] {command} rejects a destination outside the active run directory")
+
+    for run_dir, needle in ((Path("relative-run-root"), "absolute"),
+                            (tmp / "missing-run-root", "active run directory")):
+        target = (root if run_dir.name == "relative-run-root" else run_dir) / REPORT_FILE
+        code, text = run_cli(R, ["report-write", "--file", str(target), "--run-dir", str(run_dir),
+                                 "--verdict", R.SATISFIED, "--deferred-reason", R.NO_DEFERRED_REASON,
+                                 "--summary", "Report body."])
+        if code == 0 or needle not in text:
+            print(f"FAIL     [writer-path] run root {run_dir} was not rejected: {text.strip()}")
+            failures += 1
+        else:
+            print(f"ok       [writer-path] run root {run_dir} is rejected")
+    return failures
+
+
 def run(R: types.ModuleType, tmp: Path) -> int:
     """Every family, then the mutation matrix. Non-zero on any failure.
 
@@ -3053,6 +3135,8 @@ def run(R: types.ModuleType, tmp: Path) -> int:
     failures += run_status_cases(R, T, tmp)
     print()
     failures += check_unwritable_target(R, T, tmp)
+    print()
+    failures += check_writer_path_boundaries(R, T, tmp)
     print()
     if failures:
         print(f"{failures} check(s) FAILED — the review-pass contract is broken.")

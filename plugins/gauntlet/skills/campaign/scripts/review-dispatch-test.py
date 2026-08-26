@@ -182,7 +182,7 @@ def _write_report(args: SimpleNamespace, verdict: str) -> None:
     paths = D.attempt_paths(Path(args.run_dir), args.pr, args.review_pass, args.launch_attempt)
     reason = "-" if verdict != D.RP.DEFERRED else "fixture deferred the review"
     code, _out, err = capture_cli(D.RP.main, [
-        "report-write", "--file", os.fspath(paths["report"]), "--verdict", verdict,
+        "report-write", "--run-dir", os.fspath(Path(args.run_dir)), "--file", os.fspath(paths["report"]), "--verdict", verdict,
         "--deferred-reason", reason, "--summary", "Fixture report.",
     ])
     check(code == 0 and err == "", f"fixture report-write failed: code={code}, stderr={err!r}")
@@ -191,8 +191,8 @@ def _write_report(args: SimpleNamespace, verdict: str) -> None:
 def _complete_usable_binary_review(args: SimpleNamespace) -> None:
     paths = D.attempt_paths(Path(args.run_dir), args.pr, args.review_pass, args.launch_attempt)
     for argv in (
-        ["emit", "--file", os.fspath(paths["progress"]), "--unit", "u01", "--status", "started"],
-        ["emit", "--file", os.fspath(paths["progress"]), "--unit", "u01", "--status", "done",
+        ["emit", "--run-dir", os.fspath(Path(args.run_dir)), "--file", os.fspath(paths["progress"]), "--unit", "u01", "--status", "started"],
+        ["emit", "--run-dir", os.fspath(Path(args.run_dir)), "--file", os.fspath(paths["progress"]), "--unit", "u01", "--status", "done",
          "--evidence", "review-dispatch-test.py:1"],
     ):
         code, _out, err = capture_cli(D.RP.main, argv)

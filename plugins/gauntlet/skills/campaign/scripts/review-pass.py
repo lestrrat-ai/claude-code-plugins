@@ -630,6 +630,32 @@ class OperatorError(Exception):
     """The CALLER is wrong, not the artifacts. A verdict about the wrong question is worse than none."""
 
 
+def check_writer_path(path: Path, run_dir: Path) -> None:
+    """Require a reviewer writer's resolved destination to stay inside the active run directory."""
+    if not run_dir.is_absolute():
+        # MUTATE:writer-path-absolute:pass
+        raise Defect(
+            f"--run-dir {run_dir} is not an absolute active run directory — the reviewer transport binds "
+            f"this root as an absolute path"
+        )
+    root = run_dir.resolve()
+    target = path.resolve()
+    if not root.is_dir():
+        # MUTATE:writer-path-directory:pass
+        raise Defect(
+            f"--run-dir {run_dir} is not an active run directory — the reviewer writer must use the "
+            f"directory from its transport"
+        )
+    try:
+        target.parent.relative_to(root)
+    except ValueError as exc:
+        # MUTATE:writer-path-containment:pass
+        raise Defect(
+            f"artifact {path} resolves outside the active run directory {run_dir} — reviewer artifact "
+            f"writers may only write below the transport's `review_root`"
+        ) from exc
+
+
 # --- the strict JSONL reader (shared by both artifacts) -----------------------------------------
 
 def strict_object(name: str, n: int):
@@ -2366,6 +2392,7 @@ def cmd_emit(args) -> int:
     fifteen minutes later by a `verify` the reviewer never sees.
     """
     path = Path(args.file)
+    check_writer_path(path, Path(args.run_dir))
     parse_name(path)  # validates the filename; return discarded
     # The RECORD IS THE FLAGS — VERBATIM. `--status done` with no `--evidence` is an event with no
     # `evidence` key, and `--status started --evidence x` is one carrying a key nothing reads, so the flags
@@ -2417,6 +2444,7 @@ def cmd_amend(args) -> int:
     amendments in order; a clock the reviewer typed is a clock the reviewer could get wrong.
     """
     path = Path(args.file)
+    check_writer_path(path, Path(args.run_dir))
     parse_name(path)  # validates the filename; return discarded
     # The RECORD IS THE FLAGS, plus a `ts` the TOOL stamps. The `proposed_unit` is built exactly as
     # `plan-add` builds a unit, and `check_event` runs `check_unit` over it — so an id the plan door would
@@ -2580,6 +2608,7 @@ def cmd_finding_add(args) -> int:
     cannot pass those is a finding the reviewer can still FIX while it is holding the evidence.
     """
     path = Path(args.file)
+    check_writer_path(path, Path(args.run_dir))
     rec: "dict[str, object]" = {
         "type": FINDING, "file": args.path, "line": args.line, "writer": args.writer,
         "purpose": args.purpose, "base": args.base, "base_repro": args.base_repro,
@@ -2617,6 +2646,7 @@ def cmd_report_write(args) -> int:
     legitimately GROWS after the identity; a report never does.
     """
     path = Path(args.file)
+    check_writer_path(path, Path(args.run_dir))
     # The NAME first, and by the SAME statement the read door runs: a path that is not a report artifact's
     # name is not a file this tool reads at all, so `before_text` is not asked about it.
     report_name(path)
@@ -3246,6 +3276,8 @@ def add_emit_args(p: argparse.ArgumentParser) -> None:
     help instead: `--help` printed a command (`emit-progress.py emit …`) that the wrapper itself refuses.
     """
     p.add_argument("--file", required=True, help="the launch attempt's progress.jsonl")
+    p.add_argument("--run-dir", required=True,
+                   help="the absolute active run-artifact directory from the reviewer transport")
     p.add_argument("--unit", required=True, help="a PLANNED unit's id — an unplanned one is refused")
     p.add_argument("--status", required=True, choices=STATUSES)
     p.add_argument("--evidence", help="concrete citation; REQUIRED for --status done")
@@ -3263,6 +3295,8 @@ def add_finding_args(p: argparse.ArgumentParser) -> None:
     about.
     """
     p.add_argument("--file", required=True, help="the launch attempt's findings.jsonl")
+    p.add_argument("--run-dir", required=True,
+                   help="the absolute active run-artifact directory from the reviewer transport")
     p.add_argument("--path", required=True, help="the FILE the defect is in (the citation's first half)")
     p.add_argument("--line", required=True, help="the LINE it is on — a decimal from 1 up")
     p.add_argument("--writer", required=True, choices=WRITERS,
@@ -3305,6 +3339,8 @@ def add_amendment_args(p: argparse.ArgumentParser) -> None:
     advertise a command the write path refuses.
     """
     p.add_argument("--file", required=True, help="the launch attempt's progress.jsonl")
+    p.add_argument("--run-dir", required=True,
+                   help="the absolute active run-artifact directory from the reviewer transport")
     p.add_argument("--reason", required=True,
                    help="what dimension the plan MISSES — the orchestrator RULES on it, so a blank one is "
                         "refused (it is the evidence-free `done` of the amendment world)")
@@ -3326,6 +3362,8 @@ def add_report_args(p: argparse.ArgumentParser) -> None:
     deficient one. It repeats because a reviewer may name several, and each stays its own record.
     """
     p.add_argument("--file", required=True, help="the launch attempt's report.jsonl — it must not exist yet")
+    p.add_argument("--run-dir", required=True,
+                   help="the absolute active run-artifact directory from the reviewer transport")
     p.add_argument("--verdict", required=True, choices=VERDICT_CHOICES,
                    help=f"{SATISFIED} or {NOT_SATISFIED} — the rule is an IF AND ONLY IF: "
                         f"{NOT_SATISFIED} exactly when at least one GATING finding stands. "
