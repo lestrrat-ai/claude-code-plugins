@@ -96,6 +96,23 @@ def t_refuse_closed():
     check(plan(state="OPEN")["verdict"] == "adopt", "an OPEN PR must adopt")
 
 
+def t_refuse_unknown_tier_before_mutation():
+    """An adoption tier must be in triage's closed vocabulary before any row, worktree, or label write."""
+    with tempfile.TemporaryDirectory() as dd:
+        d = Path(dd)
+        ledger = d / "state.jsonl"
+        _init_ledger(ledger)
+        code, _, err, rec = _adopt(d, ledger, view(), wroot=d / "wt", tier="BOGUS")
+        check(code != 0, "an unknown tier must refuse adoption")
+        check("BOGUS" in err, f"the refusal must name the unknown tier, got {err!r}")
+        check(M.L.find_row(M.L.load(ledger)[1], "12") is None,
+              "an unknown tier must not register a ledger row")
+        check(not rec.any_call(lambda a: a[0] == "git"),
+              "an unknown tier must refuse before resolving or creating a worktree")
+        check(rec.one("gh", "label", "create") is None and rec.one("gh", "pr", "edit") is None,
+              "an unknown tier must refuse before writing labels")
+
+
 # --- adopt --------------------------------------------------------------------
 
 def t_adopt_same_repo():
@@ -1402,6 +1419,7 @@ CASES = [
     ("refuse_fork", "a fork PR is refused, fail closed", t_refuse_fork),
     ("refuse_foreign_run", "a PR owned by another run is refused", t_refuse_foreign_run),
     ("refuse_closed", "a MERGED/CLOSED PR is refused", t_refuse_closed),
+    ("refuse_unknown_tier", "an unknown tier is refused before row, worktree, or label mutation", t_refuse_unknown_tier_before_mutation),
     ("adopt_same_repo", "a clean same-repo OPEN PR adopts with the computed row", t_adopt_same_repo),
     ("adopt_when_already_ours", "a PR already carrying our run label re-adopts", t_adopt_when_already_ours),
     ("slugify", "slugify yields a lowercase, dash-collapsed, untrimmed-dash-free slug", t_slugify),

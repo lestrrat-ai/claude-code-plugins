@@ -70,6 +70,10 @@ BASE_RETARGET_PY = _HERE / "base-retarget.py"   # the ONE decider of what a live
 
 
 L = load_sibling("pr_adopt_ledger", _HERE, "ledger.py")
+# The triage tiers are a closed vocabulary owned by `triage.py`; adoption validates against that set before
+# it computes anything that can reach the ledger, worktree, or GitHub label writers.
+T = load_sibling("pr_adopt_triage", _HERE, "triage.py", register=True)
+TIER_VALUES = T.TIER_VALUES
 # `required(tier)` — the review gate's SATISFIED-verdict floor — is OWNED by review-pass.py
 # (`required_reviews`); the status label mirrors that gate, so reuse the owner rather than retype the rule.
 RP = load_sibling("pr_adopt_review_pass", _HERE, "review-pass.py")
@@ -162,6 +166,10 @@ def build_plan(view: dict, *, run_id: str, tier: str, worktrees_root: str) -> di
     step 2), else `{"verdict": "adopt", "row": {...computed fields...}, "labels_add": [...], "branch": ...,
     "worktree": ..., "base": ...}`. FAIL CLOSED: every refusal is checked before any adopt field is built.
     """
+    if tier not in TIER_VALUES:
+        return {"verdict": "refuse",
+                "reason": f"tier {tier!r} is not one of {', '.join(sorted(TIER_VALUES))}"}
+
     # A fork PR is untrusted, attacker-controllable content this autonomous pipeline would read and act on,
     # and it has no push target for fix commits — campaign gates SAME-REPO PRs only (step 2).
     if view.get("isCrossRepository") is True:
