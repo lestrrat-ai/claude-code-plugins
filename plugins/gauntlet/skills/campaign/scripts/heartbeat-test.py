@@ -100,6 +100,26 @@ def t_cli_fails_closed_on_blank():
     check("REFUSED" in err, f"the refusal must say REFUSED on stderr, got {err!r}")
 
 
+def t_builders_reject_unusable_values():
+    cases = (
+        ("empty --invocation", "", RUN, TOK, "--invocation"),
+        ("whitespace --invocation", "/gauntlet:campaign --new", RUN, TOK, "--invocation"),
+        ("empty --run", "/gauntlet:campaign", "", TOK, "--run"),
+        ("whitespace --run", "/gauntlet:campaign", "g1 --new #9", TOK, "--run"),
+        ("empty --token", "/gauntlet:campaign", RUN, "", "--token"),
+        ("whitespace --token", "/gauntlet:campaign", RUN, "aa bb", "--token"),
+    )
+    for what, invocation, run_id, token, flag in cases:
+        for builder in (H.callback_command, H.watchdog_command):
+            try:
+                builder(invocation, run_id, token)
+            except ValueError as exc:
+                check(str(exc) == f"{flag} must not be empty or contain whitespace",
+                      f"a {what} must identify {flag}, got {exc!r}")
+            else:
+                check(False, f"the {builder.__name__} builder accepted a {what}")
+
+
 def t_host_neutral_invocation():
     got = H.callback_command("$gauntlet:campaign", "g1", "t1")
     check("$gauntlet:campaign --run g1 --token t1" in got,
@@ -231,6 +251,8 @@ CASES = [
      t_cli_callback_prints_prompt),
     ("cli-fails-closed", "a blank required value fails closed, prints nothing, says REFUSED",
      t_cli_fails_closed_on_blank),
+    ("builders-fail-closed", "both builders reject empty and whitespace-containing required values",
+     t_builders_reject_unusable_values),
     ("host-neutral", "the invocation is passed in — no `/` host form is hardcoded",
      t_host_neutral_invocation),
     ("refuse-whitespace-run", "a --run carrying whitespace is refused (argument-injection seam)",

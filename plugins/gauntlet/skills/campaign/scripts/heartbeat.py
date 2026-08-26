@@ -59,6 +59,13 @@ def _wake_prompt(intro: str, invocation: str, flags: str) -> str:
             f"re-invoke it first: {invocation} {flags}")
 
 
+def _validate_wake_values(invocation: str, run_id: str, token: str) -> None:
+    """Reject required wake values that are empty or contain whitespace."""
+    for flag, val in (("--run", run_id), ("--token", token), ("--invocation", invocation)):
+        if not val or any(ch.isspace() for ch in val):
+            raise ValueError(f"{flag} must not be empty or contain whitespace")
+
+
 def callback_command(invocation: str, run_id: str, token: str) -> str:
     """Assemble the scheduled-heartbeat wake prompt: EXACTLY two flags, `--run` and `--token`.
 
@@ -67,6 +74,7 @@ def callback_command(invocation: str, run_id: str, token: str) -> str:
     carries `--new`/`#PR` (start-time args that would mint a fresh run each wake). The host form is
     supplied by the caller as `invocation`, so this stays host-neutral.
     """
+    _validate_wake_values(invocation, run_id, token)
     return _wake_prompt(
         "Gauntlet campaign heartbeat: resume the run per the campaign skill already loaded in this "
         "session, at its loop-control heartbeat entry",
@@ -75,6 +83,7 @@ def callback_command(invocation: str, run_id: str, token: str) -> str:
 
 def watchdog_command(invocation: str, run_id: str, token: str) -> str:
     """Build a session-scoped soundness-audit wake prompt for the current owner."""
+    _validate_wake_values(invocation, run_id, token)
     return _wake_prompt(
         "Gauntlet campaign session-watchdog wake: audit the run per the campaign skill already loaded "
         "in this session (loop-control, Reschedule or exit)",
@@ -104,22 +113,10 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _reject_unusable(fields: "list[tuple[str, str]]") -> bool:
-    """Fail closed on any required value that is empty OR contains ANY whitespace:
-    whitespace is the argument-injection seam — a `--run "g1 --new #99"` would smuggle extra
-    tokens past the fixed-shape guarantee once the wake's two-flag identity or its embedded fallback
-    invocation is re-split into argv. No legitimate value (a `g<date>-<rand>` run-id, a hex token, a
-    `/gauntlet:campaign` invocation) carries whitespace. On a bad
-    value: print the refusal on stderr, print NOTHING on stdout, return True so the caller returns non-zero.
-    """
-    for flag, val in fields:
-        if not val or any(ch.isspace() for ch in val):
-            print(f"heartbeat: REFUSED — {flag} must not be empty or contain whitespace. A value that is "
-                  f"blank or carries any whitespace character (space, tab, newline) cannot go into the "
-                  f"scheduled command: whitespace would smuggle extra argv tokens past the fixed-shape "
-                  f"guarantee. Nothing was printed.", file=sys.stderr)
-            return True
-    return False
+def _refuse(exc: ValueError) -> None:
+    print(f"heartbeat: REFUSED — {exc}. A value that is blank or carries any whitespace character "
+          f"(space, tab, newline) cannot go into the scheduled command: whitespace would smuggle extra "
+          f"argv tokens past the fixed-shape guarantee. Nothing was printed.", file=sys.stderr)
 
 
 def main(argv: "list[str] | None" = None) -> int:
@@ -130,17 +127,19 @@ def main(argv: "list[str] | None" = None) -> int:
         return self_test()
 
     if args.cmd == "callback":
-        if _reject_unusable([("--run", args.run), ("--token", args.token),
-                             ("--invocation", args.invocation)]):
+        try:
+            print(callback_command(args.invocation, args.run, args.token))
+        except ValueError as exc:
+            _refuse(exc)
             return 1
-        print(callback_command(args.invocation, args.run, args.token))
         return 0
 
     if args.cmd == "watchdog":
-        if _reject_unusable([("--run", args.run), ("--token", args.token),
-                             ("--invocation", args.invocation)]):
+        try:
+            print(watchdog_command(args.invocation, args.run, args.token))
+        except ValueError as exc:
+            _refuse(exc)
             return 1
-        print(watchdog_command(args.invocation, args.run, args.token))
         return 0
 
     parser.error("a subcommand is required (callback | watchdog | self-test)")
