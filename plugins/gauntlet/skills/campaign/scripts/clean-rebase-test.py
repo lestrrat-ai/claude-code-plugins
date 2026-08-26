@@ -180,7 +180,10 @@ class Scenario:
 
     def invoke(self, *extra):
         argv = ["run", "--ledger", str(self.ledger), "--pr", PR_NUMBER, "--worktree", str(self.wt)]
-        argv += ["--base", self.base]
+        if self.base.startswith("-"):
+            argv.append(f"--base={self.base}")
+        else:
+            argv += ["--base", self.base]
         argv += list(extra)
         return capture_cli(M.main, argv)
 
@@ -788,6 +791,16 @@ def t_dry_run_mutates_nothing():
         check(s.remote_pr_head() == s.orig_head, "dry-run does not push")
 
 
+def t_missing_base_does_not_consume_dry_run():
+    code, _out, err = capture_cli(
+        M.main,
+        ["run", "--ledger", "state.jsonl", "--pr", PR_NUMBER, "--worktree", ".", "--base", "--dry-run"],
+    )
+    check(code == 2, f"a missing --base value must be rejected by argparse (code={code}, err={err!r})")
+    check("argument --base: expected one argument" in err,
+          f"the missing --base value must be named in the parser error, got {err!r}")
+
+
 CASES = [
     ("clean-rebase-e2e", "a clean base-only rebase pushes and updates the ledger, keeping reviews_ok",
      t_clean_rebase_end_to_end),
@@ -852,4 +865,6 @@ CASES = [
      "ledger (exit 1)", t_push_rejected_preserves_local_rebase),
     ("dry-run-noop", "--dry-run mutates nothing (no fetch, rebase, push, or ledger write)",
      t_dry_run_mutates_nothing),
+    ("missing-base-value", "--base does not consume a following --dry-run flag",
+     t_missing_base_does_not_consume_dry_run),
 ]

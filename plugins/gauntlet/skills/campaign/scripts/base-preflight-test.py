@@ -625,7 +625,7 @@ def _dash_base_ancestry(root: Path, *, current: bool) -> "tuple[int, dict, str, 
     code, out, err = capture_cli(
         M.main,
         ["check", "--pr", "9", "--view-json", str(vjson), "--worktree", str(candidate),
-         "--base", DASH_BASE],
+         f"--base={DASH_BASE}"],
     )
     refreshed_base = _git(candidate, "rev-parse", tracking_ref).stdout.strip()
     return code, json.loads(out), err, refreshed_base, advanced_base
@@ -653,6 +653,13 @@ def t_dash_leading_stale_base_refreshes_and_reports_no():
               f"a stale candidate on a dash-leading base must report the staleness, got {result!r}")
         check(refreshed == remote_head,
               "the dash-leading base fetch must refresh its remote-tracking ref before the stale verdict")
+
+
+def t_missing_base_does_not_consume_repo():
+    code, _out, err = capture_cli(M.main, ["check", "--pr", "9", "--base", "--repo"])
+    check(code == 2, f"a missing --base value must be rejected by argparse (code={code}, err={err!r})")
+    check("argument --base: expected one argument" in err,
+          f"the missing --base value must be named in the parser error, got {err!r}")
 
 
 def t_candidate_revision_is_checked_instead_of_moved_head():
@@ -1233,6 +1240,8 @@ CASES = [
      t_dash_leading_current_base_refreshes_and_proceeds),
     ("dash-base-stale", "a dash-leading base refreshes its tracking ref and reports stale ancestry",
      t_dash_leading_stale_base_refreshes_and_reports_no),
+    ("missing-base-value", "--base does not consume a following --repo option",
+     t_missing_base_does_not_consume_repo),
     ("candidate-revision-not-head", "an explicit candidate revision is checked instead of a moved local HEAD",
      t_candidate_revision_is_checked_instead_of_moved_head),
     ("proceed-file-records-base-ok", "a proceed with --file stamps base_ok_sha = HEAD; without --file writes nothing",
