@@ -415,6 +415,16 @@ def check_landed_audit_complete(text: str, path: Path) -> None:
         )
 
 
+def check_historical_audit_complete(text: str, path: Path) -> None:
+    """Validate a LANDED audit through the full schema without current-intent re-anchoring.
+
+    Historical audit evidence keeps the source digest, gating IDs, result rows, standoff rows, and
+    completeness checks from ``validate_audit``. Only current-intent re-anchoring is skipped by reading
+    source findings through ``read_source_historical``.
+    """
+    validate_audit(text, path, require_complete=True, historical=True)
+
+
 def _replace(path: Path, text: str) -> None:
     try:
         replace_text(path, text, temp_prefix=f".{path.name}.", encoding="utf-8")
