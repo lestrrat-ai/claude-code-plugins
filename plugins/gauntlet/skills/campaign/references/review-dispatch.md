@@ -30,6 +30,11 @@ prepared = JSON_DECODE(result.stdout)
 transport = prepared.transport
 ```
 
+`prepared` carries `route`, `transport`, and — on the `external-codex` route only — `reviewer_home`. The
+home is a SIBLING of `transport`, never a member of it, because only `transport` is bound into the prompt
+and the launch environment must stay out of the bytes the reviewer reads. See **The reviewer's codex
+home** below.
+
 Inputs have these owners:
 
 - `review_action`, `route`, `prompt_profile`, and `report_producer` come from `runtime-adapter.md`,
@@ -85,6 +90,33 @@ never delete it. A non-zero exit prepares nothing usable; do not launch.
 `transport` is per-attempt: attempt 1 uses `review-<pr>-<n>.*`; attempt `k >= 2` uses
 `review-<pr>-<n>.a<k>.*`. The command derives the complete set once, so a relaunch cannot mix a dead
 attempt's progress/findings/report paths with the active prompt.
+
+### The reviewer's codex home
+
+**This section owns `reviewer_home`; `cross-agent-reviewers.md` owns how the argv passes it.** On the
+`external-codex` route, and only there, `prepare` materializes `<rundir>/codex-home` and returns its
+absolute path as `prepared.reviewer_home`. Launch with `CODEX_HOME` set to it; every other route omits the
+key entirely, and its presence is the signal.
+
+The directory is a farm of symlinks back into the operator's real codex home (`$CODEX_HOME`, else
+`~/.codex`) with two deliberate holes. `review-dispatch.py` owns the exact contents — the omitted
+instruction filenames and the emptied catalog directories are named by its own constants, not restated
+here — and the two properties that hold are these. The operator's standing instruction files are absent,
+so codex cannot load them into a reviewer. The skill and plugin catalogs are empty real directories, so
+the reviewer is offered no catalog and cannot invoke the campaign skill that dispatched it. Everything
+else, auth and `config.toml` included, is symlinked, so no credential is copied into the run directory and
+the reviewer runs under the operator's configured model and account.
+
+It is built **once per run and reused**, staged and renamed so a concurrently preparing attempt either
+wins the rename or finds the finished farm. A machine with no codex home is a refusal before any attempt
+artifact or allocation is written, because the host adapter only selects this route when the paired CLI is
+present, so a missing home means the launch could not have worked.
+
+**NEVER site a run directory under the system temp dir.** Codex refuses to create its helper binaries
+beneath one and runs degraded, printing `Refusing to create helper binaries under temporary dir`. A
+campaign run directory is a `<project>/.gauntlet/tmp/<run-id>` repository path and does not trip that
+check; the rule is written down so a later "simplification" to a `mktemp -d` home cannot silently degrade
+every reviewer launch.
 
 ### Record allocation outcomes
 
@@ -142,7 +174,8 @@ paths or prompt bytes.** Route selection and availability were decided before pr
   `session`-class worker.
 - `external-codex` / `external-claude` → use the canonical `run_argv` block in
   `cross-agent-reviewers.md`, "Claude Code orchestrator → Codex reviewer" or "Codex orchestrator →
-  Claude Code reviewer".
+  Claude Code reviewer". The codex block also consumes `prepared.reviewer_home` (**The reviewer's codex
+  home**, above).
 
 Every route assigns the same sole report producer, `reviewer-tool-write`: the reviewer writes its report
 by running `transport.emit_report_path`, and neither transport captures a final-output channel at

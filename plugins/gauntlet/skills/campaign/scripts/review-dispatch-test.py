@@ -96,6 +96,40 @@ def _seed_contiguous_history(rundir: Path, pr: str, review_pass: str) -> None:
         _write_landed_pass(rundir, pr, str(number), "bcdef0123456789a"[(number - 1) % 16] * 40)
 
 
+def _fake_codex_home(root: Path) -> Path:
+    """Build a plausible operator codex home: instruction files, credentials, and a skill catalog."""
+    home = root / "operator codex home"
+    home.mkdir(parents=True)
+    (home / "AGENTS.md").write_text("# Pre-Read Rules\nRead the linked doc first.\n", encoding="utf-8")
+    (home / "AGENTS.override.md").write_text("# Override\nAlways stop after one command.\n", encoding="utf-8")
+    (home / "auth.json").write_text('{"token":"operator"}', encoding="utf-8")
+    (home / "config.toml").write_text('model = "gpt-5.6-luna"\n', encoding="utf-8")
+    (home / "sessions").mkdir()
+    for catalog in D.CODEX_HOME_EMPTIED_DIRS:
+        directory = home / catalog
+        directory.mkdir()
+        (directory / "gauntlet").mkdir()
+    return home
+
+
+class _codex_home:
+    """Point the ambient `CODEX_HOME` at a chosen home for one block, then restore it exactly."""
+
+    def __init__(self, home: Path | str) -> None:
+        self._home = os.fspath(home)
+
+    def __enter__(self) -> str:
+        self._previous = os.environ.get("CODEX_HOME")
+        os.environ["CODEX_HOME"] = self._home
+        return self._home
+
+    def __exit__(self, *_: object) -> None:
+        if self._previous is None:
+            os.environ.pop("CODEX_HOME", None)
+        else:
+            os.environ["CODEX_HOME"] = self._previous
+
+
 def _fixture(
     root: Path,
     *,
@@ -121,6 +155,11 @@ def _fixture(
     if seed_history:
         _seed_contiguous_history(rundir, pr, review_pass)
     intent_path = _write_inputs(rundir, pr, review_pass, intent)
+    # Every `external-codex` preparation farms a reviewer home from the ambient `CODEX_HOME`, so the
+    # suite supplies its own. Without this the fixtures would pass or refuse depending on whether the
+    # machine running them happens to have codex installed.
+    codex_home = _fake_codex_home(root)
+    os.environ["CODEX_HOME"] = os.fspath(codex_home)
     return SimpleNamespace(
         cmd="prepare",
         run_dir=os.fspath(rundir),
@@ -139,6 +178,7 @@ def _fixture(
         default_non_goals=default_non_goals,
         intent_file=os.fspath(intent_path),
         file=file,
+        codex_home=os.fspath(codex_home),
     )
 
 
@@ -227,6 +267,97 @@ def _prepare_predecessors(args: SimpleNamespace) -> None:
     args.review_action = target_action
     args.prompt_profile = target_profile
     args.report_producer = target_producer
+
+
+def _external_codex_fixture(root: Path, **overrides) -> SimpleNamespace:
+    return _fixture(
+        root, review_action="launch-external", route="external-codex",
+        producer="reviewer-tool-write", **overrides
+    )
+
+
+def t_codex_reviewer_home_drops_operator_instructions_and_catalogs() -> None:
+    """The farmed home omits the operator's instruction files and offers no skill or plugin catalog."""
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        args = _external_codex_fixture(root)
+        home = Path(args.codex_home)
+        payload = D.prepare(args)
+        farm = Path(payload["reviewer_home"])
+        check(farm == Path(args.run_dir) / D.CODEX_HOME_DIR,
+              f"the reviewer home must sit in the run directory, got {farm}")
+        check(farm.is_dir(), "prepare must materialize the reviewer home before returning")
+        for name in D.CODEX_HOME_INSTRUCTION_FILES:
+            check(not (farm / name).exists() and not (farm / name).is_symlink(),
+                  f"{name} is an operator instruction source and must not reach the reviewer home")
+        for catalog in D.CODEX_HOME_EMPTIED_DIRS:
+            entry = farm / catalog
+            check(entry.is_dir() and not entry.is_symlink(),
+                  f"{catalog} must be a real empty directory, never a link to the operator's catalog")
+            check(list(entry.iterdir()) == [], f"{catalog} must be empty, got {list(entry.iterdir())}")
+        for name in ("auth.json", "config.toml", "sessions"):
+            entry = farm / name
+            check(entry.is_symlink(), f"{name} must be symlinked through, not copied into the run directory")
+            check(entry.resolve() == (home / name).resolve(),
+                  f"{name} must resolve back to the operator's own codex home")
+
+
+def t_codex_reviewer_home_is_absent_from_every_other_route() -> None:
+    """Only `external-codex` gets a farmed home; no other route names one or builds one."""
+    for route, action in (("native", "launch-native"), ("external-claude", "launch-external")):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            args = _fixture(root, review_action=action, route=route, producer="reviewer-tool-write")
+            payload = D.prepare(args)
+            check("reviewer_home" not in payload,
+                  f"route {route} must not carry a reviewer home; it does not launch codex")
+            check(not (Path(args.run_dir) / D.CODEX_HOME_DIR).exists(),
+                  f"route {route} must not build a codex home in the run directory")
+
+
+def t_codex_reviewer_home_never_enters_the_bound_prompt() -> None:
+    """The launch environment stays out of the bytes the reviewer reads."""
+    with tempfile.TemporaryDirectory() as raw:
+        args = _external_codex_fixture(Path(raw))
+        payload = D.prepare(args)
+        prompt = Path(payload["transport"]["prompt_path"]).read_bytes()
+        check(D.CODEX_HOME_DIR.encode("utf-8") not in prompt,
+              "the bound prompt must never name the reviewer home directory")
+        check(os.fsencode(payload["reviewer_home"]) not in prompt,
+              "the reviewer home path must ride beside the transport, never inside the bound prompt")
+        check("reviewer_home" not in payload["transport"],
+              "the transport is what gets bound into the prompt; the home must not be a member of it")
+
+
+def t_codex_reviewer_home_is_built_once_and_reused() -> None:
+    """A later attempt in the same run reuses the finished farm instead of rebuilding it."""
+    with tempfile.TemporaryDirectory() as raw:
+        args = _external_codex_fixture(Path(raw), launch_attempt="2")
+        _prepare_predecessors(args)
+        first = D.build_reviewer_home(Path(args.run_dir))
+        marker = first / "sessions"
+        stamp = marker.lstat().st_mtime_ns
+        payload = D.prepare(args)
+        check(Path(payload["reviewer_home"]) == first, "a later attempt must reuse the run's one farm")
+        check(marker.lstat().st_mtime_ns == stamp, "reuse must not rebuild the farm's existing links")
+        staged = [entry.name for entry in Path(args.run_dir).iterdir()
+                  if entry.name.startswith(D.CODEX_HOME_DIR + ".")]
+        check(staged == [], f"staging directories must never survive a build, found {staged}")
+
+
+def t_missing_codex_home_refuses_before_spending_an_allocation() -> None:
+    """No codex home means no launchable reviewer: refuse before writing artifacts or allocating."""
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        args = _external_codex_fixture(root)
+        with _codex_home(root / "no such codex home"):
+            _refused(args, "not an existing directory")
+        check(_default_launch_artifacts_absent(Path(args.run_dir)),
+              "a missing codex home must strand no prompt or identity artifact")
+        check(not D.allocation_path(Path(args.run_dir), args.pr, args.review_pass).exists(),
+              "a missing codex home must not spend a launch allocation")
+        with _codex_home("relative/codex/home"):
+            _refused(args, "must be an absolute path")
 
 
 def _write_prejournal_identity(args: SimpleNamespace, launch_attempt: str) -> None:
@@ -1532,9 +1663,14 @@ def t_cli_emits_only_canonical_host_neutral_json() -> None:
         check(out.count("\n") == 1, "prepare CLI must print exactly one JSON record")
         payload = json.loads(out)
         check(payload["route"] == "external-codex", "CLI lost the host-selected route")
-        check(set(payload) == {"route", "transport"}, "CLI added host-specific launch behavior")
+        # `reviewer_home` is a PREPARED PATH, not a launch decision: the materializer builds the directory
+        # and names it, while the host still owns the argv that points `CODEX_HOME` at it.
+        check(set(payload) == {"route", "transport", "reviewer_home"},
+              "CLI added host-specific launch behavior")
         check("argv" not in payload and "model" not in payload,
               "materializer must not select or launch a host process")
+        check(payload["reviewer_home"] == os.fspath(Path(args.run_dir) / D.CODEX_HOME_DIR),
+              "the CLI must deliver the reviewer home as run-directory data")
 
 
 def _build_ledger(directory: Path, pr: str, base_branch: str, head_sha: str = SHA) -> Path:
@@ -1762,4 +1898,15 @@ CASES = [
     ("ledger-default-non-goals-mismatch",
      "--file with --default-non-goals disagreeing with the header scope refuses (an assertion, not a source)",
      t_ledger_default_non_goals_assertion_mismatch_refuses),
+    ("codex-home-instruction-free",
+     "the farmed codex home drops operator instruction files and empties the skill/plugin catalogs",
+     t_codex_reviewer_home_drops_operator_instructions_and_catalogs),
+    ("codex-home-route-scoped", "only external-codex names and builds a reviewer home",
+     t_codex_reviewer_home_is_absent_from_every_other_route),
+    ("codex-home-out-of-prompt", "the reviewer home never reaches the bound prompt bytes",
+     t_codex_reviewer_home_never_enters_the_bound_prompt),
+    ("codex-home-reused", "the run's farm is built once and reused by later attempts",
+     t_codex_reviewer_home_is_built_once_and_reused),
+    ("codex-home-missing", "a missing or relative codex home refuses before artifacts or allocation",
+     t_missing_codex_home_refuses_before_spending_an_allocation),
 ]

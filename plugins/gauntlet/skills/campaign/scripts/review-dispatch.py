@@ -15,6 +15,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -101,6 +102,19 @@ CODEX_RECOVERY_PREAMBLE = (
     b"local diff, repository tests, and fixtures as proof. Do not "
     b"contact or test third-party systems.\n\n"
 )
+
+# The `external-codex` reviewer home. `$CODEX_HOME/AGENTS.md` is the OPERATOR's own instruction file, and
+# codex loads it into every `codex exec` — including a reviewer. On the paired route Claude Code already
+# suppresses its equivalent with `--safe-mode`; codex ships NO such flag, so pointing `CODEX_HOME` at a
+# directory that simply lacks the file is the only available lever. Everything else is symlinked through,
+# so auth, `config.toml`, sessions, and history stay exactly as configured.
+CODEX_HOME_DIR = "codex-home"
+# Omitted, never symlinked: these are the filenames that make `$CODEX_HOME` an instruction source. Both
+# spellings appear in the shipped codex filename set, and omitting one that does not exist costs nothing.
+CODEX_HOME_INSTRUCTION_FILES = ("AGENTS.md", "AGENTS.override.md")
+# Replaced by EMPTY real directories rather than symlinked: a reviewer offered the operator's skill and
+# plugin catalog can see — and invoke — the very campaign skill that dispatched it.
+CODEX_HOME_EMPTIED_DIRS = ("plugins", "skills")
 
 
 def _load_review_pass():
@@ -242,6 +256,73 @@ def attempt_paths(rundir: Path, pr: str, review_pass: str, launch_attempt: str) 
         "report": rundir / f"{attempt_stem}{RP.REPORT_SUFFIX}",
         "intent": rundir / f"intent-{pr}.md",
     }
+
+
+def real_codex_home() -> Path:
+    """Resolve the operator's own codex home the reviewer home is farmed from."""
+    ambient = os.environ.get("CODEX_HOME")
+    if ambient is None or not ambient.strip():
+        return Path.home() / ".codex"
+    return Path(ambient).expanduser()
+
+
+def build_reviewer_home(rundir: Path, real_home: "Path | None" = None) -> Path:
+    """Materialize `<rundir>/codex-home`, the `external-codex` reviewer's instruction-free codex home.
+
+    The farm is a directory of symlinks back into the operator's real codex home with
+    ``CODEX_HOME_INSTRUCTION_FILES`` left out and ``CODEX_HOME_EMPTIED_DIRS`` replaced by empty real
+    directories. Symlinking the rest is deliberate: auth, `config.toml`, and the session/history stores
+    must stay the configured ones, and copying `auth.json` would put a credential in the run directory.
+
+    It is built ONCE PER RUN and reused. Staging into a sibling temp directory and renaming makes the
+    swap atomic, so a concurrently preparing attempt either wins the rename or finds the finished farm —
+    neither can observe a half-built home and launch a reviewer with no credentials.
+
+    NEVER site the run directory under the system temp dir. Codex refuses to create its helper binaries
+    (`codex-linux-sandbox`, `codex-execve-wrapper`, `apply_patch`) beneath one and runs degraded, printing
+    `Refusing to create helper binaries under temporary dir`. A campaign run directory is a
+    `<project>/.gauntlet/tmp/<run-id>` repository path, which does not trip that check; the rule is stated
+    so a later "simplification" to a `mktemp -d` home does not silently degrade every reviewer launch.
+    """
+    source = real_codex_home() if real_home is None else real_home
+    if not source.is_absolute():
+        refuse(
+            f"CODEX_HOME must be an absolute path to farm a reviewer home from, got {source} — "
+            "set it to an absolute path or unset it to use ~/.codex"
+        )
+    if not source.is_dir():
+        refuse(
+            f"cannot farm the reviewer codex home: {source} is not an existing directory — codex is not "
+            "configured on this machine, so an `external-codex` reviewer cannot be launched"
+        )
+    target = rundir / CODEX_HOME_DIR
+    if target.is_dir():
+        return target
+    try:
+        entries = sorted(entry.name for entry in source.iterdir())
+    except OSError as exc:
+        refuse(f"cannot read the codex home {source} to farm a reviewer home from it: {exc}")
+    omitted = set(CODEX_HOME_INSTRUCTION_FILES) | set(CODEX_HOME_EMPTIED_DIRS)
+    staged = Path(tempfile.mkdtemp(prefix=CODEX_HOME_DIR + ".", dir=os.fspath(rundir)))
+    try:
+        for name in CODEX_HOME_EMPTIED_DIRS:
+            (staged / name).mkdir()
+        for name in entries:
+            if name in omitted:
+                continue
+            (staged / name).symlink_to(source / name)
+    except OSError as exc:
+        shutil.rmtree(staged, ignore_errors=True)
+        refuse(f"cannot build the reviewer codex home under {rundir}: {exc}")
+    try:
+        os.rename(staged, target)
+    except OSError as exc:
+        # A populated `target` makes the rename fail; that is another attempt having finished the same
+        # farm, which is the intended outcome, not an error. Anything else leaves no usable home.
+        shutil.rmtree(staged, ignore_errors=True)
+        if not target.is_dir():
+            refuse(f"cannot install the reviewer codex home at {target}: {exc}")
+    return target
 
 
 def allocation_path(rundir: Path, pr: str, review_pass: str) -> Path:
@@ -994,6 +1075,10 @@ def prepare(args) -> dict:
             f"not {args.report_producer!r}"
         )
 
+    # Built BEFORE any attempt artifact is installed and before the allocation is appended, so a machine
+    # with no codex home refuses without burning a launch allocation or stranding a prompt/identity pair.
+    reviewer_home = build_reviewer_home(rundir) if args.route == "external-codex" else None
+
     paths = attempt_paths(rundir, args.pr, args.review_pass, args.launch_attempt)
     require_contiguous_history(rundir, args.pr, args.review_pass)
     post_repair_pass = (
@@ -1088,7 +1173,13 @@ def prepare(args) -> dict:
         paths["progress"].unlink(missing_ok=True)
         raise
 
-    return {"route": args.route, "transport": transport}
+    # `reviewer_home` rides BESIDE the transport, never inside it: `bind_prompt` encodes only the
+    # transport, so the launch environment stays out of the bytes the reviewer reads. Its presence is what
+    # tells the host to set `CODEX_HOME`; every other route omits the key.
+    payload = {"route": args.route, "transport": transport}
+    if reviewer_home is not None:
+        payload["reviewer_home"] = os.fspath(reviewer_home)
+    return payload
 
 
 def self_test() -> int:

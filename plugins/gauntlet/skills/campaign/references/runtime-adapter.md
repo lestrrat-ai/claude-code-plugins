@@ -27,6 +27,11 @@ Resolve `<skill-dir>` from the actual path of the active `SKILL.md`, then resolv
 directory, or a repository-relative path. Installed plugin caches differ between hosts and can differ
 between installations of the same host.
 
+This rule is about READING a resource: never locate one of this skill's own files through an ambient
+variable. It does not govern the environment a launched process runs under. Setting `CODEX_HOME` on a
+reviewer's own argv is a different act, it is owned by `review-dispatch.md`, **The reviewer's codex home**,
+and nothing here forbids it.
+
 ## Typed repository context and data/process boundary
 
 This section is the **single owner** for repository resolution and for values crossing a host, process,
@@ -87,7 +92,10 @@ of publishing a command-source template:
   stdout_file: Path | null) -> ProcessResult` starts exactly `argv[0]` with the remaining list members as
   distinct argv elements. `cwd`, stdin and stdout are separate typed fields, not fragments of `argv` and
   not shell redirections. `ProcessResult` carries exit status and captured stdout/stderr when the
-  corresponding file field is null.
+  corresponding file field is null. **There is deliberately NO environment field.** A launch that must set
+  one variable spells it with `env` as `argv[0]` and `concat("NAME=", value)` as one further member — still
+  one value per element, still no shell. Do not add an environment member to this operation to avoid that
+  spelling; every host adapter would have to implement it.
 - `dispatch_native(message: Bytes, class: ModelClass)` sends exactly `message` as task data to a fresh
   native worker. It never puts message bytes in command source.
 
@@ -377,9 +385,12 @@ A cross-engine verdict-rendering process launches at this **same native-limitati
 paired CLI is present — it renders a diverse-engine verdict, is **not** a stronger security boundary than
 the native worker, and must never be reported as one ("Review isolation capability and transition" above
 owns the rule and the one condition — three proved `os_filesystem_isolation` properties — under which a
-stronger claim is legitimate). For Codex specifically, `--ignore-rules` disables execpolicy `.rules`; it
-does **not** disable `AGENTS.md` discovery. The external argv in `cross-agent-reviewers.md` launches at
-native level today, and the same argv serves a future adapter that additionally proves the OS properties.
+stronger claim is legitimate). For Codex specifically, `--ignore-rules` disables execpolicy `.rules` and
+disables no instruction discovery at all; the two `AGENTS.md` sources each have their own control in
+`cross-agent-reviewers.md`, the candidate tree's through `-C` and the operator's home through
+`CODEX_HOME`. Neither is an OS boundary, and neither changes this level. The external argv in
+`cross-agent-reviewers.md` launches at native level today, and the same argv serves a future adapter that
+additionally proves the OS properties.
 
 ## Model classes
 

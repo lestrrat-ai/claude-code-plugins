@@ -34,7 +34,8 @@ The external-reviewer argv below is the canonical spelling; `review-dispatch.md`
 
 ```text
 run_argv(
-  argv: ["codex", "exec", "--sandbox", "workspace-write", "-c",
+  argv: ["env", concat("CODEX_HOME=", reviewer_home),
+         "codex", "exec", "--sandbox", "workspace-write", "-c",
          "sandbox_workspace_write.network_access=true", "--skip-git-repo-check",
          "-C", transport.review_root, "-"],
   cwd: transport.review_root,
@@ -42,6 +43,9 @@ run_argv(
   stdout_file: null
 )
 ```
+
+`reviewer_home` is the `prepare` result's own member, a sibling of `transport` and never a member of it
+(`review-dispatch.md`, "Prepare the active attempt"). Pass it verbatim; never recompute the path.
 
 This argv launches at the native-limitation level using the plain run-artifact working root; it makes no
 isolation claim and does not create a stronger boundary:
@@ -75,8 +79,33 @@ isolation claim and does not create a stronger boundary:
   interactive stdin is never left open.
 - `--sandbox workspace-write` is mandatory. Never use
   `--dangerously-bypass-approvals-and-sandbox`.
-- `--ignore-rules` is irrelevant here: it suppresses execpolicy `.rules`, not project agent
-  instructions, and MUST NOT be used as the isolation control.
+- **`CODEX_HOME=reviewer_home` is the ONE control over the operator's ambient instructions, and it is not
+  optional.** See "The reviewer's codex home" below.
+- `--ignore-rules` is irrelevant here: it suppresses execpolicy `.rules`, not agent instructions of any
+  kind, and MUST NOT be used as the isolation control.
+
+### The reviewer's codex home
+
+**Launch every `external-codex` reviewer with `CODEX_HOME` set to the prepared `reviewer_home`.** Codex
+loads `$CODEX_HOME/AGENTS.md` into every `codex exec`, a reviewer included. That file is the OPERATOR's
+own standing instructions, written for their interactive work, and it can end a reviewer's turn before it
+reviews anything. `review-dispatch.py prepare` therefore farms a codex home that simply lacks it, and
+owns the directory's whole definition — this file only says to use it.
+
+Two things it does NOT do, both of which must stay disclosed:
+
+- It creates **no OS boundary**. It removes instruction files and catalogs; it is not a sandbox, and it
+  does not change the native-limitation level this section already claims.
+- It leaves auth, `config.toml`, sessions, and history **shared with the operator's real codex home**, by
+  symlink. A reviewer writes the same session and history stores an interactive codex writes.
+
+**Codex ships no flag that does this.** Do not "simplify" the launch to one. `--ignore-user-config` drops
+`config.toml` and leaves the instruction file loaded, and `project_doc_max_bytes` governs the CANDIDATE
+tree, not the home. Both were measured against a live reviewer, and both left the operator's instructions
+in context.
+
+The paired route already had this control and this one did not, which is how the gap survived: Claude
+Code's `--safe-mode` (see the Codex → Claude Code argv below) suppresses its own equivalent discovery.
 
 ## Codex orchestrator → Claude Code reviewer (capability-gated)
 
