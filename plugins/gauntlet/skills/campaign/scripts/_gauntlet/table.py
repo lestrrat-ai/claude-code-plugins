@@ -107,7 +107,14 @@ def grid_lines(fields: tuple[str, ...], rows: list[list[str]]) -> list[str]:
     Cells arrive RAW and are escaped here, so a caller cannot render an unescaped value by forgetting to.
     Widths are measured on the escaped text. Display-only truncation is the caller's job and must happen on
     the raw value before it is handed over, so a cut cannot land inside an escape sequence.
+
+    Raises:
+        ValueError: if any row does not contain exactly one cell per field.
     """
+    expected = len(fields)
+    for row_number, row in enumerate(rows, start=1):
+        if len(row) != expected:
+            raise ValueError(f"grid row {row_number} has {len(row)} cells; expected {expected}")
     cells = [tuple(escape_cell(value) for value in row) for row in rows]
     widths = [
         max(len(field), *(len(cell[i]) for cell in cells)) if cells else len(field)
