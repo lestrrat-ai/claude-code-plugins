@@ -163,6 +163,33 @@ def t_cli_missing_ancestry_rechecks():
         }, f"the CLI should demand base ancestry before proceeding, got {out!r}")
 
 
+def t_cli_ancestry_spawn_failure_rechecks():
+    """A Git process that cannot start must fail closed through the structured ancestry recheck."""
+    def boom(*_args, **_kwargs):
+        raise FileNotFoundError(2, "No such file or directory", "git")
+
+    real_run = M.subprocess.run
+    setattr(M.subprocess, "run", boom)
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            vjson = Path(d) / "view.json"
+            vjson.write_text(json.dumps(view()), encoding="utf-8")
+            code, out, err = capture_cli(
+                M.main,
+                ["check", "--pr", "9", "--view-json", str(vjson), "--worktree", d, "--base", "main"],
+            )
+    finally:
+        setattr(M.subprocess, "run", real_run)
+
+    check(code != 0, f"a Git spawn failure must exit non-zero (fail closed), got {code} (stderr: {err})")
+    check(err == "", f"a Git spawn failure must NOT print a traceback, got stderr {err!r}")
+    result = json.loads(out)
+    check(result["verdict"] == "recheck",
+          f"a Git spawn failure must decide recheck, never proceed, got {result!r}")
+    check(result["reason"].startswith("could not verify base ancestry:"),
+          f"the reason must name the failed ancestry check, got {result!r}")
+
+
 def t_cli_rebase_first():
     with tempfile.TemporaryDirectory() as d:
         vjson = Path(d) / "view.json"
@@ -1173,6 +1200,8 @@ CASES = [
     ("file-unknown-rechecks", "Stage 3 preflight leaves recognized UNKNOWN active for re-poll",
      t_unknown_view_with_file_rechecks_without_park),
     ("cli-missing-ancestry", "a CLEAN view without base ancestry fails closed", t_cli_missing_ancestry_rechecks),
+    ("cli-ancestry-spawn-failure", "a Git spawn failure fails closed to a structured ancestry recheck",
+     t_cli_ancestry_spawn_failure_rechecks),
     ("cli-rebase-first", "check --view-json on a DIRTY view exits non-zero with rebase-first", t_cli_rebase_first),
     ("cli-malformed", "a view missing a field fails closed to recheck, never KeyError", t_cli_malformed),
     ("cli-bad-project-root", "an invalid --project-root fails closed to recheck, no traceback",
