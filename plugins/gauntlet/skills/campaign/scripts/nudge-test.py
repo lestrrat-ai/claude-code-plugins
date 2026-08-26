@@ -165,6 +165,16 @@ def t_followups_fire_only_when_open():
           "zero open follow-ups must NOT nudge")
 
 
+def t_followups_reminder_names_both_host_invocations():
+    line = N.followups_line(N.FollowupsRead(1, None))
+    check("/gauntlet:address-followups" in line,
+          "the open-follow-up reminder must show Claude Code's executable invocation")
+    check("$gauntlet:address-followups" in line,
+          "the open-follow-up reminder must show Codex's executable invocation")
+    check("or run gauntlet:address-followups" not in line,
+          "the open-follow-up reminder must not show a host-neutral non-invocation")
+
+
 def t_unread_followup_store_is_disclosed():
     """An UNREAD follow-up store must SAY SO, naming why — never fall silent. Silence is what a caller
     reads as "this run has no open follow-ups", and the store goes unread on two ordinary invocations:
@@ -201,7 +211,9 @@ def t_unread_followup_store_is_disclosed():
         N.F.dump(store, [{"id": "fu1", "title": "t", "evidence": "e", "deferred_why": "w"}], 0)
         out = _run_main(["--file", str(led), "--followups", str(store)])
         check("1 open follow-up(s) — start any you can, "
-              "or run gauntlet:address-followups to work the queue." in out and "NOT READ" not in out,
+              "or run /gauntlet:address-followups in Claude Code or "
+              "$gauntlet:address-followups in Codex to work the queue." in out
+              and "NOT READ" not in out,
               "a store that exists must yield the COUNT and no disclosure — the disclosure must "
               "discriminate on whether the store was actually read")
 
