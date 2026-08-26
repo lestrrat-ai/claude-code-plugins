@@ -59,6 +59,13 @@ _HERE = Path(__file__).resolve().parent
 SIBLING = _HERE / "reviewer-liveness-test.py"
 
 
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
 def classify(*, exists: bool, size: "int | None", mtime_epoch: "float | None",
              now_epoch: float, quiet_window: int) -> dict:
     """Pure verdict from a stat result. `alive` iff the stream was written within the window.
@@ -97,9 +104,9 @@ def main(argv: "list[str] | None" = None) -> int:
     p = sub.add_parser("probe", help="report the stream's liveness verdict as JSON")
     p.add_argument("--stream", required=True,
                    help="path to the reviewer's incrementally-captured background-task stdout file (stat'd, never read)")
-    p.add_argument("--quiet-window-seconds", "--quiet_window_seconds", type=int,
+    p.add_argument("--quiet-window-seconds", "--quiet_window_seconds", type=_positive_int,
                    default=DEFAULT_QUIET_WINDOW_SECONDS,
-                   help=f"a stream unwritten for this long reads 'quiet' (default {DEFAULT_QUIET_WINDOW_SECONDS})")
+                   help=f"a positive window in seconds; unwritten for this long reads 'quiet' (default {DEFAULT_QUIET_WINDOW_SECONDS})")
     p.add_argument("--now-epoch", "--now_epoch", type=float, default=None,
                    help="reference 'now' as epoch seconds (default: the wall clock)")
 
