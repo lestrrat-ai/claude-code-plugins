@@ -25,7 +25,7 @@ this pass verifies `amended` until the orchestrator folds the proposed unit into
 plan and restarts the pass (or records why not), and you write your report with `--verdict deferred`.
 
 A non-zero exit means the amendment was REJECTED, not that the tool is broken: read the message, fix the
-call, re-run. The flags are `--file --reason --id --kind --target --check`, and they are defined in ONE
+call, re-run. The flags are `--run-dir --file --reason --id --kind --target --check`, and they are defined in ONE
 place — `review-pass.py`'s `add_amendment_args`, which this door and the owner's `amend` subcommand both
 call, so `--help` here can never advertise a command the tool refuses.
 """

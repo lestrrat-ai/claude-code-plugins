@@ -258,15 +258,15 @@ enforced: the progress file is a plaintext file in a directory the reviewer can 
     # record that ONE default dimension does not apply ("Review work-plan ledger" owns the rule)
 ["python3", review_pass_script, "plan-check", "--file", plan_file, "--tier", tier]
     # every default dimension covered or waived? MUST pass before dispatch — a refusal blocks the launch
-["python3", review_pass_script, "emit", "--file", progress_file,
+["python3", review_pass_script, "emit", "--run-dir", review_root, "--file", progress_file,
  "--unit", unit, "--status", status, "--evidence", evidence]
-["python3", review_pass_script, "amend", "--file", progress_file,
+["python3", review_pass_script, "amend", "--run-dir", review_root, "--file", progress_file,
  "--reason", reason, "--id", unit, "--kind", kind, "--target", target, "--check", check]
     # raise ONE plan_amendment_request; ts stamped by the tool (what emit-amendment.py calls)
-["python3", review_pass_script, "finding-add", "--file", findings_file,
+["python3", review_pass_script, "finding-add", "--run-dir", review_root, "--file", findings_file,
  "--path", path, "--line", line, "--writer", writer, "--purpose", purpose,
  "--base", base, "--base-repro", base_repro, "--repro", repro, "--fix", fix]
-["python3", review_pass_script, "report-write", "--file", report_file,
+["python3", review_pass_script, "report-write", "--run-dir", review_root, "--file", report_file,
  "--verdict", verdict, "--deferred-reason", deferred_reason, "--summary", summary,
  "--residual-risk", record, ...]
     # write the pass's ONE report record (what emit-report.py calls). `--residual-risk` repeats and is
@@ -447,8 +447,9 @@ reviewer never supplies the clock; the read rule here is what a hand-written lin
 **Calling `emit-progress.py` is the ONLY sanctioned way to record a unit-progress event
 (`started`/`done`).** The reviewer MUST NOT ever write those unit-progress events into the progress
 file directly — no hand-written JSON, no `echo`/`printf`/redirection into it, no editor append. Every
-unit-progress event reaches the file through the tool and no other path. **Its CLI is unchanged**
-(`--file --unit --status --evidence`); it now forwards to `review-pass.py emit`, which enforces the
+unit-progress event reaches the file through the tool and no other path. **Its writer is bound to the
+active run root** (`--run-dir`); the resolved artifact parent must remain below that transport root. Its
+CLI forwards to `review-pass.py emit` with `--run-dir --file --unit --status --evidence`, which enforces the
 unit-progress rules above at the write door (the `--unit` is NOT trimmed — pass the id exactly as the
 plan spells it) and — the refusal that is not about the event at all — refuses **a progress file
 `verify` could not read**, which most often means one carrying no `pass_identity` yet. The emit-only rule is not
@@ -712,7 +713,8 @@ The reviewer now records **every** finding through the tool (its CLI is defined 
 
 ```text
 run_argv([
-  "python3", transport.emit_finding_path, "--file", transport.findings_path,
+  "python3", transport.emit_finding_path, "--run-dir", transport.review_root,
+  "--file", transport.findings_path,
   "--path", file, "--line", line, "--writer", writer, "--purpose", purpose,
   "--base", base, "--base-repro", base_repro, "--repro", repro, "--fix", fix
 ])
