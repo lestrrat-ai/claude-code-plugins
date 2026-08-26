@@ -481,7 +481,8 @@ Header field notes (the header fields above; per-row fields follow):
   policy. This field records the orchestrator's decided tier (never below the tool's floor; `TRIVIAL` only
   as the orchestrator's all-prose call); it drives `required(tier)` and review depth.
 - `ci` — `green` / `red` / `pending` for `head_sha`. Recorded by `ci-status.py liveness` from `derive`'s
-  JSON (`stage-2-ci.md`, "THE BOOKKEEPING IS A COMMAND"). (**There is no `none`.** It was documented but
+  JSON after the promoted-snapshot verification owned by `stage-2-ci.md`, "THE BOOKKEEPING IS A COMMAND".
+  (**There is no `none`.** It was documented but
   no procedure could ever write it.)
 - `ci_fingerprint` — digest of the last trusted current-head evidence, written by `ci-status.py liveness`
   **verbatim from the `fingerprint` field of `derive`'s JSON** (`null` there → the derivation had no trusted

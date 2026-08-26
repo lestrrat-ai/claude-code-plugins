@@ -4,7 +4,8 @@ Each PR has a background task that waits on `gh pr checks --watch`. **The watch 
 never evidence.** When the task completes, a heartbeat **fetches a fresh snapshot pinned to the PR's current
 `head_sha`**, verifies it, and decides `ci` **from the snapshot's contents — NEVER from the watch's exit
 code** — and records the result by handing `derive`'s JSON to `ci-status.py liveness` ("THE BOOKKEEPING
-IS A COMMAND", below), which writes `ci` and the liveness counters through the ledger accessor **by field
+IS A COMMAND", below). `liveness` independently verifies the JSON against the promoted snapshot before it
+writes `ci` and the liveness counters through the ledger accessor **by field
 name** (`files-and-ledger.md`), never by hand-editing the row by column position. (`reviews_ok` is a
 different write: its `0`-reset belongs **only** to a campaign commit landing on the PR head — "Any
 campaign commit to the PR head resets the gate", below, through `scripts/ledger.py … set --pr <N>
@@ -37,9 +38,10 @@ trusted evidence for the PR's current head — including a moved-head result who
 retained — while `liveness` reduces `buckets.RUNNING` to the `watch_warranted` fact the watch policy acts
 on, and reads it directly for its SETTLED/RUNNING-STALL split), and the path to the snapshot it left
 behind. It exits `0` **only** on green.
-**Write `ci` from that JSON; never from an impression of some command's output** — and then hand that
-same JSON to `ci-status.py liveness` ("THE BOOKKEEPING IS A COMMAND", below), which records it and does
-the counter arithmetic.
+**Pass that JSON to `ci-status.py liveness`; never derive `ci` from an impression of some command's output.**
+The liveness command verifies the producer's exact envelope and recomputes its verdict, evidence counts,
+fingerprint, and bucket tally from the promoted snapshot before it records the result and does the counter
+arithmetic.
 
 **THE REQUIRED SET IS NAMED, AND IT HAS NO DEFAULT.** `--ledger` resolves the selected **row's**
 `effective_required_set` — its explicit `required_set`, else the legacy header value — because the required
@@ -111,7 +113,7 @@ to hand-run.**
 | Actor | Does | Does NOT |
 |---|---|---|
 | **The background task** | **BLOCKS on `gh pr checks <pr> --watch`, and NOTHING else.** Its **ONLY** job is to block, so that **its completion becomes a heartbeat**. | It **NEVER** fetches, **NEVER** writes `ci-<pr>-<head_sha>.txt`, and **NEVER** produces evidence of any kind. |
-| **The heartbeat** | **RUNS `scripts/ci-status.py derive`** (above), which **FETCHES** (SHA-pinned, both families), **PROMOTES** atomically, **VERIFIES** the stamp, **PARSES**, and **DECIDES** `ci` — then **RUNS `scripts/ci-status.py liveness`** on that JSON, which **RECORDS** `ci` and the counters and **PARKS at any cap** ("THE BOOKKEEPING IS A COMMAND", below). | It **NEVER** derives `ci` by READING the output of `gh pr checks` — or of anything else — and **NEVER** applies the counter arithmetic by hand. |
+| **The heartbeat** | **RUNS `scripts/ci-status.py derive`** (above), which **FETCHES** (SHA-pinned, both families), **PROMOTES** atomically, **VERIFIES** the stamp, **PARSES**, and **DECIDES** `ci` — then **RUNS `scripts/ci-status.py liveness`** on that JSON, which **RE-VERIFIES** the promoted snapshot, **RECORDS** `ci` and the counters, and **PARKS at any cap** ("THE BOOKKEEPING IS A COMMAND", below). | It **NEVER** derives `ci` by READING the output of `gh pr checks` — or of anything else — and **NEVER** applies the counter arithmetic by hand. |
 
 **WHY the fetch cannot live in the background task:** the fetch must be pinned to the `head_sha` **the
 LEDGER currently holds**, and **only the heartbeat knows that**. A background task that fetched at its own
@@ -133,7 +135,7 @@ shape and every fail-closed rule), CROSS-FETCH AGREEMENT, CLASSIFY (the enums an
 (the outcome bullets, first match wins) live in **`ci-derivation-spec.md`** — the specification
 `ci-status.py derive` and `ci-snapshot.py` implement, held to the code by `doc-check`, executed fixtures,
 and the mutation harness. **Read it to review or change the tools; never to derive `ci` by hand.** The
-driver acts on `derive`'s JSON alone:
+driver passes `derive`'s JSON to `liveness`, which checks its claims against the promoted snapshot:
 
 #### ACT ON THE VERDICT — the driver's move for each outcome
 

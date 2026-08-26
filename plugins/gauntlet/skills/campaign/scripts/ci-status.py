@@ -1527,6 +1527,17 @@ def head_moved(head_sha: str, head_now: object) -> bool:
     return bool(head_now) and head_now != head_sha
 
 
+def moved_head_reason(head_sha: str, head_now: str, verdict: str, reason: str) -> str:
+    """Name the retained artifact's trust boundary after the PR head moved."""
+    return (
+        f"HEAD MOVED — this evidence was fetched for {head_sha}, but the PR's head is NOW {head_now}. "
+        f"It describes a commit that is no longer this PR's head, so it is not evidence about this PR "
+        f"at all: NOT green (the evidence is stale), and NOT red (that would be a claim about the wrong "
+        f"commit). Re-derive with --head-sha {head_now} once the ledger holds it. "
+        f"(what the stale snapshot said, for the record: {verdict} — {reason})"
+    )
+
+
 def derive(fetch: Fetch, repo: str, pr: str, head_sha: str, rundir: Path, required) -> dict:
     """FETCH -> PROMOTE -> VERIFY -> DECIDE, and then: IS THIS EVIDENCE EVEN ABOUT THIS PR?
 
@@ -1584,13 +1595,7 @@ def derive(fetch: Fetch, repo: str, pr: str, head_sha: str, rundir: Path, requir
     # instead of guessed. Both map to ledger `ci = pending` (LEDGER_CI is lossy, and that is why `verdict` is
     # emitted BESIDE `ci` and not collapsed into it).
     if head_moved(head_sha, head_now):
-        verdict, reason = SNAP.UNUSABLE, (
-            f"HEAD MOVED — this evidence was fetched for {head_sha}, but the PR's head is NOW {head_now}. "
-            f"It describes a commit that is no longer this PR's head, so it is not evidence about this PR "
-            f"at all: NOT green (the evidence is stale), and NOT red (that would be a claim about the wrong "
-            f"commit). Re-derive with --head-sha {head_now} once the ledger holds it. "
-            f"(what the stale snapshot said, for the record: {verdict} — {reason})"
-        )
+        verdict, reason = SNAP.UNUSABLE, moved_head_reason(head_sha, head_now, verdict, reason)
 
     # THE FINGERPRINT IS COMPUTED HERE, NEVER BY THE DRIVER — a hash a driver reassembles by hand from the
     # doc's spec is a hash that drifts, and every drifted byte reads as "CI moved", which resets the very
@@ -1696,35 +1701,139 @@ def derive_output(raw: object) -> dict:
 
     The same fail-closed posture as every other input: a field missing or of the wrong shape is refused
     at the door, because a liveness pass run on a hand-assembled approximation of `derive`'s output is
-    the hand-run bookkeeping this command exists to remove, wearing the command as a costume.
+    the hand-run bookkeeping this command exists to remove, wearing the command as a costume. The CLI
+    then independently verifies the producer's claims against the promoted snapshot before recording.
     """
     if not isinstance(raw, dict):
         fail("liveness: the derive JSON is not an object — hand this command the JSON `derive` printed, "
              "unedited")
+    expected_keys = {
+        "pr", "head_sha", "verdict", "ci", "reason", "snapshot", "evidence", "head_sha_now",
+        "head_moved", "required_set", "fingerprint", "buckets",
+    }
+    if set(raw) != expected_keys:
+        fail(f"liveness: the derive JSON fields are {sorted(raw)!r}, not the exact producer shape "
+             f"{sorted(expected_keys)!r}")
     out: dict = {}
-    for key in ("head_sha", "verdict", "ci", "reason"):
+    for key in ("pr", "head_sha", "verdict", "ci", "reason"):
         value = raw.get(key)
         if not isinstance(value, str) or not value:
             fail(f"liveness: the derive JSON carries no usable {key!r} — it is not `derive`'s output")
         out[key] = value
+    if not out["pr"].isdigit():
+        fail(f"liveness: derive JSON `pr` is {out['pr']!r}, not a PR number")
+    if not SHA_RE.fullmatch(out["head_sha"]):
+        fail(f"liveness: derive JSON `head_sha` is {out['head_sha']!r}, not a 40-hex object id")
+    if out["verdict"] not in LEDGER_CI:
+        fail(f"liveness: derive JSON `verdict` is {out['verdict']!r}, not a known CI verdict")
     if out["ci"] not in LEDGER_CI_VALUES:
         fail(f"liveness: derive JSON `ci` is {out['ci']!r}, not one of {'/'.join(LEDGER_CI_VALUES)}")
+    if ledger_ci(out["verdict"]) != out["ci"]:
+        fail(f"liveness: derive JSON `ci` {out['ci']!r} does not match verdict {out['verdict']!r}")
+    if not isinstance(raw["snapshot"], (str, type(None))):
+        fail(f"liveness: derive JSON `snapshot` is {raw['snapshot']!r}, not a path or null")
+    evidence = raw["evidence"]
+    if (not isinstance(evidence, dict) or set(evidence) != {"checkrun", "status", "witness"}
+            or any(type(value) is not int or value < 0 for value in evidence.values())):
+        fail(f"liveness: derive JSON `evidence` is not the three nonnegative producer counts: {evidence!r}")
+    head_now = raw["head_sha_now"]
+    if head_now is not None and (not isinstance(head_now, str) or not SHA_RE.fullmatch(head_now)):
+        fail(f"liveness: derive JSON `head_sha_now` is {head_now!r}, not a 40-hex object id or null")
+    if type(raw["head_moved"]) is not bool:
+        fail(f"liveness: derive JSON `head_moved` is {raw['head_moved']!r}, not a boolean")
+    if raw["head_moved"] != head_moved(out["head_sha"], head_now):
+        fail(f"liveness: derive JSON `head_moved` does not match `head_sha_now` for {out['head_sha']}")
+    if raw["required_set"] not in (SNAP.DECLARED, SNAP.NONE_DECLARED, SNAP.CANNOT_READ):
+        fail(f"liveness: derive JSON `required_set` is {raw['required_set']!r}, not a known state")
+    out.update({
+        "snapshot": raw["snapshot"], "evidence": evidence, "head_sha_now": head_now,
+        "head_moved": raw["head_moved"], "required_set": raw["required_set"],
+    })
     fp, buckets = raw.get("fingerprint"), raw.get("buckets")
     trusted_current_head = out["verdict"] not in NOT_VERIFIED_VERDICTS
     if trusted_current_head:
+        if raw["snapshot"] is None or raw["head_moved"] or head_now != out["head_sha"]:
+            fail("liveness: a trusted current-head derivation must name its promoted snapshot and "
+                 "matching current head")
         if not isinstance(fp, str) or not re.fullmatch(r"[0-9a-f]{64}", fp):
             fail(f"liveness: a derivation with trusted current-head evidence must carry a 64-hex "
                  f"`fingerprint`; got {fp!r}")
         if (not isinstance(buckets, dict) or set(buckets) != set(BUCKET_KEYS.values())
-                or any(not isinstance(v, int) or v < 0 for v in buckets.values())):
+                or any(type(v) is not int or v < 0 for v in buckets.values())):
             fail(f"liveness: a derivation with trusted current-head evidence must carry the four-key "
                  f"`buckets` tally; got {buckets!r}")
     elif fp is not None or buckets is not None:
         fail(f"liveness: verdict {out['verdict']!r} has no trusted current-head evidence, yet the JSON "
              f"carries fingerprint={fp!r} buckets={buckets!r} — that is not `derive`'s output")
+    if raw["snapshot"] is None and (evidence != {"checkrun": 0, "status": 0, "witness": 0}
+                                     or head_now is not None or raw["head_moved"]):
+        fail("liveness: a derivation without a promoted snapshot must carry no evidence and no current "
+             "head claim")
     out["fingerprint"], out["buckets"] = fp, buckets
     out["trusted_current_head"] = trusted_current_head
     return out
+
+
+def verify_derived_artifact(ledger_path: Path, pr: str, derived: dict) -> None:
+    """Recompute liveness inputs from the promoted artifact before recording them.
+
+    The JSON is a transport envelope, not evidence. The artifact path, ledger row, required-set state,
+    verdict, reason, evidence counts, fingerprint, and bucket tally must all agree with canonical state.
+    """
+    header, rows = LEDGER.load(ledger_path)
+    row = LEDGER.find_row(rows, pr)
+    if row is None:
+        fail(f"liveness: no ledger row for PR {pr}")
+    if derived["pr"] != pr or derived["head_sha"] != row["head_sha"]:
+        fail("liveness: derive JSON does not name the requested PR's current ledger head")
+    try:
+        required = SNAP.parse_required_set(LEDGER.effective_required_set(header, row))
+    except SNAP.SpecError as exc:
+        fail(f"liveness: the ledger's required-set state cannot be verified: {exc}")
+    if derived["required_set"] != required.state:
+        fail("liveness: derive JSON `required_set` does not match the ledger row")
+
+    snapshot_name = derived["snapshot"]
+    if snapshot_name is None:
+        return
+    rundir = ledger_path.resolve().parent
+    try:
+        snapshot = Path(snapshot_name)
+        snapshot_resolved = snapshot.resolve()
+    except (OSError, RuntimeError, ValueError) as exc:
+        fail(f"liveness: derive JSON `snapshot` is not a usable path: {exc}")
+    if (snapshot_resolved.parent != rundir
+            or snapshot.name != f"ci-{pr}-{derived['head_sha']}.txt"):
+        fail("liveness: derive JSON `snapshot` is not the promoted artifact for this PR and head")
+    try:
+        artifact_rows = SNAP.parse(snapshot)
+        artifact_verdict, artifact_reason = SNAP.evaluate(
+            snapshot, derived["head_sha"], required=required, expect_filename_sha=True
+        )
+    except (OSError, SNAP.SnapshotError) as exc:
+        fail(f"liveness: the promoted snapshot cannot be independently verified: {exc}")
+    evidence = {kind: sum(1 for item in artifact_rows if item["row"] == kind)
+                for kind in ("checkrun", "status", "witness")}
+    if derived["evidence"] != evidence:
+        fail(f"liveness: derive JSON `evidence` {derived['evidence']!r} does not match the promoted "
+             f"snapshot {evidence!r}")
+
+    if derived["head_moved"]:
+        expected_reason = moved_head_reason(
+            derived["head_sha"], derived["head_sha_now"], artifact_verdict, artifact_reason
+        )
+        if ((derived["verdict"], derived["ci"], derived["reason"])
+                != (SNAP.UNUSABLE, LEDGER_CI[SNAP.UNUSABLE], expected_reason)):
+            fail("liveness: moved-head derive JSON does not match the promoted artifact")
+        return
+
+    if (derived["verdict"], derived["reason"]) != (artifact_verdict, artifact_reason):
+        fail("liveness: derive JSON verdict or reason does not match the promoted snapshot")
+    if derived["trusted_current_head"]:
+        expected_fp = SNAP.fingerprint(artifact_rows, derived["head_sha"])
+        expected_buckets = bucket_counts(artifact_rows)
+        if derived["fingerprint"] != expected_fp or derived["buckets"] != expected_buckets:
+            fail("liveness: derive JSON fingerprint or bucket tally does not match the promoted snapshot")
 
 
 def liveness(ledger_path: Path, pr: str, derived: dict, machine_action: str, now: datetime) -> dict:
@@ -3214,7 +3323,9 @@ def main() -> int:
         except ValueError as exc:
             fail(f"liveness: --derive-json is not JSON ({exc}) — hand it the JSON `derive` printed")
         now = check_now("--now", args.now) if args.now else datetime.now(timezone.utc)
-        out = liveness(args.ledger, args.pr, derive_output(raw), args.machine_action, now)
+        derived = derive_output(raw)
+        verify_derived_artifact(args.ledger, args.pr, derived)
+        out = liveness(args.ledger, args.pr, derived, args.machine_action, now)
         print(json.dumps(out, indent=2, ensure_ascii=False))
         # 3, not 1: the command DID its job and the answer is "this PR is now parked on you" — the same
         # STOP semantics as `ledger.py dispatch-check` (EXIT_STOP), distinct from an input error's 2.

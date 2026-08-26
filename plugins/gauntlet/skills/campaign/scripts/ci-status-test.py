@@ -1129,7 +1129,10 @@ def liveness_cases(ci, tmp: Path) -> list[str]:
                 head_sha: str = sha, fail: int = 0, unknown: int = 0) -> dict:
         trusted_current_head = verdict not in ("unusable", "unverifiable")
         return ci.derive_output({
-            "head_sha": head_sha, "verdict": verdict, "ci": ci_value, "reason": "row X made it fire",
+            "pr": "35", "head_sha": head_sha, "verdict": verdict, "ci": ci_value,
+            "reason": "row X made it fire", "snapshot": "synthetic",
+            "evidence": {"checkrun": 0, "status": 0, "witness": 0},
+            "head_sha_now": head_sha, "head_moved": False, "required_set": "none",
             "fingerprint": fp1 if trusted_current_head else None,
             "buckets": ({"PASS": 1, "RUNNING": running, "FAIL": fail, "UNKNOWN_VALUE": unknown}
                         if trusted_current_head else None),
@@ -1212,10 +1215,16 @@ def liveness_cases(ci, tmp: Path) -> list[str]:
         duplicate_path, sha, required=ci.SNAP.NO_REQUIRED, expect_filename_sha=False
     )
     duplicate_derived = ci.derive_output({
+        "pr": "35",
         "head_sha": sha,
         "verdict": duplicate_verdict,
         "ci": "pending",
         "reason": duplicate_refusal,
+        "snapshot": str(duplicate_path),
+        "evidence": {"checkrun": 0, "status": 0, "witness": 0},
+        "head_sha_now": sha,
+        "head_moved": False,
+        "required_set": "none",
         "fingerprint": None,
         "buckets": None,
     })
@@ -1336,6 +1345,56 @@ def liveness_cases(ci, tmp: Path) -> list[str]:
     watch("a held row with a RUNNING row still warrants a watch", True, "still RUNNING",
           derived(running=1), status="awaiting-user", ci_reason="the open question", ci_fingerprint=fp1)
 
+    return problems
+
+
+def liveness_cli_cases(ci, tmp: Path) -> list[str]:
+    """The CLI refuses a forged trusted derivation before it writes the ledger."""
+    problems: list[str] = []
+    fx, derived, rundir, _before = run_fixture(ci, "green.json", tmp / "sec2-forged")
+    ledger = rundir / "state.jsonl"
+    header = dict(ci.LEDGER.HEADER_DEFAULTS)
+    header["run_id"] = "sec2"
+    row = dict(ci.LEDGER.ROW_DEFAULTS)
+    row.update({"pr": fx.get("pr", "35"), "head_sha": ci.FIXTURE_SHA, "status": "in_review",
+                "required_set": ci.SNAP.NONE_DECLARED})
+    ci.LEDGER.dump(ledger, header, [row])
+
+    valid_payload = rundir / "valid-derive.json"
+    valid_payload.write_text(json.dumps(derived), encoding="utf-8")
+    valid_before = ledger.read_bytes()
+    valid_proc = subprocess.run(
+        [sys.executable, str(STATUS_PY), "liveness", "--ledger", str(ledger), "--pr", "35",
+         "--derive-json", str(valid_payload), "--machine-action", "none",
+         "--now", "2026-08-26T00:00:00+00:00"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+    )
+    if valid_proc.returncode != 0:
+        problems.append(f"[SEC-2] producer derive JSON exited {valid_proc.returncode}, not 0: "
+                        f"{valid_proc.stderr!r}")
+    elif ci.LEDGER.load(ledger)[1][0]["ci"] != "green":
+        problems.append("[SEC-2] producer derive JSON did not record its canonical green result")
+    elif ledger.read_bytes() == valid_before:
+        problems.append("[SEC-2] producer derive JSON was rejected without a ledger change")
+
+    ci.LEDGER.dump(ledger, header, [row])
+    forged = dict(derived)
+    forged["fingerprint"] = "0" * 64
+    payload = rundir / "forged-derive.json"
+    payload.write_text(json.dumps(forged), encoding="utf-8")
+    before = ledger.read_bytes()
+    proc = subprocess.run(
+        [sys.executable, str(STATUS_PY), "liveness", "--ledger", str(ledger), "--pr", "35",
+         "--derive-json", str(payload), "--machine-action", "none",
+         "--now", "2026-08-26T00:00:00+00:00"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+    )
+    if proc.returncode != 2:
+        problems.append(f"[SEC-2] forged trusted derive JSON exited {proc.returncode}, not 2: {proc.stderr!r}")
+    if "fingerprint" not in proc.stderr:
+        problems.append(f"[SEC-2] forged trusted derive JSON did not name the rejected fingerprint: {proc.stderr!r}")
+    if ledger.read_bytes() != before:
+        problems.append("[SEC-2] forged trusted derive JSON changed the ledger")
     return problems
 
 
@@ -2083,6 +2142,14 @@ def run(ci, tmp: Path) -> int:
               f"to the cap, the stall clock, the refetch cap, machine-action stop, held observation, "
               f"both exact not-verified verdicts, stale-head refusal, retained moved-head artifact, and "
               f"the watch_warranted reduction (incl. the UNCLASSIFIED exclusion)")
+
+    liveness_cli_problems = liveness_cli_cases(ci, tmp)
+    for problem in liveness_cli_problems:
+        failures += 1
+        print(f"FAIL     {problem}")
+    if not liveness_cli_problems:
+        print(f"ok       {'liveness input binding':32} -> forged trusted verdicts, fingerprints, and bucket "
+              f"tallies cannot reach the ledger without matching promoted snapshot bytes")
 
     verdict_doc_problems = verdict_doc_cases(ci)
     for problem in verdict_doc_problems:
