@@ -134,23 +134,26 @@ def check_base_ancestry(worktree: "str | None", base: "str | None", remote: str,
     """
     if not worktree or not base:
         return "unverified", "base ancestry requires --worktree and --base"
-    selected, selection_problem = select_base_fetch_refs(worktree, remote, base)
-    if selection_problem is not None or selected is None:
-        return "unverified", selection_problem or "could not select a base fetch destination"
-    fetch = subprocess.run(  # noqa: S603
-        ["git", "-C", worktree, "fetch", remote, selected.refspec],
-        capture_output=True, text=True, check=False)
-    if fetch.returncode != 0:
-        return "unverified", f"could not fetch {selected.refspec}: {fetch.stderr.strip()}"
-    probe = subprocess.run(  # noqa: S603
-        ["git", "-C", worktree, "merge-base", "--is-ancestor", selected.local_ref, candidate_revision],
-        capture_output=True, text=True, check=False)
-    if probe.returncode == 0:
-        return "current", ""
-    if probe.returncode == 1:
-        return "stale", ""
-    return ("unverified",
-            f"could not compare {candidate_revision} with {selected.local_ref}: {probe.stderr.strip()}")
+    try:
+        selected, selection_problem = select_base_fetch_refs(worktree, remote, base)
+        if selection_problem is not None or selected is None:
+            return "unverified", selection_problem or "could not select a base fetch destination"
+        fetch = subprocess.run(  # noqa: S603
+            ["git", "-C", worktree, "fetch", remote, selected.refspec],
+            capture_output=True, text=True, check=False)
+        if fetch.returncode != 0:
+            return "unverified", f"could not fetch {selected.refspec}: {fetch.stderr.strip()}"
+        probe = subprocess.run(  # noqa: S603
+            ["git", "-C", worktree, "merge-base", "--is-ancestor", selected.local_ref, candidate_revision],
+            capture_output=True, text=True, check=False)
+        if probe.returncode == 0:
+            return "current", ""
+        if probe.returncode == 1:
+            return "stale", ""
+        return ("unverified",
+                f"could not compare {candidate_revision} with {selected.local_ref}: {probe.stderr.strip()}")
+    except OSError as exc:
+        return "unverified", str(exc)
 
 
 def decide(view: dict) -> dict:
