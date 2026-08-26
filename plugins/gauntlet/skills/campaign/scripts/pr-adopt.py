@@ -220,7 +220,10 @@ def build_plan(view: dict, *, run_id: str, tier: str, worktrees_root: str) -> di
 # --- executor -----------------------------------------------------------------
 
 def _run(argv: list[str], *, cwd: "str | None" = None) -> subprocess.CompletedProcess:
-    return subprocess.run(argv, capture_output=True, text=True, check=False, cwd=cwd)  # noqa: S603
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, check=False, cwd=cwd)  # noqa: S603
+    except OSError as exc:
+        return subprocess.CompletedProcess(argv, 127, "", str(exc))
 
 
 def _refuse(reason: str) -> int:

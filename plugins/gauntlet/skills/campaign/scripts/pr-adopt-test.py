@@ -395,6 +395,27 @@ def _adopt(d: Path, ledger: Path, v: dict, *, wroot: Path, worktree_head=None,
     return code, out, err, rec
 
 
+# --- process-start failures use the normal refusal contract ------------------
+
+def t_process_start_failure_refused():
+    with tempfile.TemporaryDirectory() as dd:
+        d = Path(dd)
+        missing = d / "missing"
+        proc = M._run([str(missing / "gh")], cwd=str(d))
+        check(proc.returncode == 127, f"a process-start failure returns exit 127, got {proc.returncode}")
+        check("No such file" in proc.stderr, f"the process-start error is preserved, got {proc.stderr!r}")
+
+        code, out, err = capture_cli(M.main, [
+            "adopt", "--pr", "12", "--run-id", "g1", "--file", str(d / "state.jsonl"),
+            "--tier", "HIGH", "--worktrees-root", str(d / "wt"), "--project-root", str(missing),
+        ])
+        check(code == 1, f"an unusable project root must refuse adoption, got {code}")
+        check(not out, f"a refused adoption must not print success output, got {out!r}")
+        check("REFUSED" in err and "Traceback" not in err,
+              f"the process-start failure must use the refusal contract, got {err!r}")
+        check("gh pr view 12" in err, f"the refusal must name the failed command, got {err!r}")
+
+
 # --- fix 1: `gh pr view` requests METADATA ONLY, never `body` ------------------
 
 def t_view_omits_body():
@@ -1429,6 +1450,7 @@ CASES = [
     ("driver_cannot_assert_origin", "the --pr-origin flag is gone; a driver cannot claim gauntlet (fix 3)", t_driver_cannot_assert_origin),
     ("view_omits_body", "`gh pr view` requests metadata only, never body (fix 1)", t_view_omits_body),
     ("gh_scoped_to_project_root", "every gh command runs in project-root (fix 2)", t_gh_scoped_to_project_root),
+    ("process_start_failure_refused", "process-start errors use the adoption refusal contract", t_process_start_failure_refused),
     ("readopt_preserves_ownership", "re-adopting the same worktree keeps created-ownership (fix 4)", t_readopt_preserves_ownership),
     ("readopt_unchanged_head_preserves_verdicts", "an unchanged head keeps reviews_ok/ci (fix 5)", t_readopt_unchanged_head_preserves_verdicts),
     ("readopt_changed_head_resets", "a moved head resets reviews_ok/ci and the liveness counters, review_rounds stays (fix 5)", t_readopt_changed_head_resets),
