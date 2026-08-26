@@ -121,6 +121,12 @@ For each `#PR` to adopt:
 
 #### Step 3 — Register the ledger row — refresh, never duplicate
 
+**Validate the PR head branch before any registration or label mutation.** Run the typed operation
+`run_argv(["git", "check-ref-format", "--branch", headRefName], repository.project_root)` and require
+success. Refuse an unresolved or invalid branch, including a leading-dash option such as `--all`, before
+writing the ledger, creating labels, or resolving a worktree. Later mutation doors repeat this validation
+before using the row's stored branch.
+
 3. **Register the ledger row — refresh, never duplicate.** Write the row through
    `scripts/ledger.py` (the schema-owning accessor — `references/files-and-ledger.md`), addressing
    every field **by name**; never hand-edit `state.jsonl` rows by column position. Look the PR up first

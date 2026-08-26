@@ -479,6 +479,46 @@ def t_wrong_branch_refused():
         check('"refused": "wrong-branch"' in out, f"the refusal names the branch mismatch; got {out!r}")
 
 
+def t_invalid_row_branch_refused():
+    with tempfile.TemporaryDirectory() as tmp:
+        s = _scenario(tmp)
+        header, rows = M.L.load(s.ledger)
+        row = M.L.find_row(rows, PR_NUMBER)
+        check(row is not None, "fixture setup: the ledger row exists")
+        row["branch"] = "--all"
+        M.L.save(s.ledger, header, rows, activity=True)
+        ledger_before = s.ledger.read_bytes()
+        s.advance_base({12: "12-BASE"})
+        code, out, _ = s.invoke()
+        check(code == M.EXIT_PRECONDITION,
+              f"an option-looking stored branch must be refused at mutation (code={code})")
+        check('"refused": "invalid-branch"' in out and "--all" in out,
+              f"the refusal must name the invalid stored branch: {out!r}")
+        check(head(s.wt) == s.orig_head, "invalid branch refusal must happen before rebase")
+        check(s.ledger.read_bytes() == ledger_before,
+              "invalid branch refusal must leave the ledger unchanged")
+
+
+def t_push_uses_option_terminator():
+    with tempfile.TemporaryDirectory() as tmp:
+        s = _scenario(tmp)
+        s.advance_base({12: "12-BASE"})
+        pushes = []
+        real_git = M._git
+
+        def record_push(worktree, *args):
+            if args and args[0] == "push":
+                pushes.append(args)
+                return subprocess.CompletedProcess(["git", "-C", worktree, *args], 0, "", "")
+            return real_git(worktree, *args)
+
+        with patch.object(M, "_git", side_effect=record_push):
+            code, _, err = s.invoke()
+        check(code == M.EXIT_OK, f"a clean rebase still succeeds with the safe push argv (err={err})")
+        check(pushes == [("push", "--force-with-lease", "origin", "--", PR_BRANCH)],
+              f"the push must terminate options before the branch ref: {pushes!r}")
+
+
 def t_head_mismatch_refused():
     with tempfile.TemporaryDirectory() as tmp:
         s = _scenario(tmp)
@@ -827,6 +867,10 @@ CASES = [
      t_patch_id_failure_after_rebase_resets_and_refuses),
     ("dirty-refused", "a dirty worktree is refused at exit 2", t_dirty_worktree_refused),
     ("wrong-branch-refused", "a worktree on the wrong branch is refused at exit 2", t_wrong_branch_refused),
+    ("invalid-row-branch-refused", "an option-looking stored branch is refused before mutation",
+     t_invalid_row_branch_refused),
+    ("push-option-terminator", "the force-with-lease push terminates options before the branch ref",
+     t_push_uses_option_terminator),
     ("head-mismatch-refused", "HEAD != ledger head_sha is refused at exit 2, naming both values",
      t_head_mismatch_refused),
     ("undecided-repair-refused", "an undecided repairing row is refused at exit 2 and never rebased",

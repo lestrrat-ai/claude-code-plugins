@@ -15,6 +15,19 @@ class BaseFetchRefs:
     local_ref: str
 
 
+def branch_problem(worktree: str, branch: object) -> "str | None":
+    """Return a refusal reason when ``branch`` is not a safe Git branch shorthand."""
+    if not isinstance(branch, str) or not branch or branch == "-":
+        return "branch is unresolved"
+    checked = subprocess.run(  # noqa: S603
+        ["git", "-C", worktree, "check-ref-format", "--branch", branch],
+        capture_output=True, text=True, check=False)
+    if checked.returncode != 0:
+        detail = checked.stderr.strip() or checked.stdout.strip() or "invalid branch name"
+        return f"{branch!r} is not a valid Git branch name: {detail}"
+    return None
+
+
 def select_base_fetch_refs(
         worktree: str, remote: str, base: str) -> "tuple[BaseFetchRefs | None, str | None]":
     """Select a safe destination for fetching ``refs/heads/<base>``.
