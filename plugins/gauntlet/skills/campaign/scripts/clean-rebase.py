@@ -45,7 +45,7 @@ import sys
 from pathlib import Path
 
 from _gauntlet.argv import bind_separate_option_value
-from _gauntlet.git_refs import select_base_fetch_refs
+from _gauntlet.git_refs import branch_problem, select_base_fetch_refs
 from _gauntlet.modules import load_sibling
 from _gauntlet.testing import run_sibling_suite
 
@@ -201,6 +201,12 @@ def run(args) -> int:
                       f"{worktree} is missing or is not a git worktree — cannot rebase there",
                       EXIT_PRECONDITION)
 
+    row_branch = row.get("branch", "-")
+    branch_error = branch_problem(worktree, row_branch)
+    if branch_error is not None:
+        return refuse("invalid-branch", f"pr {pr} row branch is invalid: {branch_error}",
+                      EXIT_PRECONDITION)
+
     # 4. The remote must exist. `--remote` defaults to `origin`; an ABSENT remote is refused, never guessed
     #    at (fetch/push would fail mid-flight otherwise).
     if _git(worktree, "remote", "get-url", remote).returncode != 0:
@@ -221,7 +227,6 @@ def run(args) -> int:
         return refuse("worktree-error", f"cannot read the checked-out branch in {worktree}: "
                       f"{br.stderr.strip()}", EXIT_PRECONDITION)
     checked_out = br.stdout.strip()
-    row_branch = row.get("branch", "-")
     if checked_out != row_branch:
         return refuse("wrong-branch",
                       f"{worktree} has {checked_out!r} checked out but pr {pr}'s row branch is "
@@ -324,7 +329,7 @@ def run(args) -> int:
 
     # Clean AND diff-preserving — the ONLY path that mutates the remote. Never `--force`, only
     # `--force-with-lease`: a concurrent push to this branch makes the lease fail rather than clobber.
-    push = _git(worktree, "push", "--force-with-lease", remote, row_branch)
+    push = _git(worktree, "push", "--force-with-lease", remote, "--", row_branch)
     if push.returncode != 0:
         # The rebase is done and correct LOCALLY; only the push was rejected. Do NOT auto-reset — that
         # would silently destroy the completed rebase. Do NOT write the ledger — head_sha is not yet the

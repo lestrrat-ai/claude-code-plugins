@@ -45,6 +45,7 @@ from pathlib import Path
 
 from _gauntlet import labels
 from _gauntlet.atomic import replace_text
+from _gauntlet.git_refs import branch_problem
 from _gauntlet.modules import load_sibling
 from _gauntlet.repository import repo_problem
 from _gauntlet.testing import run_sibling_suite
@@ -367,7 +368,11 @@ def cmd_adopt(args) -> int:
     if plan["verdict"] == "refuse":
         return _refuse(str(plan["reason"]))
 
-    branch = str(plan["branch"])
+    branch = plan["branch"]
+    branch_error = branch_problem(args.project_root, branch)
+    if branch_error is not None:
+        return _refuse(f"PR {pr} head branch is invalid: {branch_error}")
+    branch = str(branch)
     base = str(plan["base"])
     row = plan["row"]
     planned_head = str(row["head_sha"])

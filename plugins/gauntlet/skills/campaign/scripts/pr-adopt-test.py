@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import tempfile
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
@@ -137,6 +138,22 @@ def t_adopt_same_repo():
           "base/base_branch/worktree must NOT be in the plan row (base rides `base`; the executor records it)")
     check("worktree_owned" not in row and "branch_owned" not in row,
           "worktree_owned/branch_owned are decided at step 5, never in the plan row")
+
+
+def t_invalid_head_branch_refused():
+    with tempfile.TemporaryDirectory() as dd:
+        d = Path(dd)
+        ledger = d / "state.jsonl"
+        _init_ledger(ledger)
+        code, _, err, rec = _adopt(d, ledger, view(headRefName="--all"), wroot=d / "wt")
+        check(code != 0, "an option-looking PR head branch must be refused")
+        check("invalid" in err.lower() and "--all" in err,
+              f"the refusal must name the invalid branch: {err!r}")
+        check(rec.one("gh", "pr", "edit") is None,
+              "invalid branch adoption must stop before applying labels")
+        _, rows = M.L.load(ledger)
+        check(M.L.find_row(rows, "12") is None,
+              "invalid branch adoption must register no ledger row")
 
 
 def t_adopt_when_already_ours():
@@ -353,6 +370,9 @@ class Recorder:
                 return CompletedProcess(argv, 0, "", "")
             if sub == "show-ref":
                 return CompletedProcess(argv, 0 if self.local_branch_exists else 1, "", "")
+            if sub == "check-ref-format":
+                checked = subprocess.run(argv, capture_output=True, text=True, check=False)
+                return CompletedProcess(argv, checked.returncode, checked.stdout, checked.stderr)
             if sub == "status":
                 return CompletedProcess(argv, 0, "M file\n" if self.dirty else "", "")
             if sub == "merge":
@@ -1441,6 +1461,8 @@ CASES = [
     ("refuse_foreign_run", "a PR owned by another run is refused", t_refuse_foreign_run),
     ("refuse_closed", "a MERGED/CLOSED PR is refused", t_refuse_closed),
     ("refuse_unknown_tier", "an unknown tier is refused before row, worktree, or label mutation", t_refuse_unknown_tier_before_mutation),
+    ("invalid_head_branch_refused", "an option-looking PR head branch is refused before adoption mutation",
+     t_invalid_head_branch_refused),
     ("adopt_same_repo", "a clean same-repo OPEN PR adopts with the computed row", t_adopt_same_repo),
     ("adopt_when_already_ours", "a PR already carrying our run label re-adopts", t_adopt_when_already_ours),
     ("slugify", "slugify yields a lowercase, dash-collapsed, untrimmed-dash-free slug", t_slugify),
