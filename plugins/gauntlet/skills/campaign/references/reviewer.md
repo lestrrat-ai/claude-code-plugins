@@ -155,12 +155,15 @@ owner; `runtime-adapter.md`'s transition table consumes it.
   error). → `fallback-native`, disclosed. Do not spend a retry first: the next launch fails identically.
   **"Could not run" means THIS attempt's reviewer process, at launch — never a child process it spawned
   later.** Once an attempt has written **launch evidence** (`critical-rules.md` owns the term), that
-  ground is spent: the engine demonstrably ran, so a later failure is `transient` unless quota or
-  credentials are themselves shown. A mid-run spawn or tool error names a process the reviewer started,
-  not the reviewer, and its diagnostic can read exactly like a launch failure — words such as `exec`,
-  `CreateProcess`, `failed`, or `No such file or directory` are about the child. Reading them as an
-  engine that cannot run gives up the second engine for the rest of the pass on a failure that a retry
-  may well clear.
+  ground is spent FOR THIS BULLET'S "could not run" GROUND ALONE: the engine demonstrably ran, so a later
+  failure that reads as the REVIEWER PROCESS failing to run is `transient` unless quota or credentials are
+  themselves shown. **It reclassifies nothing outside `unusable-engine`.** A refusal shown after launch
+  evidence stays `content-refusal` and still parks — that class is post-launch BY DEFINITION, so launch
+  evidence is its precondition, never an argument against it. A mid-run spawn or tool error names a
+  process the reviewer started, not the reviewer, and its diagnostic can read exactly like a launch
+  failure — words such as `exec`, `CreateProcess`, `failed`, or `No such file or directory` are about the
+  child. Reading them as an engine that cannot run gives up the second engine for the rest of the pass on
+  a failure that a retry may well clear.
 - **`content-refusal` — the engine started, declined to review THIS content, and produced no verdict.**
   Its safety or content filter answered instead of the review (for example `codex exec` printing that the
   content was flagged for possible cybersecurity risk on a security-hardening diff). → **park the PR for
