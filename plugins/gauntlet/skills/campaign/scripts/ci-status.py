@@ -982,7 +982,10 @@ class Snapshot(NamedTuple):
     """What `build_snapshot` hands `derive`. `rows` are the ARTIFACT'S LINES — dicts this file built, on
     their way to `promote()`, never read again by anything here."""
     rows: list
-    head_sha_now: object
+    # `str`, NEVER `object`: `fetch_rollup` raises rather than return a head it could not read, so a
+    # Snapshot that exists has one. Widening this to `object` would not describe the value better — it
+    # would only re-open, for every consumer, the "we cannot tell" case the fetch already refused.
+    head_sha_now: str
     evidence: dict
 
 
@@ -1183,7 +1186,7 @@ def fetch_statuses(fetch: Fetch, head_sha: str) -> tuple[list[dict], dict, list[
     return rows, {"row": "source", "source": "status", "sha": sha, "count": str(len(rows))}, seen
 
 
-def fetch_rollup(fetch: Fetch, pr: str) -> tuple[list[dict], dict, object, list[RollupStatus],
+def fetch_rollup(fetch: Fetch, pr: str) -> tuple[list[dict], dict, str, list[RollupStatus],
                                                  list[RollupRun]]:
     """(3) ROLLUP — its ROWS are WITNESSES ONLY (identity, no verdict), for the containment test.
 
@@ -1527,6 +1530,17 @@ def head_moved(head_sha: str, head_now: object) -> bool:
     return bool(head_now) and head_now != head_sha
 
 
+def moved_head_reason(head_sha: str, head_now: str, verdict: str, reason: str) -> str:
+    """Name the retained artifact's trust boundary after the PR head moved."""
+    return (
+        f"HEAD MOVED — this evidence was fetched for {head_sha}, but the PR's head is NOW {head_now}. "
+        f"It describes a commit that is no longer this PR's head, so it is not evidence about this PR "
+        f"at all: NOT green (the evidence is stale), and NOT red (that would be a claim about the wrong "
+        f"commit). Re-derive with --head-sha {head_now} once the ledger holds it. "
+        f"(what the stale snapshot said, for the record: {verdict} — {reason})"
+    )
+
+
 def derive(fetch: Fetch, repo: str, pr: str, head_sha: str, rundir: Path, required) -> dict:
     """FETCH -> PROMOTE -> VERIFY -> DECIDE, and then: IS THIS EVIDENCE EVEN ABOUT THIS PR?
 
@@ -1584,13 +1598,7 @@ def derive(fetch: Fetch, repo: str, pr: str, head_sha: str, rundir: Path, requir
     # instead of guessed. Both map to ledger `ci = pending` (LEDGER_CI is lossy, and that is why `verdict` is
     # emitted BESIDE `ci` and not collapsed into it).
     if head_moved(head_sha, head_now):
-        verdict, reason = SNAP.UNUSABLE, (
-            f"HEAD MOVED — this evidence was fetched for {head_sha}, but the PR's head is NOW {head_now}. "
-            f"It describes a commit that is no longer this PR's head, so it is not evidence about this PR "
-            f"at all: NOT green (the evidence is stale), and NOT red (that would be a claim about the wrong "
-            f"commit). Re-derive with --head-sha {head_now} once the ledger holds it. "
-            f"(what the stale snapshot said, for the record: {verdict} — {reason})"
-        )
+        verdict, reason = SNAP.UNUSABLE, moved_head_reason(head_sha, head_now, verdict, reason)
 
     # THE FINGERPRINT IS COMPUTED HERE, NEVER BY THE DRIVER — a hash a driver reassembles by hand from the
     # doc's spec is a hash that drifts, and every drifted byte reads as "CI moved", which resets the very
@@ -1691,40 +1699,243 @@ def check_now(source: str, value: str) -> datetime:
     return ts
 
 
+# WHAT CHECK EACH ENVELOPE FIELD GETS BEFORE IT IS RECORDED — the ONE defining site of that partition.
+# `derive_output` refuses any envelope whose fields are not exactly `DERIVE_FIELDS`,
+# `verify_derived_artifact` applies the three classes WHENEVER THERE IS A PROMOTED ARTIFACT TO APPLY THEM
+# AGAINST, the driver doc's liveness owner block restates the sets a reader has to know, and `doc-check`
+# holds those sets to these names. The partition is TOTAL, and `ci-status-test.py` asserts that it is: a
+# field added to `result()` cannot reach the recording path without someone saying which class it belongs
+# to. The alternative is a new field nobody ever checked.
+#
+# TWO BOUNDED EXCEPTIONS, BOTH NAMED HERE. `PRODUCER_ATTESTED` is a field class and holds on every branch;
+# `NO_ARTIFACT_PRODUCER_COPY` is a BRANCH, not a class, and is stated below the moved-head cost. Neither is
+# a gap waiting to be closed, and there is no third: past the null-snapshot return,
+# `verify_derived_artifact` recomputes or refuses everything else it records.
+#
+# `PRODUCER_ATTESTED` NAMES A REAL BOUNDARY — it is not a gap waiting to be closed. The PR's head as of
+# the fetch is the ONE liveness input the promoted artifact cannot answer for: `ci-snapshot.py` is a pure
+# function from bytes to a verdict, handed no PR and making no network call (see `derive`), so the head
+# never enters the artifact and nothing on disk can contradict the producer about it. `head_moved` is
+# `head_moved(head_sha, head_sha_now)`, so it stands or falls with that same attestation. Re-deriving
+# either one here would mean a network call inside the recorder, which is exactly what this architecture
+# refuses; putting the head into the artifact would end its auditability as a pure function of bytes.
+#
+# WHAT THAT COSTS, STATED WHERE IT CAN BE READ — the cost of `PRODUCER_ATTESTED`, and only that; the
+# no-artifact branch's own cost is stated below. The recorder catches a moved head reported as anything
+# but the moved-head result — the `head_moved` branch below rebuilds `moved_head_reason()` and refuses
+# any other verdict, reason, or ledger value. It CANNOT catch a moved head DENIED: an envelope whose
+# `head_sha_now` says the pinned head is still current is indistinguishable from a genuine unmoved-head
+# derivation, because every remaining field then recomputes from the artifact exactly as it should.
+# Only `derive`, which saw the head, can refuse that — and it does. Nothing but `derive` writes this
+# envelope in real operation, so denying a moved head means editing the producer's own output.
+#
+# WITH NO PROMOTED ARTIFACT THERE IS NOTHING TO RECOMPUTE AGAINST — the second exception, and it is a
+# BRANCH rather than a field class. A failed or incomplete fetch promotes nothing and reports
+# `snapshot: null` (`stage-2-ci.md`, "FAILED OR INCOMPLETE FETCHES PROMOTE NOTHING"), so
+# `verify_derived_artifact` returns before any recomputation and NO member of
+# `RECOMPUTED_FROM_ARTIFACT` is re-derived on that branch. THE HOLE IS NOT THE WHOLE SET. `derive_output`
+# pins three of those five to their ONE legal value for such an envelope and refuses anything else at the
+# door, which is exit 2 rather than a belief. What survives to be recorded on the producer's word is
+# exactly `NO_ARTIFACT_PRODUCER_COPY`.
+#
+# WHAT THAT COSTS, on this branch. `reason` is arbitrary text nothing recomputes, and `liveness` embeds it
+# verbatim in the REFETCH CAP diagnostic it writes to `ci_reason`; `verdict` can be swapped for the other
+# member of `NOT_VERIFIED_VERDICTS`, which changes only that diagnostic's label. NO GREEN IS REACHABLE
+# THIS WAY, and no bound is escaped: a trusted verdict beside a null snapshot is refused by
+# `derive_output`, both surviving verdicts map to `ci = pending`, `unusable_refetches` still increments,
+# and the row still parks at the cap. `ci_reason` is the open question a human rules on through
+# `blocker_ruling`, and nothing machine-readable parses its text. As above, only `derive` writes this
+# envelope in real operation.
+DERIVE_FIELDS = frozenset({
+    "pr", "head_sha", "verdict", "ci", "reason", "snapshot", "evidence", "head_sha_now",
+    "head_moved", "required_set", "fingerprint", "buckets",
+})
+RECOMPUTED_FROM_ARTIFACT = frozenset({"verdict", "reason", "evidence", "fingerprint", "buckets"})
+CHECKED_AGAINST_CANONICAL_STATE = frozenset({"pr", "head_sha", "required_set", "snapshot"})
+DERIVED_FROM_A_CHECKED_FIELD = frozenset({"ci"})   # `ledger_ci(verdict)`, refused when they disagree
+PRODUCER_ATTESTED = frozenset({"head_sha_now", "head_moved"})
+# NOT a fifth class — a subset of `RECOMPUTED_FROM_ARTIFACT`, naming what that set's promise does NOT
+# cover on the null-snapshot branch. Its complement within that set is what `derive_output` pins.
+NO_ARTIFACT_PRODUCER_COPY = frozenset({"verdict", "reason"})
+
+
 def derive_output(raw: object) -> dict:
     """Validate the derive JSON handed to `liveness` — the UNEDITED output of `derive`, nothing else.
 
     The same fail-closed posture as every other input: a field missing or of the wrong shape is refused
     at the door, because a liveness pass run on a hand-assembled approximation of `derive`'s output is
-    the hand-run bookkeeping this command exists to remove, wearing the command as a costume.
+    the hand-run bookkeeping this command exists to remove, wearing the command as a costume. The CLI
+    then checks every field of the envelope in the class the partition above puts it in, before it
+    records anything.
     """
     if not isinstance(raw, dict):
         fail("liveness: the derive JSON is not an object — hand this command the JSON `derive` printed, "
              "unedited")
+    if set(raw) != DERIVE_FIELDS:
+        fail(f"liveness: the derive JSON fields are {sorted(raw)!r}, not the exact producer shape "
+             f"{sorted(DERIVE_FIELDS)!r}")
     out: dict = {}
-    for key in ("head_sha", "verdict", "ci", "reason"):
+    for key in ("pr", "head_sha", "verdict", "ci", "reason"):
         value = raw.get(key)
         if not isinstance(value, str) or not value:
             fail(f"liveness: the derive JSON carries no usable {key!r} — it is not `derive`'s output")
         out[key] = value
+    if not out["pr"].isdigit():
+        fail(f"liveness: derive JSON `pr` is {out['pr']!r}, not a PR number")
+    if not SHA_RE.fullmatch(out["head_sha"]):
+        fail(f"liveness: derive JSON `head_sha` is {out['head_sha']!r}, not a 40-hex object id")
+    if out["verdict"] not in LEDGER_CI:
+        fail(f"liveness: derive JSON `verdict` is {out['verdict']!r}, not a known CI verdict")
     if out["ci"] not in LEDGER_CI_VALUES:
         fail(f"liveness: derive JSON `ci` is {out['ci']!r}, not one of {'/'.join(LEDGER_CI_VALUES)}")
+    if ledger_ci(out["verdict"]) != out["ci"]:
+        fail(f"liveness: derive JSON `ci` {out['ci']!r} does not match verdict {out['verdict']!r}")
+    if not isinstance(raw["snapshot"], (str, type(None))):
+        fail(f"liveness: derive JSON `snapshot` is {raw['snapshot']!r}, not a path or null")
+    evidence = raw["evidence"]
+    if not isinstance(evidence, dict):
+        fail(f"liveness: derive JSON `evidence` is not an object: {evidence!r}")
+    head_now = raw["head_sha_now"]
+    if head_now is not None and (not isinstance(head_now, str) or not SHA_RE.fullmatch(head_now)):
+        fail(f"liveness: derive JSON `head_sha_now` is {head_now!r}, not a 40-hex object id or null")
+    if type(raw["head_moved"]) is not bool:
+        fail(f"liveness: derive JSON `head_moved` is {raw['head_moved']!r}, not a boolean")
+    if raw["head_moved"] != head_moved(out["head_sha"], head_now):
+        fail(f"liveness: derive JSON `head_moved` does not match `head_sha_now` for {out['head_sha']}")
+    if raw["required_set"] not in (SNAP.DECLARED, SNAP.NONE_DECLARED, SNAP.CANNOT_READ):
+        fail(f"liveness: derive JSON `required_set` is {raw['required_set']!r}, not a known state")
+    out.update({
+        "snapshot": raw["snapshot"], "evidence": evidence, "head_sha_now": head_now,
+        "head_moved": raw["head_moved"], "required_set": raw["required_set"],
+    })
     fp, buckets = raw.get("fingerprint"), raw.get("buckets")
     trusted_current_head = out["verdict"] not in NOT_VERIFIED_VERDICTS
     if trusted_current_head:
+        if raw["snapshot"] is None or raw["head_moved"] or head_now != out["head_sha"]:
+            fail("liveness: a trusted current-head derivation must name its promoted snapshot and "
+                 "matching current head")
         if not isinstance(fp, str) or not re.fullmatch(r"[0-9a-f]{64}", fp):
             fail(f"liveness: a derivation with trusted current-head evidence must carry a 64-hex "
                  f"`fingerprint`; got {fp!r}")
         if (not isinstance(buckets, dict) or set(buckets) != set(BUCKET_KEYS.values())
-                or any(not isinstance(v, int) or v < 0 for v in buckets.values())):
+                or any(type(v) is not int or v < 0 for v in buckets.values())):
             fail(f"liveness: a derivation with trusted current-head evidence must carry the four-key "
                  f"`buckets` tally; got {buckets!r}")
     elif fp is not None or buckets is not None:
         fail(f"liveness: verdict {out['verdict']!r} has no trusted current-head evidence, yet the JSON "
              f"carries fingerprint={fp!r} buckets={buckets!r} — that is not `derive`'s output")
+    # THE EVIDENCE SHAPE FOLLOWS FROM WHETHER ANYTHING WAS FETCHED, which is exactly what `snapshot`
+    # already says — so it is decided HERE, beside the snapshot-null guard, and not as a free-standing
+    # shape rule that would have to guess. `result()` states the producer's contract in one line
+    # (`evidence` is "`{}` when nothing was ever fetched"), and `derive`'s `FetchError` branch emits
+    # precisely that beside `snapshot: null`. THREE ZERO COUNTS WOULD BE THE WRONG DEMAND HERE, in both
+    # directions: no producer output can satisfy it, and satisfying it would mean asserting three
+    # observations nobody made. A promoted snapshot is the other side of the same fact — `build_snapshot`
+    # returned, so all three counts exist, and `verify_derived_artifact` recomputes them from the
+    # artifact's own rows.
+    #
+    # REFUSING THE EMPTY OBJECT HERE WOULD RE-OPEN THE UNBOUNDED REFETCH. Every `FetchError` inside
+    # `build_snapshot` lands in this class — a source that could not be read, a page shape the reader
+    # refuses, a truncated payload, a rollup the coverage rule will not accept — and this class is the
+    # ONLY thing `unusable_refetches` counts. An envelope refused at the door records no strike, so the
+    # REFETCH CAP (`stage-2-ci.md`, "NOT VERIFIED — the refetch is BOUNDED") never fires and "refetch
+    # until it works" has nothing left to end it. Accepting `{}` weakens no binding: `evidence` is
+    # never recomputed for this class (`verify_derived_artifact` returns at a null snapshot) and
+    # `liveness` never reads it.
+    if raw["snapshot"] is None:
+        if evidence != {} or head_now is not None or raw["head_moved"]:
+            fail("liveness: a derivation without a promoted snapshot must carry no evidence and no "
+                 "current head claim")
+    elif (set(evidence) != {"checkrun", "status", "witness"}
+            or any(type(value) is not int or value < 0 for value in evidence.values())):
+        fail(f"liveness: derive JSON `evidence` is not the three nonnegative producer counts: {evidence!r}")
     out["fingerprint"], out["buckets"] = fp, buckets
     out["trusted_current_head"] = trusted_current_head
     return out
+
+
+def verify_derived_artifact(ledger_path: Path, pr: str, derived: dict) -> None:
+    """Recompute liveness inputs from the promoted artifact before recording them.
+
+    The JSON is a transport envelope, not evidence. Every field is checked in the class the partition
+    above this function's validator puts it in — `RECOMPUTED_FROM_ARTIFACT` against the promoted bytes,
+    all five of them bound to a SINGLE read of those bytes (see the recomputation below),
+    `CHECKED_AGAINST_CANONICAL_STATE` against the ledger row and the artifact's own path,
+    `DERIVED_FROM_A_CHECKED_FIELD` against the field it is a function of — with the TWO bounded exceptions
+    that partition names and explains, and no others: the `PRODUCER_ATTESTED` class, and the
+    `NO_ARTIFACT_PRODUCER_COPY` branch reached at the `snapshot: null` return below, where there are no
+    promoted bytes to recompute anything against. Read that comment before adding a field here; a field
+    this function does not check is a field the recorder believes.
+    """
+    header, rows = LEDGER.load(ledger_path)
+    row = LEDGER.find_row(rows, pr)
+    if row is None:
+        fail(f"liveness: no ledger row for PR {pr}")
+    if derived["pr"] != pr or derived["head_sha"] != row["head_sha"]:
+        fail("liveness: derive JSON does not name the requested PR's current ledger head")
+    try:
+        required = SNAP.parse_required_set(LEDGER.effective_required_set(header, row))
+    except SNAP.SpecError as exc:
+        fail(f"liveness: the ledger's required-set state cannot be verified: {exc}")
+    if derived["required_set"] != required.state:
+        fail("liveness: derive JSON `required_set` does not match the ledger row")
+
+    # NOTHING WAS PROMOTED, SO THERE IS NOTHING TO RECOMPUTE AGAINST. This return is the
+    # `NO_ARTIFACT_PRODUCER_COPY` branch; the partition above `derive_output` owns what reaches the ledger
+    # unrecomputed here, what `derive_output` pins instead, and what that costs.
+    snapshot_name = derived["snapshot"]
+    if snapshot_name is None:
+        return
+    rundir = ledger_path.resolve().parent
+    try:
+        snapshot = Path(snapshot_name)
+        snapshot_resolved = snapshot.resolve()
+    except (OSError, RuntimeError, ValueError) as exc:
+        fail(f"liveness: derive JSON `snapshot` is not a usable path: {exc}")
+    if (snapshot_resolved.parent != rundir
+            or snapshot.name != f"ci-{pr}-{derived['head_sha']}.txt"):
+        fail("liveness: derive JSON `snapshot` is not the promoted artifact for this PR and head")
+    # ONE READ, AND EVERY RECOMPUTED FIELD COMES OFF IT. `RECOMPUTED_FROM_ARTIFACT` names five fields, and
+    # they are ONE account of ONE artifact or they are not evidence: a verdict from one read of the file
+    # beside a fingerprint from another is two claims about two byte sequences that nothing made agree.
+    # So the artifact is parsed HERE, once, and `evaluate_rows` — which reads nothing, and wants `snapshot`
+    # only for the FILENAME rule — decides on those same rows, as do the evidence counts, the fingerprint
+    # and the buckets below. `SNAP.evaluate(snapshot, …)` re-opens the path, so calling it here would put
+    # the second read back. `ci-status-test.py`'s `[SEC-2] one read` case pins the count at one.
+    try:
+        artifact_rows = SNAP.parse(snapshot)
+        artifact_verdict, artifact_reason = SNAP.evaluate_rows(
+            snapshot, artifact_rows, derived["head_sha"], required=required, expect_filename_sha=True
+        )
+    except (OSError, SNAP.SnapshotError) as exc:
+        fail(f"liveness: the promoted snapshot cannot be independently verified: {exc}")
+    evidence = {kind: sum(1 for item in artifact_rows if item["row"] == kind)
+                for kind in ("checkrun", "status", "witness")}
+    if derived["evidence"] != evidence:
+        fail(f"liveness: derive JSON `evidence` {derived['evidence']!r} does not match the promoted "
+             f"snapshot {evidence!r}")
+
+    # THE BRANCH IS TAKEN ON AN ATTESTED FIELD, AND ONE DIRECTION OF IT CANNOT BE CHECKED HERE. Reported
+    # as moved, the result is rebuilt from the artifact and refused unless it IS the moved-head result —
+    # a moved head cannot be dressed up as anything else. Reported as NOT moved, there is nothing on disk
+    # to contradict it: `head_sha_now` is `PRODUCER_ATTESTED` (see the partition above `derive_output`),
+    # so this falls through to the recomputation below, which is the whole check such an envelope gets.
+    if derived["head_moved"]:
+        expected_reason = moved_head_reason(
+            derived["head_sha"], derived["head_sha_now"], artifact_verdict, artifact_reason
+        )
+        if ((derived["verdict"], derived["ci"], derived["reason"])
+                != (SNAP.UNUSABLE, LEDGER_CI[SNAP.UNUSABLE], expected_reason)):
+            fail("liveness: moved-head derive JSON does not match the promoted artifact")
+        return
+
+    if (derived["verdict"], derived["reason"]) != (artifact_verdict, artifact_reason):
+        fail("liveness: derive JSON verdict or reason does not match the promoted snapshot")
+    if derived["trusted_current_head"]:
+        expected_fp = SNAP.fingerprint(artifact_rows, derived["head_sha"])
+        expected_buckets = bucket_counts(artifact_rows)
+        if derived["fingerprint"] != expected_fp or derived["buckets"] != expected_buckets:
+            fail("liveness: derive JSON fingerprint or bucket tally does not match the promoted snapshot")
 
 
 def liveness(ledger_path: Path, pr: str, derived: dict, machine_action: str, now: datetime) -> dict:
@@ -2070,11 +2281,12 @@ def parse_moved_head_contract(blocks: list[str]) -> dict[str, str]:
 
 
 def parse_liveness_contract(blocks: list[str]) -> dict[str, str]:
-    """The refetch-counter owner block -> trust, actions, cap, and diagnostic shape."""
+    """The refetch-counter owner block -> trust, actions, cap, diagnostic shape, and the input classes."""
     keys = {
         "untrusted_verdicts", "untrusted_action", "trusted_current_head_action",
         "retained_moved_head_artifact", "head_sha_changed_action", "refetch_cap",
         "refetch_diagnostic", "unusable_refusal", "unverifiable_refusal",
+        "recomputed_from_artifact", "producer_attested", "no_artifact_producer_copy",
     }
     for block in blocks:
         if "liveness.untrusted_verdicts" not in block:
@@ -2845,8 +3057,11 @@ def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) 
          MARKED `ci-status.py` block against the command `canonical_command()` generates for its id, which
          its body must EQUAL and whose opener must have a conforming CLOSE.
       6. the moved-head owner block says the old-head artifact is retained for audit but contributes no
-         current-PR verdict, fingerprint, or buckets; and the liveness owner block says that final
-         untrusted result increments the refetch counter while trusted current-head evidence resets it.
+         current-PR verdict, fingerprint, or buckets; and the liveness owner block says that a final
+         untrusted result increments the refetch counter while trusted current-head evidence resets it,
+         and names the envelope fields `liveness` recomputes from the promoted artifact, the ones it
+         records on the producer's attestation, and the ones a `snapshot: null` derivation gets recorded
+         unrecomputed instead (the partition above `derive_output` owns all three sets).
 
     (The doc's three snapshot `jq` filters are executed by `ci-snapshot.py` over recorded, multi-page API
     payloads. The required-set reads are production functions here, covered by `ci-status-test.py`.)
@@ -2955,6 +3170,24 @@ def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) 
         ("liveness UNVERIFIABLE refusal", liveness_contract.get("unverifiable_refusal"),
          "witness-identity containment failure; line/row not required",
          "witness identity can prevent containment proof without identifying an evidence row"),
+        ("liveness recomputed fields", set(liveness_contract.get("recomputed_from_artifact", "").split()),
+         set(RECOMPUTED_FROM_ARTIFACT),
+         "a field the doc promises is recomputed from the promoted artifact, but is not, is recorded on "
+         "the producer's word while the doc says it was checked"),
+        ("liveness attested fields", set(liveness_contract.get("producer_attested", "").split()),
+         set(PRODUCER_ATTESTED),
+         "the fields the artifact cannot answer for must be named as the producer's attestation — a doc "
+         "that omits one is claiming a verification the recorder never performs"),
+        # THE NAME-ONLY COMPARISON ABOVE CANNOT SEE A BRANCH. `recomputed_from_artifact` names the set;
+        # it says nothing about the null-snapshot path, where none of that set is recomputed. So the
+        # branch gets its OWN named set, held to the code the same way — otherwise the doc can keep
+        # promising a recomputation on a branch that performs none, and every check still passes.
+        ("liveness no-artifact copy",
+         set(liveness_contract.get("no_artifact_producer_copy", "").split()),
+         set(NO_ARTIFACT_PRODUCER_COPY),
+         "with no promoted snapshot nothing is recomputed, so the doc must name exactly the fields that "
+         "reach the ledger as the producer wrote them — the rest of the recomputed set is pinned by "
+         "`derive_output` to its one legal value there"),
         ("the STRIKE CAP", caps.get("STRIKE"), STRIKE_CAP,
          "the bound `liveness` fires at and the bound the doc promises are different numbers"),
         ("the REFETCH CAP", caps.get("REFETCH"), REFETCH_CAP,
@@ -3214,7 +3447,9 @@ def main() -> int:
         except ValueError as exc:
             fail(f"liveness: --derive-json is not JSON ({exc}) — hand it the JSON `derive` printed")
         now = check_now("--now", args.now) if args.now else datetime.now(timezone.utc)
-        out = liveness(args.ledger, args.pr, derive_output(raw), args.machine_action, now)
+        derived = derive_output(raw)
+        verify_derived_artifact(args.ledger, args.pr, derived)
+        out = liveness(args.ledger, args.pr, derived, args.machine_action, now)
         print(json.dumps(out, indent=2, ensure_ascii=False))
         # 3, not 1: the command DID its job and the answer is "this PR is now parked on you" — the same
         # STOP semantics as `ledger.py dispatch-check` (EXIT_STOP), distinct from an input error's 2.

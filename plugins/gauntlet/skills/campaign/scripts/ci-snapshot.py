@@ -858,11 +858,44 @@ def evaluate(
     `expect_filename_sha` is OFF only for the fixtures, which are named by the PROPERTY they pin
     (`green.jsonl`, `wrong-sha.jsonl`, …) rather than by a SHA — their names are documentation. It is ON
     for every real artifact, and `self-test` proves the check still fires (FILENAME_CASES below).
+
+    THIS ENTRY POINT READS THE FILE. A caller that already holds the rows — because it derives something
+    else from the SAME bytes and those answers must agree — calls `evaluate_rows` instead and reads once.
     """
     try:
         if expect_filename_sha:
             verify_filename(path, expected_sha)
         rows = parse(path)
+    except Unverifiable as exc:
+        return UNVERIFIABLE, str(exc)
+    except SnapshotError as exc:
+        return UNUSABLE, str(exc)
+    # The name was checked above and `rows` ARE the bytes just read, so this call touches the file no
+    # second time: `evaluate` reads exactly once, like `evaluate_rows` reads not at all.
+    return evaluate_rows(path, rows, expected_sha, required=required, expect_filename_sha=False)
+
+
+def evaluate_rows(
+    path: Path, rows: list[dict], expected_sha: str, *, required: RequiredSet,
+    expect_filename_sha: bool = True,
+) -> tuple[str, str]:
+    """`evaluate` with the READ already done — the SAME rules, applied to rows the caller parsed.
+
+    THE VERDICT AND WHATEVER ELSE THE CALLER DERIVES ARE THEN BOUND TO ONE BYTE SEQUENCE, which is the
+    only reason this entry point exists. `ci-status.py`'s `verify_derived_artifact` recomputes FIVE
+    envelope fields — verdict, reason, evidence counts, fingerprint, buckets — and they are a single
+    account of a single artifact or they are not evidence at all. Calling `evaluate(path, …)` beside a
+    `parse(path)` of its own read the file TWICE, so verdict and reason came from one read while the
+    other three came from another, and two reads of one file are two files whenever anything writes
+    between them.
+
+    `path` is still required, and still only for its NAME: `verify_filename` compares the artifact's
+    filename and opens nothing. `expect_filename_sha` means here exactly what it means above, and
+    `evaluate` passes it FALSE because it has already applied that rule itself.
+    """
+    try:
+        if expect_filename_sha:
+            verify_filename(path, expected_sha)
         verify_sha(rows, expected_sha)
         verify_sources(rows, expected_sha)
         check_containment(rows)

@@ -481,13 +481,29 @@ Header field notes (the header fields above; per-row fields follow):
   policy. This field records the orchestrator's decided tier (never below the tool's floor; `TRIVIAL` only
   as the orchestrator's all-prose call); it drives `required(tier)` and review depth.
 - `ci` — `green` / `red` / `pending` for `head_sha`. Recorded by `ci-status.py liveness` from `derive`'s
-  JSON (`stage-2-ci.md`, "THE BOOKKEEPING IS A COMMAND"). (**There is no `none`.** It was documented but
+  JSON after the input checks owned by the liveness owner block (`stage-2-ci.md`, "NOT VERIFIED — the
+  refetch is BOUNDED"), which is also where **what those checks do and do not cover** is stated.
+  (**There is no `none`.** It was documented but
   no procedure could ever write it.)
 - `ci_fingerprint` — digest of the last trusted current-head evidence, written by `ci-status.py liveness`
   **verbatim from the `fingerprint` field of `derive`'s JSON** (`null` there → the derivation had no trusted
   current-head evidence and this field is not written). **What it covers and exactly how it is serialized is
   DEFINED in `stage-2-ci.md`, "SETTLED" — and is NEVER restated here**, because a fingerprint reconstructed
   from a paraphrase is a different fingerprint. **UNCHANGED + nothing RUNNING == SETTLED.**
+<!-- REFUTED — about the `ci_fingerprint` row above. A review pass claimed it conflicts with
+     `ci-status.py`, which recomputes the digest from the promoted artifact and refuses a mismatch, so
+     (it argued) "verbatim from the `fingerprint` field" is wrong and every envelope-provenance bullet
+     needs the same edit. Verified against the source, not assumed: the two describe the SAME BYTES.
+     `liveness` writes `put("ci_fingerprint", derived["fingerprint"])` — the recorded value literally is
+     that JSON field — and `verify_derived_artifact` substitutes nothing: it recomputes the digest from
+     the promoted artifact and fails the whole command (exit 2) on disagreement. `main` calls it before
+     `liveness`, and both the check and the write are gated on `trusted_current_head`, so no write to
+     this field escapes the recomputation. This row states PROVENANCE only; it never calls the value
+     trusted or unchecked, and it delegates the definition — and what is recomputed versus attested —
+     to `stage-2-ci.md`, "SETTLED", machine-held by `ci-status.py doc-check`. The `null` clause holds
+     too: `derive` emits no fingerprint for a not-verified verdict, and the held and not-trusted
+     branches of `liveness` never touch this field. Do NOT rewrite the row above; that would be fixing
+     a refuted finding. -->
 - `settled_strikes` — consecutive derivations seen **SETTLED but not green** *while no machine action was
   due or in flight* for the PR at this `head_sha` (`stage-2-ci.md`, "SETTLED", owns the gate — a PR the
   driver is actively repairing is never struck). Counted by `ci-status.py liveness`, never by hand. At
