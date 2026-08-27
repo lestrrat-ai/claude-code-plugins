@@ -36,6 +36,7 @@ What the fixtures are aimed at, in two families:
 from __future__ import annotations
 
 import contextlib
+import io
 import importlib.util
 import json
 import os
@@ -2326,6 +2327,46 @@ def count_dumps(L: ModuleType, fn) -> int:
     return calls[0]
 
 
+def t_nudge_fields_are_validated_at_the_write_boundary(L: ModuleType, tmp: Path) -> None:
+    """Ledger writes reject control, format and line-separator characters in values nudge renders."""
+    bad = "durable\nvalue\x1b"
+    cases = (
+        ("run-id", {**L.HEADER_DEFAULTS, "run_id": bad}, []),
+        ("pr", dict(L.HEADER_DEFAULTS), [{**L.ROW_DEFAULTS, "pr": bad}]),
+        ("ci-reason", dict(L.HEADER_DEFAULTS), [{**L.ROW_DEFAULTS, "ci_reason": bad}]),
+        ("repair-decision", dict(L.HEADER_DEFAULTS), [{**L.ROW_DEFAULTS, "repair_decision": bad}]),
+    )
+    for name, header, rows in cases:
+        path = tmp / f"reject-{name}.jsonl"
+        with contextlib.redirect_stderr(io.StringIO()):
+            try:
+                L.dump(path, header, rows)
+            except SystemExit as exc:
+                code = exc.code
+            else:
+                code = 0
+        check(code == 1, f"{name} write accepted a control-bearing durable value")
+        check(not path.exists(), f"{name} write left a ledger after rejecting the durable value")
+
+    # The guard sits on `dump()`'s HEADER path, where one field (`default_non_goals`) reaches it un-coerced
+    # and may be a `None` or a `list`. A NON-durable field of any shape passes through RAW — that raw
+    # preservation is what keeps a malformed store fail-closed. A DURABLE field the scan cannot inspect is
+    # REFUSED, because the alternative is writing it through unchecked.
+    for raw in (None, ["a"], "plain"):
+        check(L.validate_durable_output_field("default_non_goals", raw) is raw,
+              f"a non-durable field was not passed through raw: {raw!r}")
+    for raw in (None, ["a"], 11):
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            try:
+                L.validate_durable_output_field("run_id", raw)
+            except SystemExit as exc:
+                code = exc.code
+            else:
+                code = 0
+        check(code == 1, f"a non-string durable value was accepted: {raw!r}")
+        check("not a string" in err.getvalue(), f"refusal did not name the shape problem: {raw!r}")
+
+
 def t_park_writes_all_three(L: ModuleType, tmp: Path) -> None:
     """`park` sets status=awaiting-user, ci_reason=<blocker>, blocker_ruling=- in ONE write — and touches
     NOTHING else, the liveness counters included (a park does not reset them; only the unpark does)."""
@@ -3480,6 +3521,8 @@ CASES = [
     ("repair-decision-cleared", "re-entering a cap CLEARS the stale reassessment decision — the repair budget binds", t_stale_repair_decision_cleared_at_cap),
     ("pr-origin-default", "an unknown origin is `external` — the fail-safe direction", t_pr_origin_defaults_to_external),
     ("park-writes-three", "`park` writes status/ci_reason/blocker_ruling atomically, counters untouched", t_park_writes_all_three),
+    ("nudge-fields-validated", "nudge-rendered durable fields reject controls at the ledger write boundary",
+     t_nudge_fields_are_validated_at_the_write_boundary),
     ("park-repair-history", "an undecided repairing row parks unreconcilable history atomically", t_park_recovers_an_unreconcilable_repair_history),
     ("park-refusals", "park refuses no-row/terminal/blank-reason/held-owner/recorded-repair, and a double-park STOPs", t_park_refusals),
     ("unpark-spends-resets", "`unpark` flips status, spends the ruling, resets all four counters — one write", t_unpark_spends_and_resets),

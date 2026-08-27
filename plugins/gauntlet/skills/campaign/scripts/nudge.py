@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import os
 import stat
 import sys
@@ -66,7 +67,8 @@ PARKED = tuple(s for s in HELD if s != REPAIRING)
 QUIET_AFTER = timedelta(minutes=35)
 
 # --- the durable notes file ---------------------------------------------------
-# `<project_root>/.gauntlet/nudges.md` — standing lessons, hand-appended, delivered verbatim. It sits in
+# `<project_root>/.gauntlet/nudges.md` — standing lessons, hand-appended, rendered through the shared safe
+# encoder. It sits in
 # the DURABLE tier next to `followups.jsonl` and `history/` (`references/files-and-ledger.md`), never
 # under `.gauntlet/tmp/**` which is wiped between runs: a lesson has to outlive the run that learned it.
 NOTES_NAME = "nudges.md"
@@ -97,6 +99,12 @@ NOTES_BULLETS = ("- ", "* ")
 # them exactly what is sitting at the path. Order does not matter — the predicates are disjoint.
 NOTES_ENTRY_KINDS = ((stat.S_ISDIR, "a directory"), (stat.S_ISFIFO, "a FIFO"), (stat.S_ISSOCK, "a socket"),
                      (stat.S_ISBLK, "a block device"), (stat.S_ISCHR, "a character device"))
+
+
+def encode_dynamic(value: object) -> str:
+    """Render one durable or filesystem-derived value without output controls or line boundaries."""
+    encoded = json.dumps(str(value), ensure_ascii=True)
+    return encoded[1:-1]
 
 
 def entry_kind(mode: int) -> str:
@@ -217,9 +225,10 @@ def followups_line(followups: FollowupsRead) -> "str | None":
     about a path that plainly had something at it.
     """
     if followups.open_count is None:
-        return f"follow-up store NOT READ ({followups.unread_reason}) — open follow-ups are UNKNOWN, not zero."
+        return (f"follow-up store NOT READ ({encode_dynamic(followups.unread_reason)}) — open follow-ups are "
+                "UNKNOWN, not zero.")
     if followups.open_count:
-        return (f"{followups.open_count} open follow-up(s) — start any you can, "
+        return (f"{encode_dynamic(followups.open_count)} open follow-up(s) — start any you can, "
                 "or run /gauntlet:address-followups in Claude Code or "
                 "$gauntlet:address-followups in Codex to work the queue.")
     return None
@@ -249,9 +258,8 @@ def parse_notes(text: str) -> list:
 
     Blank lines and `#` lines are skipped so the file can carry markdown headings and comments and still
     read well to the human who maintains it; a leading `- `/`* ` bullet is stripped so a bullet list and a
-    plain list both work. Everything else is taken exactly as written — this file is the ONE place the
-    campaign's own words reach the heartbeat unedited, and a printer that reworded them would be a printer
-    the user cannot predict.
+    plain list both work. Everything else is taken exactly as written into the parsed list. Rendering applies
+    the shared encoder so the user's words remain one safe output line.
     """
     out: list = []
     for raw in text.splitlines():
@@ -338,13 +346,13 @@ def notes_lines(notes: list, notes_unread: "str | None", path: "Path | None") ->
     an unread store says so and names why, and a file over `NOTES_CAP` says how many lines it is hiding.
     """
     if notes_unread is not None:
-        return [f"{NOTES_MARK}s NOT READ ({notes_unread}) — standing notes are UNKNOWN, not absent."]
-    out = [f"{NOTES_MARK}: {n}" for n in notes[:NOTES_CAP]]
+        return [f"{NOTES_MARK}s NOT READ ({encode_dynamic(notes_unread)}) — standing notes are UNKNOWN, not absent."]
+    out = [f"{NOTES_MARK}: {encode_dynamic(n)}" for n in notes[:NOTES_CAP]]
     hidden = len(notes) - NOTES_CAP
     if hidden > 0:
         # THE OMISSION IS NEVER SILENT — the count of what was dropped, and where to go read it.
-        out.append(f"{NOTES_MARK}s TRUNCATED — {hidden} of {len(notes)} line(s) in {path} not shown "
-                   f"(cap {NOTES_CAP}); trim the file.")
+        out.append(f"{NOTES_MARK}s TRUNCATED — {encode_dynamic(hidden)} of {encode_dynamic(len(notes))} line(s) in "
+                   f"{encode_dynamic(path)} not shown (cap {encode_dynamic(NOTES_CAP)}); trim the file.")
     return out
 
 
@@ -406,8 +414,8 @@ def reminders(header: dict, rows: list, followups: FollowupsRead, rundir: "Path 
     # --- run-level -------------------------------------------------------------
     # Required checks are per-BASE row state. Group active rows by (effective base, effective required set)
     # and REPORT every pairing — naming each active row's effective base and required set is the point, not
-    # only the blocked ones. A settled pairing is stated verbatim (the raw ledger spelling — nudge never
-    # parses a required-set spec); a base whose effective set is still `unknown` (a read failed or never
+    # only the blocked ones. A settled pairing uses the raw ledger spelling through the shared output encoder
+    # (nudge never parses a required-set spec); a base whose effective set is still `unknown` (a read failed or never
     # ran) FAILS CLOSED — it cannot go green — and blocks only ITS group, so ITS line also says to run the
     # grouped read. `-` is NOT `unknown`: it means "inherit the header", which `effective_required_set`
     # resolves; a new run's rows read the header's `unknown` until the grouped read (ci-status.py
@@ -417,14 +425,14 @@ def reminders(header: dict, rows: list, followups: FollowupsRead, rundir: "Path 
         key = (L.effective_base(header, r), L.effective_required_set(header, r))
         base_groups.setdefault(key, []).append(r["pr"])
     for base, rset in sorted(base_groups):
-        prs = ", ".join(base_groups[(base, rset)])
+        prs = ", ".join(encode_dynamic(pr) for pr in base_groups[(base, rset)])
         if rset == "unknown":
-            out.append(f"required set unknown for base {base} (PR(s) {prs}) — run the grouped required-set "
+            out.append(f"required set unknown for base {encode_dynamic(base)} (PR(s) {prs}) — run the grouped required-set "
                        f"read (ci-status.py required-set).")
         else:
-            out.append(f"base {base} (PR(s) {prs}): required set {rset}.")
+            out.append(f"base {encode_dynamic(base)} (PR(s) {prs}): required set {encode_dynamic(rset)}.")
     if active:
-        out.append(f"{len(active)} PR(s) open — reconcile and fan out work up to caps.")
+        out.append(f"{encode_dynamic(len(active))} PR(s) open — reconcile and fan out work up to caps.")
     fu_line = followups_line(followups)
     if fu_line:
         out.append(fu_line)
@@ -452,7 +460,7 @@ def reminders(header: dict, rows: list, followups: FollowupsRead, rundir: "Path 
     if age is not None and age >= QUIET_AFTER and active:
         quiet_min = int(age.total_seconds() // 60)
         parked = [r for r in active if r["status"] in PARKED]
-        out.append(f"run has been QUIET for ~{quiet_min}m (no ledger activity) — SWEEP before rescheduling.")
+        out.append(f"run has been QUIET for ~{encode_dynamic(quiet_min)}m (no ledger activity) — SWEEP before rescheduling.")
         if len(parked) == len(active):
             # The run is not stalled — it is WAITING ON THE USER. The unanswered question is the thing to
             # surface, not a stall to chase; say so explicitly so the sweep is not misread as a fault.
@@ -463,9 +471,9 @@ def reminders(header: dict, rows: list, followups: FollowupsRead, rundir: "Path 
         out.append("re-derive CI for every row that can still move.")
         for r in parked:
             why = r.get("ci_reason", "-")
-            tail = f": {why}" if why and why != "-" else ""
-            out.append(f"PR {r['pr']}: parked — LEAD your next status to the user with this question and how "
-                       f"long it has waited (≥ ~{quiet_min}m quiet){tail}.")
+            tail = f": {encode_dynamic(why)}" if why and why != "-" else ""
+            out.append(f"PR {encode_dynamic(r['pr'])}: parked — LEAD your next status to the user with this question and how "
+                       f"long it has waited (≥ ~{encode_dynamic(quiet_min)}m quiet){tail}.")
 
     # --- per-PR reminders ------------------------------------------------------
     # A HELD PR (parked or repairing) fires ONLY its held reminder. That exclusion is enforced by the
@@ -476,32 +484,33 @@ def reminders(header: dict, rows: list, followups: FollowupsRead, rundir: "Path 
         status = r["status"]
         if status == REPAIRING:
             if r.get("repair_decision", "-") == "-":
-                out.append(f"PR {pr}: repairing, no decision — run `repair-pass.py bundle`.")
+                out.append(f"PR {encode_dynamic(pr)}: repairing, no decision — run `repair-pass.py bundle`.")
             else:
-                out.append(f"PR {pr}: repairing — prepare then dispatch decision ({r['repair_decision']}), "
+                out.append(f"PR {encode_dynamic(pr)}: repairing — prepare then dispatch decision "
+                           f"({encode_dynamic(r['repair_decision'])}), "
                            "nothing else.")
         elif status in HELD:  # awaiting-user / awaiting-api
             why = r.get("ci_reason", "-")
-            tail = f" ({why})" if why and why != "-" else ""
-            out.append(f"PR {pr}: parked{tail} — surface the question, don't mutate it.")
+            tail = f" ({encode_dynamic(why)})" if why and why != "-" else ""
+            out.append(f"PR {encode_dynamic(pr)}: parked{tail} — surface the question, don't mutate it.")
 
         # in-flight rules — each gated on in_review, so held PRs above fire none of them
         need = required(r["tier"])
         ok = int(r["reviews_ok"]) if r["reviews_ok"].isdigit() else 0
         ci = r["ci"]
         if status == "in_review" and ok < need and not rundir_has(rundir, f"intent-{pr}.md"):
-            out.append(f"PR {pr}: no intent-{pr}.md — write it before reviewing.")
+            out.append(f"PR {encode_dynamic(pr)}: no intent-{encode_dynamic(pr)}.md — write it before reviewing.")
         if status == "in_review" and ci == "pending":
-            out.append(f"PR {pr}: CI pending — re-derive it.")
+            out.append(f"PR {encode_dynamic(pr)}: CI pending — re-derive it.")
         if status == "in_review" and ok < need and ci != "red":
             # Work is DUE. The nudge cannot tell from disk whether a review/audit/fix is actually running
             # (that liveness lives in the session, not the ledger) or which KIND is running — so it does not
             # try. It reminds to make sure SOMETHING is live, or to launch one. An earlier version probed
             # review-<pr>-<review_rounds>.progress.jsonl and missed a first review (review_rounds=0) — the
             # exact miss dogfooding and the review both caught (fu25).
-            out.append(f"PR {pr}: work due — make sure a dispatched review/audit/fix is live, or launch one.")
+            out.append(f"PR {encode_dynamic(pr)}: work due — make sure a dispatched review/audit/fix is live, or launch one.")
         if status == "in_review" and ok >= need and ci == "green":
-            out.append(f"PR {pr}: mergeable by counters — check merge-readiness.")
+            out.append(f"PR {encode_dynamic(pr)}: mergeable by counters — check merge-readiness.")
 
     # --- standing notes --------------------------------------------------------
     # LAST, always. Every line above is a LIVE condition computed from this run's durable state and is the
@@ -518,7 +527,7 @@ def render(header: dict, rows: list, followups: FollowupsRead, rundir: "Path | N
            notes: "list | None" = None, notes_unread: "str | None" = None) -> str:
     lines = reminders(header, rows, followups, rundir, now, followups_path, notes, notes_unread)
     run_id = header.get("run_id", "-")
-    head = f"NUDGE (run {run_id}) — {len(lines)} reminder(s):"
+    head = f"NUDGE (run {encode_dynamic(run_id)}) — {encode_dynamic(len(lines))} reminder(s):"
     body = "\n".join(f"  - {line}" for line in lines)
     return head + ("\n" + body if body else "")
 
