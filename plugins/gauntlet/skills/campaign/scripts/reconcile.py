@@ -171,7 +171,8 @@ def sfield(entry: object, key: str, index: int) -> object:
 
 def label_names(entry: object, index: int) -> list[str]:
     """The label NAMES on one entry. `labels` itself enters through `sfield` (a required list); each element
-    is a GitHub label object `{"name": ...}` (a bare string is tolerated, mirroring `pr-adopt.py`). A
+    is a GitHub label object `{"name": ...}`; a bare string is tolerated HERE because this reader parses a
+    snapshot file rather than the live `gh` boundary (adoption's view validator refuses that shape). A
     malformed element is refused — the run-scope check below depends on reading every name, so a name we
     cannot read is a file we cannot trust."""
     labels = sfield(entry, "labels", index)

@@ -175,7 +175,7 @@ def t_slugify():
 
 # --- the `plan` CLI (the testable surface) ------------------------------------
 
-def _write_view(d: str, v: dict) -> str:
+def _write_view(d: str, v: object) -> str:
     f = Path(d) / "view.json"
     f.write_text(json.dumps(v), encoding="utf-8")
     return str(f)
@@ -202,6 +202,37 @@ def t_cli_plan_adopts():
         check(p["row"]["head_sha"] == "c" * 40, "the printed row's head_sha = headRefOid")
         check(p["labels_add"] == ["gauntlet-run-g1", "gauntlet-reviewing 0/2"],
               "the printed labels_add == [owner label, the zero tally]")
+
+
+def t_cli_plan_refuses_malformed_views():
+    """Malformed decoded GitHub views produce the normal pure-plan refusal instead of a traceback."""
+    cases = (
+        (["not an object"], "view is not a JSON object (got list)"),
+        ({k: v for k, v in view().items() if k != "number"}, "missing field 'number'"),
+        ({**view(), "number": True}, "field 'number' must be an integer, got bool"),
+        ({k: v for k, v in view().items() if k != "headRefName"}, "missing field 'headRefName'"),
+        ({**view(), "labels": {"name": "x"}}, "field 'labels' must be a list, got dict"),
+        ({**view(), "labels": [{"name": 7}]},
+         "field 'labels' must hold string names, got int"),
+        # A bare-string label is a shape `gh pr view --json labels` never emits; adoption refuses it
+        # rather than reading it as a usable name (the rule `_repository_problem` already applies).
+        ({**view(), "labels": ["gauntlet-authored"]},
+         "field 'labels' must hold objects, got str"),
+        ({**view(), "headRepositoryOwner": []},
+         "field 'headRepositoryOwner' must be an object, got list"),
+        ({**view(), "headRepository": {"name": 7}},
+         "field headRepository.name must be a string, got int"),
+    )
+    for malformed, detail in cases:
+        with tempfile.TemporaryDirectory() as d:
+            f = _write_view(d, malformed)
+            code, out, err = capture_cli(
+                M.main, ["plan", "--view-json", f, "--run-id", "g1", "--tier", "HIGH"])
+            check(code == 0, f"malformed view {detail!r} must use the plan command's normal exit code")
+            check(err == "", f"malformed view {detail!r} must not print a traceback: {err!r}")
+            p = json.loads(out)
+            check(p == {"verdict": "refuse", "reason": f"malformed GitHub PR view: {detail}"},
+                  f"malformed view {detail!r} must produce the normal refusal result, got {p!r}")
 
 
 # --- pr_origin is DERIVED from labels, never a caller flag (fix 3) -------------
@@ -454,6 +485,24 @@ def t_view_omits_body():
         expected = {"number", "title", "headRefName", "headRefOid", "baseRefName", "labels", "state",
                     "isCrossRepository", "headRepositoryOwner", "headRepository"}
         check(fields == expected, f"the view field set must be exactly the decision metadata; got {sorted(fields)}")
+
+
+def t_adopt_refuses_malformed_view_before_mutation():
+    with tempfile.TemporaryDirectory() as dd:
+        d = Path(dd)
+        ledger = d / "state.jsonl"
+        _init_ledger(ledger)
+        malformed = view()
+        del malformed["title"]
+        code, out, err, rec = _adopt(d, ledger, malformed, wroot=d / "wt")
+        check(code != 0, "adoption must refuse a malformed GitHub view")
+        check(out == "", f"a malformed view refusal must not print an adoption result: {out!r}")
+        check(err.strip() == "pr-adopt: REFUSED — malformed GitHub PR view: missing field 'title'",
+              f"the malformed view must use the normal refusal result, got {err!r}")
+        check([c["argv"][:3] for c in rec.gh_calls()] == [["gh", "pr", "view"]],
+              f"a malformed view must stop after the GitHub read, got {rec.gh_calls()!r}")
+        check(not rec.any_call(lambda a: a[0] == "python3"),
+              "a malformed view must not write the ledger")
 
 
 # --- fix 2: every gh command is scoped to project-root ------------------------
@@ -1468,9 +1517,11 @@ CASES = [
     ("slugify", "slugify yields a lowercase, dash-collapsed, untrimmed-dash-free slug", t_slugify),
     ("cli_plan_refuses_fork", "the plan CLI prints a refuse verdict and exits 0", t_cli_plan_refuses_fork),
     ("cli_plan_adopts", "the plan CLI prints an adopt verdict and exits 0", t_cli_plan_adopts),
+    ("cli_plan_refuses_malformed_views", "malformed decoded GitHub views produce normal plan refusals", t_cli_plan_refuses_malformed_views),
     ("pr_origin_from_label", "pr_origin is DERIVED from the gauntlet-authored label (fix 3)", t_pr_origin_from_label),
     ("driver_cannot_assert_origin", "the --pr-origin flag is gone; a driver cannot claim gauntlet (fix 3)", t_driver_cannot_assert_origin),
     ("view_omits_body", "`gh pr view` requests metadata only, never body (fix 1)", t_view_omits_body),
+    ("adopt_refuses_malformed_view", "adoption refuses malformed GitHub metadata before mutation (API-2)", t_adopt_refuses_malformed_view_before_mutation),
     ("gh_scoped_to_project_root", "every gh command runs in project-root (fix 2)", t_gh_scoped_to_project_root),
     ("process_start_failure_refused", "process-start errors use the adoption refusal contract", t_process_start_failure_refused),
     ("readopt_preserves_ownership", "re-adopting the same worktree keeps created-ownership (fix 4)", t_readopt_preserves_ownership),
