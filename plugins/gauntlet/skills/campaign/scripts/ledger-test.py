@@ -2348,6 +2348,24 @@ def t_nudge_fields_are_validated_at_the_write_boundary(L: ModuleType, tmp: Path)
         check(code == 1, f"{name} write accepted a control-bearing durable value")
         check(not path.exists(), f"{name} write left a ledger after rejecting the durable value")
 
+    # The guard sits on `dump()`'s HEADER path, where one field (`default_non_goals`) reaches it un-coerced
+    # and may be a `None` or a `list`. A NON-durable field of any shape passes through RAW — that raw
+    # preservation is what keeps a malformed store fail-closed. A DURABLE field the scan cannot inspect is
+    # REFUSED, because the alternative is writing it through unchecked.
+    for raw in (None, ["a"], "plain"):
+        check(L.validate_durable_output_field("default_non_goals", raw) is raw,
+              f"a non-durable field was not passed through raw: {raw!r}")
+    for raw in (None, ["a"], 11):
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            try:
+                L.validate_durable_output_field("run_id", raw)
+            except SystemExit as exc:
+                code = exc.code
+            else:
+                code = 0
+        check(code == 1, f"a non-string durable value was accepted: {raw!r}")
+        check("not a string" in err.getvalue(), f"refusal did not name the shape problem: {raw!r}")
+
 
 def t_park_writes_all_three(L: ModuleType, tmp: Path) -> None:
     """`park` sets status=awaiting-user, ci_reason=<blocker>, blocker_ruling=- in ONE write — and touches

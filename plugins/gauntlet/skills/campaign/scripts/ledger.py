@@ -663,10 +663,25 @@ def _coerce_field(value: object, default: str) -> str:
     return default if value is None else str(value)
 
 
-def validate_durable_output_field(name: str, value: str) -> str:
-    """Reject durable values that could carry output controls or a second line into nudge rendering."""
+def validate_durable_output_field(name: str, value: object) -> object:
+    """Reject durable values that could carry output controls or a second line into nudge rendering.
+
+    The parameter is `object`, not `str`, because this sits on `dump()`'s write path and one header field
+    reaches it un-coerced: `_header_store_field` preserves a PRESENT `default_non_goals` RAW, so the value
+    handed here may be a `None` or a `list`. A non-durable field is returned untouched, which keeps that
+    preservation intact.
+
+    A DURABLE field that is not a `str` is REFUSED rather than skipped. No writer produces one today — every
+    durable field coerces through `_coerce_field` — so this cannot be reached from a well-formed store, and
+    that is the point: if a future field ever joined `DURABLE_OUTPUT_FIELDS` while bypassing coercion, the
+    alternative to failing is scanning nothing and writing the value through UNCHECKED, which is the guard
+    silently turning itself off. Fail closed on the shape the scan cannot inspect.
+    """
     if name not in DURABLE_OUTPUT_FIELDS:
         return value
+    if not isinstance(value, str):
+        fail(f"`{name}` is {type(value).__name__}, not a string — a durable field rendered into nudge "
+             f"output must be text this door can inspect, and an uninspectable value is never written")
     bad = next((char for char in value if unicodedata.category(char) in _DURABLE_OUTPUT_CATEGORIES), None)
     if bad is not None:
         fail(f"`{name}` contains U+{ord(bad):04X}, which is a control, format, or line-separator character")
