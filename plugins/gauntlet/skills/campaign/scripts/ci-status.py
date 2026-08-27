@@ -1859,6 +1859,7 @@ def verify_derived_artifact(ledger_path: Path, pr: str, derived: dict) -> None:
 
     The JSON is a transport envelope, not evidence. Every field is checked in the class the partition
     above this function's validator puts it in — `RECOMPUTED_FROM_ARTIFACT` against the promoted bytes,
+    all five of them bound to a SINGLE read of those bytes (see the recomputation below),
     `CHECKED_AGAINST_CANONICAL_STATE` against the ledger row and the artifact's own path,
     `DERIVED_FROM_A_CHECKED_FIELD` against the field it is a function of — with the TWO bounded exceptions
     that partition names and explains, and no others: the `PRODUCER_ATTESTED` class, and the
@@ -1894,10 +1895,17 @@ def verify_derived_artifact(ledger_path: Path, pr: str, derived: dict) -> None:
     if (snapshot_resolved.parent != rundir
             or snapshot.name != f"ci-{pr}-{derived['head_sha']}.txt"):
         fail("liveness: derive JSON `snapshot` is not the promoted artifact for this PR and head")
+    # ONE READ, AND EVERY RECOMPUTED FIELD COMES OFF IT. `RECOMPUTED_FROM_ARTIFACT` names five fields, and
+    # they are ONE account of ONE artifact or they are not evidence: a verdict from one read of the file
+    # beside a fingerprint from another is two claims about two byte sequences that nothing made agree.
+    # So the artifact is parsed HERE, once, and `evaluate_rows` — which reads nothing, and wants `snapshot`
+    # only for the FILENAME rule — decides on those same rows, as do the evidence counts, the fingerprint
+    # and the buckets below. `SNAP.evaluate(snapshot, …)` re-opens the path, so calling it here would put
+    # the second read back. `ci-status-test.py`'s `[SEC-2] one read` case pins the count at one.
     try:
         artifact_rows = SNAP.parse(snapshot)
-        artifact_verdict, artifact_reason = SNAP.evaluate(
-            snapshot, derived["head_sha"], required=required, expect_filename_sha=True
+        artifact_verdict, artifact_reason = SNAP.evaluate_rows(
+            snapshot, artifact_rows, derived["head_sha"], required=required, expect_filename_sha=True
         )
     except (OSError, SNAP.SnapshotError) as exc:
         fail(f"liveness: the promoted snapshot cannot be independently verified: {exc}")

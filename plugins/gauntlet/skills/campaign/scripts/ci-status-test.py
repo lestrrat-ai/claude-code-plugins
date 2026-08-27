@@ -1698,6 +1698,102 @@ def liveness_field_class_cases(ci) -> list[str]:
     return problems
 
 
+def liveness_single_parse_cases(ci, tmp: Path) -> list[str]:
+    """ONE READ OF THE PROMOTED ARTIFACT — the five recomputed fields are one account of one artifact.
+
+    `RECOMPUTED_FROM_ARTIFACT` names verdict, reason, evidence, fingerprint and buckets, and the whole
+    worth of that promise is that they describe THE SAME BYTES. `verify_derived_artifact` used to parse
+    the file for the counts and then hand the PATH to `SNAP.evaluate`, which opened it AGAIN for the
+    verdict — two reads, so two byte sequences whenever anything wrote between them, and an envelope
+    could then carry one read's verdict beside the other read's evidence with nothing to say so.
+
+    The case swaps the file's contents at the first parse and hands the recorder an envelope forged out
+    of BOTH fixtures: the green artifact's verdict and reason, the red artifact's evidence, fingerprint
+    and buckets. Under one read the swap is never seen, the rows stay red, and the green verdict is
+    refused. It also counts the parses, so a refactor that reintroduces the second read fails here even
+    if it happens to stay coherent.
+    """
+    problems: list[str] = []
+    _red_fx, red, red_dir, _ = run_fixture(ci, "red-status-only.json", tmp / "sec2-one-read-red")
+    _green_fx, green, _green_dir, _ = run_fixture(ci, "green.json", tmp / "sec2-one-read-green")
+    if red["verdict"] != ci.SNAP.RED or green["verdict"] != ci.SNAP.GREEN:
+        problems.append(f"[SEC-2] the one-read fixtures no longer derive red and green: "
+                        f"{red['verdict']!r} / {green['verdict']!r}")
+        return problems
+    red_path, green_path = Path(red["snapshot"]), Path(green["snapshot"])
+    if red_path.name != green_path.name:
+        problems.append(f"[SEC-2] the one-read fixtures no longer promote the same artifact name "
+                        f"({red_path.name} vs {green_path.name}), so the swap this case performs is not "
+                        f"the swap a second read of ONE path would see")
+        return problems
+    green_bytes = green_path.read_bytes()
+    red_bytes = red_path.read_bytes()
+
+    pr = red["pr"]
+    ledger = red_dir / "state.jsonl"
+    header = dict(ci.LEDGER.HEADER_DEFAULTS)
+    header["run_id"] = "sec2"
+    row = dict(ci.LEDGER.ROW_DEFAULTS)
+    row.update({"pr": pr, "head_sha": red["head_sha"], "status": "in_review",
+                "required_set": ci.SNAP.NONE_DECLARED})
+    ci.LEDGER.dump(ledger, header, [row])
+
+    def verify(envelope: dict, swap: bool) -> tuple[int, int]:
+        """Run the recomputation with the artifact rewritten to the GREEN bytes after the first parse.
+
+        Returns (exit code, parses). `SNAP.parse` is the module attribute `evaluate` itself resolves, so
+        one wrapper counts BOTH entry points' reads.
+        """
+        red_path.write_bytes(red_bytes)
+        seen = [0]
+        real_parse = ci.SNAP.parse
+
+        def counting_parse(path):
+            seen[0] += 1
+            rows = real_parse(path)
+            if swap and seen[0] == 1:
+                Path(path).write_bytes(green_bytes)
+            return rows
+
+        ci.SNAP.parse = counting_parse
+        try:
+            ci.verify_derived_artifact(ledger, pr, ci.derive_output(json.loads(json.dumps(envelope))))
+        except SystemExit as exc:
+            return int(exc.code or 0), seen[0]
+        finally:
+            ci.SNAP.parse = real_parse
+        return 0, seen[0]
+
+    # (1) THE HONEST ENVELOPE, unswapped — the recomputation still accepts what `derive` actually printed.
+    # Without this, "refuse everything" would pass case (2) and pin nothing.
+    code, parses = verify(red, swap=False)
+    if code != 0:
+        problems.append(f"[SEC-2] the recorder refused `derive`'s own red envelope (exit {code}) — the "
+                        f"one-read recomputation must still accept a consistent derivation")
+    if parses != 1:
+        problems.append(f"[SEC-2] verifying one envelope parsed the promoted artifact {parses} times, not "
+                        f"once — verdict, reason, evidence, fingerprint and buckets are only ONE account "
+                        f"of ONE artifact while they all come off a single read")
+
+    # (2) THE FORGERY THE SECOND READ ADMITTED — green verdict and reason over red evidence, fingerprint
+    # and buckets, with the bytes swapped green after the first parse. One read never sees the swap, so
+    # the rows stay red and the green verdict has nothing to agree with.
+    forged = dict(red)
+    forged.update({"verdict": green["verdict"], "ci": ci.LEDGER_CI[green["verdict"]],
+                   "reason": green["reason"]})
+    code, parses = verify(forged, swap=True)
+    if code != 2:
+        problems.append(f"[SEC-2] an envelope carrying the GREEN verdict beside RED evidence, fingerprint "
+                        f"and buckets exited {code}, not 2 — the artifact was re-read after the counts "
+                        f"were taken, so the verdict was checked against bytes the rest of the "
+                        f"recomputation never saw")
+    if parses != 1:
+        problems.append(f"[SEC-2] the forged envelope parsed the promoted artifact {parses} times, not "
+                        f"once")
+    red_path.write_bytes(red_bytes)
+    return problems
+
+
 def liveness_head_attestation_cases(ci, tmp: Path) -> list[str]:
     """THE MOVED-HEAD ENVELOPE — three rewrites the recorder refuses, and the one it cannot.
 
@@ -1738,8 +1834,8 @@ def liveness_head_attestation_cases(ci, tmp: Path) -> list[str]:
     snapshot = Path(derived["snapshot"])
     required = ci.SNAP.parse_required_set(ci.SNAP.NONE_DECLARED)
     artifact_rows = ci.SNAP.parse(snapshot)
-    artifact_verdict, artifact_reason = ci.SNAP.evaluate(
-        snapshot, ci.FIXTURE_SHA, required=required, expect_filename_sha=True
+    artifact_verdict, artifact_reason = ci.SNAP.evaluate_rows(
+        snapshot, artifact_rows, ci.FIXTURE_SHA, required=required, expect_filename_sha=True
     )
 
     # (1) DENIED BUT NOT REWRITTEN — `head_moved` flipped to false while the moved-head verdict and reason
@@ -2584,6 +2680,14 @@ def run(ci, tmp: Path) -> int:
     if not field_class_problems:
         print(f"ok       {'liveness field classes':32} -> every producer envelope field lands in exactly "
               f"one check class; nothing is recorded unclassified")
+
+    single_parse_problems = liveness_single_parse_cases(ci, tmp)
+    for problem in single_parse_problems:
+        failures += 1
+        print(f"FAIL     {problem}")
+    if not single_parse_problems:
+        print(f"ok       {'[SEC-2] one read':32} -> the promoted artifact is parsed exactly once per "
+              f"verification, and every recomputed field is bound to those bytes")
 
     attestation_problems = liveness_head_attestation_cases(ci, tmp)
     for problem in attestation_problems:

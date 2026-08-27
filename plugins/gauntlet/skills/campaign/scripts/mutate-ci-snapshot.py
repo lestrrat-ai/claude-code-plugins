@@ -74,7 +74,8 @@ SCRIPT = Path(__file__).parent / "ci-snapshot.py"
 FIXTURES = Path(__file__).parent / "fixtures" / "ci-snapshot"
 
 # The functions that ENFORCE the contract. Every enforcement point inside them must carry a marker.
-# `evaluate` is not one: it MAPS an exception to a verdict, it does not decide anything.
+# Neither `evaluate` entry point is one: `evaluate` and `evaluate_rows` MAP an exception to a verdict,
+# they do not decide anything.
 RULE_FUNCTIONS = ("parse", "verify_filename", "verify_sha", "verify_sources", "check_containment", "decide")
 
 # What "enforcement" looks like in those functions.
