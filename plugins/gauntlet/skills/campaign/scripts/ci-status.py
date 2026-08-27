@@ -1701,10 +1701,16 @@ def check_now(source: str, value: str) -> datetime:
 
 # WHAT CHECK EACH ENVELOPE FIELD GETS BEFORE IT IS RECORDED — the ONE defining site of that partition.
 # `derive_output` refuses any envelope whose fields are not exactly `DERIVE_FIELDS`,
-# `verify_derived_artifact` applies the three classes, the driver doc's liveness owner block restates the
-# two a reader has to know, and `doc-check` holds those two to these names. The partition is TOTAL, and
-# `ci-status-test.py` asserts that it is: a field added to `result()` cannot reach the recording path
-# without someone saying which class it belongs to. The alternative is a new field nobody ever checked.
+# `verify_derived_artifact` applies the three classes WHENEVER THERE IS A PROMOTED ARTIFACT TO APPLY THEM
+# AGAINST, the driver doc's liveness owner block restates the sets a reader has to know, and `doc-check`
+# holds those sets to these names. The partition is TOTAL, and `ci-status-test.py` asserts that it is: a
+# field added to `result()` cannot reach the recording path without someone saying which class it belongs
+# to. The alternative is a new field nobody ever checked.
+#
+# TWO BOUNDED EXCEPTIONS, BOTH NAMED HERE. `PRODUCER_ATTESTED` is a field class and holds on every branch;
+# `NO_ARTIFACT_PRODUCER_COPY` is a BRANCH, not a class, and is stated below the moved-head cost. Neither is
+# a gap waiting to be closed, and there is no third: past the null-snapshot return,
+# `verify_derived_artifact` recomputes or refuses everything else it records.
 #
 # `PRODUCER_ATTESTED` NAMES A REAL BOUNDARY — it is not a gap waiting to be closed. The PR's head as of
 # the fetch is the ONE liveness input the promoted artifact cannot answer for: `ci-snapshot.py` is a pure
@@ -1714,13 +1720,32 @@ def check_now(source: str, value: str) -> datetime:
 # either one here would mean a network call inside the recorder, which is exactly what this architecture
 # refuses; putting the head into the artifact would end its auditability as a pure function of bytes.
 #
-# WHAT THAT COSTS, STATED WHERE IT CAN BE READ. The recorder catches a moved head reported as anything
+# WHAT THAT COSTS, STATED WHERE IT CAN BE READ — the cost of `PRODUCER_ATTESTED`, and only that; the
+# no-artifact branch's own cost is stated below. The recorder catches a moved head reported as anything
 # but the moved-head result — the `head_moved` branch below rebuilds `moved_head_reason()` and refuses
 # any other verdict, reason, or ledger value. It CANNOT catch a moved head DENIED: an envelope whose
 # `head_sha_now` says the pinned head is still current is indistinguishable from a genuine unmoved-head
 # derivation, because every remaining field then recomputes from the artifact exactly as it should.
 # Only `derive`, which saw the head, can refuse that — and it does. Nothing but `derive` writes this
 # envelope in real operation, so denying a moved head means editing the producer's own output.
+#
+# WITH NO PROMOTED ARTIFACT THERE IS NOTHING TO RECOMPUTE AGAINST — the second exception, and it is a
+# BRANCH rather than a field class. A failed or incomplete fetch promotes nothing and reports
+# `snapshot: null` (`stage-2-ci.md`, "FAILED OR INCOMPLETE FETCHES PROMOTE NOTHING"), so
+# `verify_derived_artifact` returns before any recomputation and NO member of
+# `RECOMPUTED_FROM_ARTIFACT` is re-derived on that branch. THE HOLE IS NOT THE WHOLE SET. `derive_output`
+# pins three of those five to their ONE legal value for such an envelope and refuses anything else at the
+# door, which is exit 2 rather than a belief. What survives to be recorded on the producer's word is
+# exactly `NO_ARTIFACT_PRODUCER_COPY`.
+#
+# WHAT THAT COSTS, on this branch. `reason` is arbitrary text nothing recomputes, and `liveness` embeds it
+# verbatim in the REFETCH CAP diagnostic it writes to `ci_reason`; `verdict` can be swapped for the other
+# member of `NOT_VERIFIED_VERDICTS`, which changes only that diagnostic's label. NO GREEN IS REACHABLE
+# THIS WAY, and no bound is escaped: a trusted verdict beside a null snapshot is refused by
+# `derive_output`, both surviving verdicts map to `ci = pending`, `unusable_refetches` still increments,
+# and the row still parks at the cap. `ci_reason` is the open question a human rules on through
+# `blocker_ruling`, and nothing machine-readable parses its text. As above, only `derive` writes this
+# envelope in real operation.
 DERIVE_FIELDS = frozenset({
     "pr", "head_sha", "verdict", "ci", "reason", "snapshot", "evidence", "head_sha_now",
     "head_moved", "required_set", "fingerprint", "buckets",
@@ -1729,6 +1754,9 @@ RECOMPUTED_FROM_ARTIFACT = frozenset({"verdict", "reason", "evidence", "fingerpr
 CHECKED_AGAINST_CANONICAL_STATE = frozenset({"pr", "head_sha", "required_set", "snapshot"})
 DERIVED_FROM_A_CHECKED_FIELD = frozenset({"ci"})   # `ledger_ci(verdict)`, refused when they disagree
 PRODUCER_ATTESTED = frozenset({"head_sha_now", "head_moved"})
+# NOT a fifth class — a subset of `RECOMPUTED_FROM_ARTIFACT`, naming what that set's promise does NOT
+# cover on the null-snapshot branch. Its complement within that set is what `derive_output` pins.
+NO_ARTIFACT_PRODUCER_COPY = frozenset({"verdict", "reason"})
 
 
 def derive_output(raw: object) -> dict:
@@ -1832,9 +1860,11 @@ def verify_derived_artifact(ledger_path: Path, pr: str, derived: dict) -> None:
     The JSON is a transport envelope, not evidence. Every field is checked in the class the partition
     above this function's validator puts it in — `RECOMPUTED_FROM_ARTIFACT` against the promoted bytes,
     `CHECKED_AGAINST_CANONICAL_STATE` against the ledger row and the artifact's own path,
-    `DERIVED_FROM_A_CHECKED_FIELD` against the field it is a function of — with the single exception the
-    partition names and explains: `PRODUCER_ATTESTED`. Read that comment before adding a field here; a
-    field this function does not check is a field the recorder believes.
+    `DERIVED_FROM_A_CHECKED_FIELD` against the field it is a function of — with the TWO bounded exceptions
+    that partition names and explains, and no others: the `PRODUCER_ATTESTED` class, and the
+    `NO_ARTIFACT_PRODUCER_COPY` branch reached at the `snapshot: null` return below, where there are no
+    promoted bytes to recompute anything against. Read that comment before adding a field here; a field
+    this function does not check is a field the recorder believes.
     """
     header, rows = LEDGER.load(ledger_path)
     row = LEDGER.find_row(rows, pr)
@@ -1849,6 +1879,9 @@ def verify_derived_artifact(ledger_path: Path, pr: str, derived: dict) -> None:
     if derived["required_set"] != required.state:
         fail("liveness: derive JSON `required_set` does not match the ledger row")
 
+    # NOTHING WAS PROMOTED, SO THERE IS NOTHING TO RECOMPUTE AGAINST. This return is the
+    # `NO_ARTIFACT_PRODUCER_COPY` branch; the partition above `derive_output` owns what reaches the ledger
+    # unrecomputed here, what `derive_output` pins instead, and what that costs.
     snapshot_name = derived["snapshot"]
     if snapshot_name is None:
         return
@@ -2245,7 +2278,7 @@ def parse_liveness_contract(blocks: list[str]) -> dict[str, str]:
         "untrusted_verdicts", "untrusted_action", "trusted_current_head_action",
         "retained_moved_head_artifact", "head_sha_changed_action", "refetch_cap",
         "refetch_diagnostic", "unusable_refusal", "unverifiable_refusal",
-        "recomputed_from_artifact", "producer_attested",
+        "recomputed_from_artifact", "producer_attested", "no_artifact_producer_copy",
     }
     for block in blocks:
         if "liveness.untrusted_verdicts" not in block:
@@ -3018,8 +3051,9 @@ def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) 
       6. the moved-head owner block says the old-head artifact is retained for audit but contributes no
          current-PR verdict, fingerprint, or buckets; and the liveness owner block says that a final
          untrusted result increments the refetch counter while trusted current-head evidence resets it,
-         and names the envelope fields `liveness` recomputes from the promoted artifact and the ones it
-         records on the producer's attestation (the partition above `derive_output` owns those two sets).
+         and names the envelope fields `liveness` recomputes from the promoted artifact, the ones it
+         records on the producer's attestation, and the ones a `snapshot: null` derivation gets recorded
+         unrecomputed instead (the partition above `derive_output` owns all three sets).
 
     (The doc's three snapshot `jq` filters are executed by `ci-snapshot.py` over recorded, multi-page API
     payloads. The required-set reads are production functions here, covered by `ci-status-test.py`.)
@@ -3136,6 +3170,16 @@ def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) 
          set(PRODUCER_ATTESTED),
          "the fields the artifact cannot answer for must be named as the producer's attestation — a doc "
          "that omits one is claiming a verification the recorder never performs"),
+        # THE NAME-ONLY COMPARISON ABOVE CANNOT SEE A BRANCH. `recomputed_from_artifact` names the set;
+        # it says nothing about the null-snapshot path, where none of that set is recomputed. So the
+        # branch gets its OWN named set, held to the code the same way — otherwise the doc can keep
+        # promising a recomputation on a branch that performs none, and every check still passes.
+        ("liveness no-artifact copy",
+         set(liveness_contract.get("no_artifact_producer_copy", "").split()),
+         set(NO_ARTIFACT_PRODUCER_COPY),
+         "with no promoted snapshot nothing is recomputed, so the doc must name exactly the fields that "
+         "reach the ledger as the producer wrote them — the rest of the recomputed set is pinned by "
+         "`derive_output` to its one legal value there"),
         ("the STRIKE CAP", caps.get("STRIKE"), STRIKE_CAP,
          "the bound `liveness` fires at and the bound the doc promises are different numbers"),
         ("the REFETCH CAP", caps.get("REFETCH"), REFETCH_CAP,

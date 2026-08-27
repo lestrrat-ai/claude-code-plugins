@@ -1539,6 +1539,136 @@ def liveness_no_artifact_cli_cases(ci, tmp: Path) -> list[str]:
     return problems
 
 
+def liveness_no_artifact_boundary_cases(ci, tmp: Path) -> list[str]:
+    """WHERE THE NO-ARTIFACT BRANCH'S HOLE STOPS — the claim the docs make, held to the CLI.
+
+    `verify_derived_artifact` returns at `snapshot: null`, so NO member of `RECOMPUTED_FROM_ARTIFACT` is
+    recomputed there. `doc-check` compares set NAMES, which by construction cannot see a branch, so the
+    partition comment and the liveness owner block both state the branch in prose — and prose that no
+    test drives is prose that drifts. This suite is the mechanical half of that statement: each field the
+    docs call PINNED is forged and must exit 2 writing nothing, and each field they call the producer's
+    copy is forged and must be RECORDED. Both directions gate. A doc that under-claims the hole hides a
+    real cost; a doc that over-claims it documents a weakness that does not exist, and the next reader
+    builds machinery against a forgery the validator already refuses.
+    """
+    problems: list[str] = []
+    if not (ci.NO_ARTIFACT_PRODUCER_COPY < ci.RECOMPUTED_FROM_ARTIFACT):
+        problems.append(f"[SEC-2] NO_ARTIFACT_PRODUCER_COPY {sorted(ci.NO_ARTIFACT_PRODUCER_COPY)!r} is "
+                        f"not a proper subset of RECOMPUTED_FROM_ARTIFACT "
+                        f"{sorted(ci.RECOMPUTED_FROM_ARTIFACT)!r} — it names what that set's promise does "
+                        f"NOT cover on the null-snapshot branch, so anything outside it is a field the "
+                        f"docs claim is pinned while nothing pins it")
+        return problems
+
+    member = None
+    for fixture in cases(ci):
+        fx, derived, rundir, _before = run_fixture(ci, fixture, tmp / "no-artifact-boundary")
+        if derived["snapshot"] is None:
+            member = (fixture, fx, derived, rundir)
+            break
+    if member is None:
+        problems.append("[SEC-2] no fixture derives a null snapshot — the no-artifact boundary is untested")
+        return problems
+    fixture, fx, derived, rundir = member
+
+    pr = fx.get("pr", "35")
+    head_sha = fx.get("head_sha", ci.FIXTURE_SHA)
+    ledger = rundir / "state.jsonl"
+    header = dict(ci.LEDGER.HEADER_DEFAULTS)
+    header["run_id"] = "sec2"
+
+    def record(envelope: dict, name: str, refetches: int = 0) -> tuple[int, str, dict, bool]:
+        row = dict(ci.LEDGER.ROW_DEFAULTS)
+        row.update({"pr": pr, "head_sha": head_sha, "status": "in_review",
+                    "required_set": fx["required_set"], "unusable_refetches": str(refetches)})
+        ci.LEDGER.dump(ledger, header, [row])
+        before_bytes = ledger.read_bytes()
+        payload = rundir / f"boundary-{name}.json"
+        payload.write_text(json.dumps(envelope), encoding="utf-8")
+        proc = subprocess.run(
+            [sys.executable, str(STATUS_PY), "liveness", "--ledger", str(ledger), "--pr", pr,
+             "--derive-json", str(payload), "--machine-action", "none",
+             "--now", "2026-08-26T00:00:00+00:00"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+        )
+        return (proc.returncode, proc.stderr, ci.LEDGER.load(ledger)[1][0],
+                ledger.read_bytes() != before_bytes)
+
+    # PINNED — the three `RECOMPUTED_FROM_ARTIFACT` members outside `NO_ARTIFACT_PRODUCER_COPY`. Nothing
+    # recomputes them here either; `derive_output` allows each exactly one value beside a null snapshot,
+    # so a forgery never reaches the recorder at all.
+    pinned = {
+        "evidence": {"checkrun": 3, "status": 2, "witness": 1},
+        "fingerprint": "f" * 64,
+        "buckets": {key: 0 for key in ci.BUCKET_KEYS.values()},
+    }
+    if set(pinned) != set(ci.RECOMPUTED_FROM_ARTIFACT) - set(ci.NO_ARTIFACT_PRODUCER_COPY):
+        problems.append(f"[SEC-2] this suite forges {sorted(pinned)!r}, which is no longer the pinned "
+                        f"remainder of RECOMPUTED_FROM_ARTIFACT — a member gained or lost a pin with no "
+                        f"case saying so")
+    for field, value in pinned.items():
+        forged = dict(derived)
+        forged[field] = value
+        code, stderr, _after, wrote = record(forged, f"pinned-{field}")
+        if code != 2:
+            problems.append(f"[SEC-2] {fixture}: a forged {field!r} beside a null snapshot exited {code}, "
+                            f"not 2 — the docs call it pinned to one legal value: {stderr!r}")
+        if wrote:
+            problems.append(f"[SEC-2] {fixture}: a forged {field!r} beside a null snapshot changed the "
+                            f"ledger")
+
+    # AND NO GREEN IS REACHABLE. `verdict` is in the producer-copy set, but only WITHIN the untrusted
+    # pair: a trusted verdict beside a null snapshot names no promoted snapshot and is refused.
+    for verdict in sorted(set(ci.LEDGER_CI) - set(ci.NOT_VERIFIED_VERDICTS)):
+        forged = dict(derived)
+        forged.update({"verdict": verdict, "ci": ci.LEDGER_CI[verdict]})
+        code, stderr, _after, wrote = record(forged, f"trusted-{verdict}")
+        if code != 2:
+            problems.append(f"[SEC-2] {fixture}: verdict {verdict!r} beside a null snapshot exited "
+                            f"{code}, not 2 — only the untrusted pair may survive this branch: {stderr!r}")
+        if wrote:
+            problems.append(f"[SEC-2] {fixture}: verdict {verdict!r} beside a null snapshot changed the "
+                            f"ledger")
+
+    # THE PRODUCER-COPY SET, in the direction that makes the disclosure true rather than alarmist. Both
+    # members are RECORDED unrecomputed, and the cap diagnostic carries `reason` verbatim.
+    others = [v for v in ci.NOT_VERIFIED_VERDICTS if v != derived["verdict"]]
+    if not others:
+        problems.append(f"[SEC-2] NOT_VERIFIED_VERDICTS holds only {derived['verdict']!r} — the swap the "
+                        f"docs disclose cannot be exercised")
+    else:
+        swapped = dict(derived)
+        swapped.update({"verdict": others[0], "ci": ci.LEDGER_CI[others[0]]})
+        code, stderr, after, _wrote = record(swapped, "swapped-verdict",
+                                             refetches=ci.REFETCH_CAP - 1)
+        # EXIT 3 IS THE PARK, NOT A REFUSAL — the run reached the REFETCH CAP and escalated, which is the
+        # whole point of driving it there. A refusal would be 2 and would write nothing.
+        if code != 3:
+            problems.append(f"[SEC-2] {fixture}: swapping the verdict within the untrusted pair exited "
+                            f"{code}, not 3 — the docs disclose this as recorded and parked: {stderr!r}")
+        elif not after["ci_reason"].startswith(f"{others[0].upper()} at the REFETCH CAP"):
+            problems.append(f"[SEC-2] {fixture}: the swapped verdict did not reach the cap diagnostic "
+                            f"label: ci_reason={after['ci_reason']!r}")
+        elif after["ci"] != "pending":
+            problems.append(f"[SEC-2] {fixture}: a swapped untrusted verdict recorded ci "
+                            f"{after['ci']!r}, not 'pending' — the swap must change nothing but the label")
+
+    marker = "NO-RECOMPUTATION-MARKER-c0ffee"
+    rewritten = dict(derived)
+    rewritten["reason"] = marker
+    code, stderr, after, _wrote = record(rewritten, "rewritten-reason", refetches=ci.REFETCH_CAP - 1)
+    if code != 3:
+        problems.append(f"[SEC-2] {fixture}: a rewritten `reason` beside a null snapshot exited {code}, "
+                        f"not 3 — the docs disclose it as recorded unchecked and parked: {stderr!r}")
+    elif marker not in after["ci_reason"]:
+        problems.append(f"[SEC-2] {fixture}: the rewritten `reason` did not reach `ci_reason` at the "
+                        f"REFETCH CAP: {after['ci_reason']!r}")
+    elif after["status"] != "awaiting-user" or after["ci"] != "pending":
+        problems.append(f"[SEC-2] {fixture}: the cap did not park on pending: status="
+                        f"{after['status']!r} ci={after['ci']!r} — the disclosed cost claims it still does")
+    return problems
+
+
 def liveness_field_class_cases(ci) -> list[str]:
     """THE PARTITION IS TOTAL — no envelope field escapes being classified.
 
@@ -2437,6 +2567,15 @@ def run(ci, tmp: Path) -> int:
     if not no_artifact_problems:
         print(f"ok       {'the no-artifact class':32} -> every fixture that promotes nothing records its "
               f"refetch strike through the real CLI, while a fabricated count on either side is refused")
+
+    no_artifact_boundary_problems = liveness_no_artifact_boundary_cases(ci, tmp)
+    for problem in no_artifact_boundary_problems:
+        failures += 1
+        print(f"FAIL     {problem}")
+    if not no_artifact_boundary_problems:
+        print(f"ok       {'the no-artifact boundary':32} -> beside a null snapshot the pinned fields and "
+              f"every trusted verdict are refused at exit 2, while the producer-copy set is recorded and "
+              f"reaches the cap diagnostic")
 
     field_class_problems = liveness_field_class_cases(ci)
     for problem in field_class_problems:

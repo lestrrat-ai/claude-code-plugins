@@ -40,10 +40,12 @@ retained — while `liveness` reduces `buckets.RUNNING` to the `watch_warranted`
 on, and reads it directly for its SETTLED/RUNNING-STALL split), and the path to the snapshot it left
 behind. It exits `0` **only** on green.
 **Pass that JSON to `ci-status.py liveness`; never derive `ci` from an impression of some command's output.**
-The liveness command refuses anything that is not the producer's exact envelope, then re-derives the
-`recomputed_from_artifact` set from the promoted snapshot and refuses any disagreement, before it records
-the result and does the counter arithmetic. **That set, and the `producer_attested` fields it deliberately
-excludes, are defined once** in the liveness owner block ("NOT VERIFIED — the refetch is BOUNDED", below).
+The liveness command refuses anything that is not the producer's exact envelope, then — **when the
+derivation promoted a snapshot** — re-derives the `recomputed_from_artifact` set from that snapshot and
+refuses any disagreement, before it records the result and does the counter arithmetic. **That set, the
+`producer_attested` fields it deliberately excludes, and the `no_artifact_producer_copy` fields a
+`snapshot: null` derivation gets instead of a recomputation, are defined once** in the liveness owner block
+("NOT VERIFIED — the refetch is BOUNDED", below).
 
 **THE REQUIRED SET IS NAMED, AND IT HAS NO DEFAULT.** `--ledger` resolves the selected **row's**
 `effective_required_set` — its explicit `required_set`, else the legacy header value — because the required
@@ -121,7 +123,7 @@ to hand-run.**
 | Actor | Does | Does NOT |
 |---|---|---|
 | **The background task** | **BLOCKS on `gh pr checks <pr> --watch`, and NOTHING else.** Its **ONLY** job is to block, so that **its completion becomes a heartbeat**. | It **NEVER** fetches, **NEVER** writes `ci-<pr>-<head_sha>.txt`, and **NEVER** produces evidence of any kind. |
-| **The heartbeat** | **RUNS `scripts/ci-status.py derive`** (above), which **FETCHES** (SHA-pinned, both families), **PROMOTES** atomically, **VERIFIES** the stamp, **PARSES**, and **DECIDES** `ci` — then **RUNS `scripts/ci-status.py liveness`** on that JSON, which **RE-VERIFIES** the promoted snapshot, **RECORDS** `ci` and the counters, and **PARKS at any cap** ("THE BOOKKEEPING IS A COMMAND", below). | It **NEVER** derives `ci` by READING the output of `gh pr checks` — or of anything else — and **NEVER** applies the counter arithmetic by hand. |
+| **The heartbeat** | **RUNS `scripts/ci-status.py derive`** (above), which **FETCHES** (SHA-pinned, both families), **PROMOTES** atomically, **VERIFIES** the stamp, **PARSES**, and **DECIDES** `ci` — then **RUNS `scripts/ci-status.py liveness`** on that JSON, which **RE-VERIFIES** any promoted snapshot, **RECORDS** `ci` and the counters, and **PARKS at any cap** ("THE BOOKKEEPING IS A COMMAND", below). | It **NEVER** derives `ci` by READING the output of `gh pr checks` — or of anything else — and **NEVER** applies the counter arithmetic by hand. |
 
 **WHY the fetch cannot live in the background task:** the fetch must be pinned to the `head_sha` **the
 LEDGER currently holds**, and **only the heartbeat knows that**. A background task that fetched at its own
@@ -143,7 +145,9 @@ shape and every fail-closed rule), CROSS-FETCH AGREEMENT, CLASSIFY (the enums an
 (the outcome bullets, first match wins) live in **`ci-derivation-spec.md`** — the specification
 `ci-status.py derive` and `ci-snapshot.py` implement, held to the code by `doc-check`, executed fixtures,
 and the mutation harness. **Read it to review or change the tools; never to derive `ci` by hand.** The
-driver passes `derive`'s JSON to `liveness`, which checks its claims against the promoted snapshot:
+driver passes `derive`'s JSON to `liveness`, which checks its claims against the promoted snapshot — or,
+when the derivation promoted none, against what the "NOT VERIFIED — the refetch is BOUNDED" owner block
+below says such an envelope may carry:
 
 #### ACT ON THE VERDICT — the driver's move for each outcome
 
@@ -770,19 +774,37 @@ liveness.unusable_refusal = snapshot/fetch/head-trust failure; may name VERIFY r
 liveness.unverifiable_refusal = witness-identity containment failure; line/row not required
 liveness.recomputed_from_artifact = verdict reason evidence fingerprint buckets
 liveness.producer_attested = head_sha_now head_moved
+liveness.no_artifact_producer_copy = verdict reason
 ```
 
 - **`recomputed_from_artifact` and `producer_attested` are the two halves of what `liveness` can know.**
-  The first set is re-derived from the promoted snapshot's bytes and refused on any disagreement, so the
-  producer's copy of it is never what gets recorded. The second is **the producer's word, by design**:
+  The first set is re-derived from the promoted snapshot's bytes and refused on any disagreement, so **on a
+  derivation that promoted one**, the producer's copy of that set is never what gets recorded. (A
+  derivation that promoted nothing is the next bullet — there, no member of the set is recomputed.) The
+  second is **the producer's word, by design**:
   `ci-snapshot.py` is a pure function from bytes to a verdict — handed no PR, making no network call
   ("THE DERIVATION IS A COMMAND", above) — so the PR's live head never enters the artifact and nothing on
   disk can confirm or contradict it. `liveness` makes no network call either. The remaining fields are
   matched against the ledger row and the artifact's own path, or are a total function of a recomputed
-  field. **What that costs, plainly:** a moved head reported as moved is held to the moved-head result
-  above and cannot be dressed up as a green; a moved head **denied** in the envelope is indistinguishable
-  from a head that never moved, because everything else then recomputes correctly. Only `derive`, which
-  read the head, can refuse that — and it does. Nothing else writes this envelope.
+  field. **What the ATTESTATION costs, plainly:** a moved head reported as moved is held to the moved-head
+  result above and cannot be dressed up as a green; a moved head **denied** in the envelope is
+  indistinguishable from a head that never moved, because everything else then recomputes correctly. Only
+  `derive`, which read the head, can refuse that — and it does. Nothing else writes this envelope.
+- **A `snapshot: null` derivation gets `no_artifact_producer_copy` instead of a recomputation — and that
+  is the whole of the second gap.** A failed or incomplete fetch promoted nothing ("FAILED OR INCOMPLETE
+  FETCHES PROMOTE NOTHING", above), so there are no bytes to re-derive against and `liveness` recomputes
+  **no** member of `recomputed_from_artifact` on that branch. **The gap is not that whole set.** The
+  members outside `no_artifact_producer_copy` are pinned by the envelope validator to the ONE value such a
+  derivation may carry — the shape "FAILED OR INCOMPLETE FETCHES PROMOTE NOTHING" above already states,
+  restated nowhere else — and any other value is refused at the door with **exit 2**, writing nothing.
+  What is recorded on the producer's word is `verdict`, free only within `untrusted_verdicts` and so
+  changing nothing but the cap diagnostic's label, and `reason`, which nothing checks and which the
+  REFETCH CAP embeds verbatim into `ci_reason`. **What that costs, plainly:** at the cap, the `ci_reason`
+  a human reads can carry producer text no recomputation stands behind. **It decides nothing.** No green is
+  reachable — a trusted verdict beside a null snapshot is refused, and every verdict that survives records
+  `ci = pending` — `unusable_refetches` still increments, the row still parks, and `ci_reason` is the open
+  question a person rules on (`blocker_ruling`), never a value a machine reads. As above, nothing but
+  `derive` writes this envelope.
 - **The counter follows the final derivation's trust for the current head, never artifact verification.**
   A retained moved-head artifact was verified as an artifact for the requested old commit, but the final
   result is untrusted for the current PR and increments the counter. A trusted current-head result resets
