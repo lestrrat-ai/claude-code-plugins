@@ -417,6 +417,15 @@ REPAIR_OWNED = ("repair_count", "repair_decision")
 # These values cross from durable state into nudge output and filesystem names. The write door rejects
 # terminal controls, format controls and Unicode line separators; readers still encode hand-edited state.
 DURABLE_OUTPUT_FIELDS = ("run_id", "pr", "ci_reason", "repair_decision")
+# A review finding claimed `base_branch` and `required_set` belong here, because `nudge.py` prints both and
+# this door accepts controls in them. REFUTED — verified, not assumed: the tuple is not where their safety
+# comes from. `nudge.py`'s base/required-set line renders BOTH values through its shared safe encoder, so a
+# control-bearing value reaches output already encoded; running nudge over a row whose `base_branch` holds an
+# embedded newline and whose `required_set` holds a U+2028 printed one record with no raw controls, and
+# `nudge-test.py` t_dynamic_values_are_encoded_as_one_output_line pins that exact payload. `ledger.py table`
+# escapes the cell the same way. Both are also written from live `gh` reads (`pr-adopt.py` --base-branch from
+# `baseRefName`, `ci-status.py refresh_required_set` from a branch-protection read), so rejecting them at
+# this door would let a remote-supplied name fail every `dump()` and stall the run.
 _DURABLE_OUTPUT_CATEGORIES = frozenset(("Cc", "Cf", "Zl", "Zp"))
 
 # The base-preflight readings `base-ok` OWNS — settable through NO flag, the same mechanism as VERDICT_OWNED
