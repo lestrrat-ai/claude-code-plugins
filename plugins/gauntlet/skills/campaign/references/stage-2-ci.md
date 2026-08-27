@@ -94,7 +94,9 @@ it means *wait*. This means **re-derive**: refresh the PR's `head_sha` into the 
 **A failed or incomplete fetch promotes no artifact and reports `snapshot: null`.** A **short read**, a
 **rollup entry the REST families cannot see**, and every other FETCH refusal (`ci-derivation-spec.md`) stop
 before promotion. Each emits `verdict = unusable`, **`ci = pending`**, `snapshot: null`,
-`fingerprint: null`, and `buckets: null`, then requires a **refetch**. An older artifact — including one for
+`evidence: {}`, `fingerprint: null`, and `buckets: null`, then requires a **refetch**. The empty
+`evidence` object is the honest shape and `liveness` requires it: three **zero** counts would claim the
+three sources were read and found empty, which is the one thing a failed fetch cannot say. An older artifact — including one for
 the same PR and `head_sha` — may remain in the persistent rundir; the failed call neither reports it nor
 makes it current evidence. This is distinct from a moved head: the moved-head fetch completed and retained
 its newly promoted artifact about the requested old commit, while a failed or incomplete fetch produced no

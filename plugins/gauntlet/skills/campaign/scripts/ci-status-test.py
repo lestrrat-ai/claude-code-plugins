@@ -1398,6 +1398,147 @@ def liveness_cli_cases(ci, tmp: Path) -> list[str]:
     return problems
 
 
+def liveness_no_artifact_cli_cases(ci, tmp: Path) -> list[str]:
+    """THE NO-ARTIFACT CLASS, DRIVEN END TO END: real producer output, real CLI, real ledger.
+
+    A derivation that promoted nothing is the ONE class whose whole point is to be RECORDED. It carries
+    no verdict anyone can act on, so the only thing it leaves behind is a strike on `unusable_refetches`
+    — and that strike is the only bound on "refetch until it works" (`stage-2-ci.md`, "NOT VERIFIED —
+    the refetch is BOUNDED"). An envelope this class refuses at the door records NO strike, so the
+    REFETCH CAP never fires and the absorbing state the cap exists to close is re-opened. That failure
+    is invisible to every suite that hands `liveness` a hand-built envelope, because a hand-built one
+    can be given whatever shape the validator happens to want.
+
+    So this suite builds NOTHING. It drives every recorded fixture through the real producer, keeps the
+    ones that promoted no artifact, and feeds each unedited envelope to the real `liveness` CLI as a
+    subprocess. THE CLASS IS DISCOVERED, NEVER LISTED: a new fixture whose fetch fails joins it without
+    anyone remembering to, and a fixture that stops failing simply leaves. `fetch-fails.json` is one
+    member of it, not the case — the class spans a dead source, refused page shapes, truncated payloads,
+    and every rollup the coverage rule will not accept, and each of them reaches this path identically.
+
+    The two fabricated envelopes at the end pin the OTHER direction, which is why the check is
+    conditional and not merely absent: three zero counts beside a null snapshot assert three
+    observations nobody made, and an empty object beside a promoted snapshot drops counts that exist.
+    """
+    problems: list[str] = []
+    members: list[tuple[str, dict, dict, Path]] = []
+    for fixture in cases(ci):
+        fx, derived, rundir, _before = run_fixture(ci, fixture, tmp / "no-artifact")
+        if derived["snapshot"] is None:
+            members.append((fixture, fx, derived, rundir))
+
+    # A SUITE WITH NOTHING IN IT PASSES VACUOUSLY. Two is not an arbitrary floor: one member could be a
+    # single fixture's quirk, and the claim here is about a CLASS every `FetchError` lands in.
+    if len(members) < 2:
+        problems.append(f"[SEC-2] the no-artifact class has {len(members)} member(s) among {len(cases(ci))} "
+                        f"fixtures — this suite would pass without exercising the path it exists for")
+        return problems
+
+    for fixture, fx, derived, rundir in members:
+        if derived["evidence"] != {}:
+            problems.append(f"[SEC-2] {fixture}: a derivation that promoted no artifact reported "
+                            f"evidence {derived['evidence']!r}, not the `{{}}` `result()` documents for "
+                            f"'nothing was ever fetched'")
+            continue
+        pr = fx.get("pr", "35")
+        head_sha = fx.get("head_sha", ci.FIXTURE_SHA)
+        ledger = rundir / "state.jsonl"
+        header = dict(ci.LEDGER.HEADER_DEFAULTS)
+        header["run_id"] = "sec2"
+        row = dict(ci.LEDGER.ROW_DEFAULTS)
+        row.update({"pr": pr, "head_sha": head_sha, "status": "in_review",
+                    "required_set": fx["required_set"]})
+
+        def record(envelope: dict, name: str) -> tuple[int, str, dict]:
+            ci.LEDGER.dump(ledger, header, [row])
+            payload = rundir / f"{name}.json"
+            payload.write_text(json.dumps(envelope), encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(STATUS_PY), "liveness", "--ledger", str(ledger), "--pr", pr,
+                 "--derive-json", str(payload), "--machine-action", "none",
+                 "--now", "2026-08-26T00:00:00+00:00"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+            )
+            return proc.returncode, proc.stderr, ci.LEDGER.load(ledger)[1][0]
+
+        code, stderr, after = record(derived, "producer-derive")
+        if code != 0:
+            problems.append(f"[SEC-2] {fixture}: the producer's own no-artifact envelope exited {code}, "
+                            f"not 0: {stderr!r}")
+        elif after["unusable_refetches"] != "1":
+            problems.append(f"[SEC-2] {fixture}: a not-verified derivation left unusable_refetches at "
+                            f"{after['unusable_refetches']!r} — the REFETCH CAP counts nothing and the "
+                            f"refetch is unbounded")
+        elif after["ci"] != "pending":
+            problems.append(f"[SEC-2] {fixture}: a not-verified derivation recorded ci "
+                            f"{after['ci']!r}, not 'pending'")
+
+    # THE HONESTY DIRECTION, on one member: zero is a COUNT, and counting to zero is a claim that the
+    # source was read. Nothing read it.
+    fixture, fx, derived, rundir = members[0]
+    pr = fx.get("pr", "35")
+    head_sha = fx.get("head_sha", ci.FIXTURE_SHA)
+    ledger = rundir / "state.jsonl"
+    header = dict(ci.LEDGER.HEADER_DEFAULTS)
+    header["run_id"] = "sec2"
+    row = dict(ci.LEDGER.ROW_DEFAULTS)
+    row.update({"pr": pr, "head_sha": head_sha, "status": "in_review",
+                "required_set": fx["required_set"]})
+
+    def refuse(envelope: dict, name: str) -> tuple[int, str, bool]:
+        ci.LEDGER.dump(ledger, header, [row])
+        payload = rundir / f"{name}.json"
+        payload.write_text(json.dumps(envelope), encoding="utf-8")
+        before_bytes = ledger.read_bytes()
+        proc = subprocess.run(
+            [sys.executable, str(STATUS_PY), "liveness", "--ledger", str(ledger), "--pr", pr,
+             "--derive-json", str(payload), "--machine-action", "none",
+             "--now", "2026-08-26T00:00:00+00:00"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+        )
+        return proc.returncode, proc.stderr, ledger.read_bytes() != before_bytes
+
+    counted = dict(derived)
+    counted["evidence"] = {"checkrun": 0, "status": 0, "witness": 0}
+    code, stderr, wrote = refuse(counted, "zero-counts-no-artifact")
+    if code != 2:
+        problems.append(f"[SEC-2] {fixture}: three zero counts beside a null snapshot exited {code}, not "
+                        f"2 — a fetch that never happened may not report three observations: {stderr!r}")
+    if wrote:
+        problems.append(f"[SEC-2] {fixture}: three zero counts beside a null snapshot changed the ledger")
+
+    # THE PROMOTED DIRECTION, so the conditional cannot decay into "any dict is fine": a promoted
+    # snapshot means `build_snapshot` returned, and its three counts are recomputed from the artifact.
+    _gfx, green_derived, green_rundir, _gbefore = run_fixture(ci, "green.json", tmp / "no-artifact-green")
+    if green_derived["snapshot"] is None:
+        problems.append("[SEC-2] green.json no longer promotes an artifact — the promoted half of the "
+                        "evidence-shape rule is untested")
+        return problems
+    green_pr = _gfx.get("pr", "35")
+    green_ledger = green_rundir / "state.jsonl"
+    green_row = dict(ci.LEDGER.ROW_DEFAULTS)
+    green_row.update({"pr": green_pr, "head_sha": _gfx.get("head_sha", ci.FIXTURE_SHA),
+                      "status": "in_review", "required_set": _gfx["required_set"]})
+    ci.LEDGER.dump(green_ledger, header, [green_row])
+    stripped = dict(green_derived)
+    stripped["evidence"] = {}
+    payload = green_rundir / "empty-evidence-promoted.json"
+    payload.write_text(json.dumps(stripped), encoding="utf-8")
+    before_bytes = green_ledger.read_bytes()
+    proc = subprocess.run(
+        [sys.executable, str(STATUS_PY), "liveness", "--ledger", str(green_ledger), "--pr", green_pr,
+         "--derive-json", str(payload), "--machine-action", "none",
+         "--now", "2026-08-26T00:00:00+00:00"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+    )
+    if proc.returncode != 2:
+        problems.append(f"[SEC-2] an empty `evidence` beside a PROMOTED snapshot exited "
+                        f"{proc.returncode}, not 2: {proc.stderr!r}")
+    if green_ledger.read_bytes() != before_bytes:
+        problems.append("[SEC-2] an empty `evidence` beside a PROMOTED snapshot changed the ledger")
+    return problems
+
+
 def liveness_field_class_cases(ci) -> list[str]:
     """THE PARTITION IS TOTAL — no envelope field escapes being classified.
 
@@ -2288,6 +2429,14 @@ def run(ci, tmp: Path) -> int:
     if not liveness_cli_problems:
         print(f"ok       {'liveness input binding':32} -> forged trusted verdicts, fingerprints, and bucket "
               f"tallies cannot reach the ledger without matching promoted snapshot bytes")
+
+    no_artifact_problems = liveness_no_artifact_cli_cases(ci, tmp)
+    for problem in no_artifact_problems:
+        failures += 1
+        print(f"FAIL     {problem}")
+    if not no_artifact_problems:
+        print(f"ok       {'the no-artifact class':32} -> every fixture that promotes nothing records its "
+              f"refetch strike through the real CLI, while a fabricated count on either side is refused")
 
     field_class_problems = liveness_field_class_cases(ci)
     for problem in field_class_problems:

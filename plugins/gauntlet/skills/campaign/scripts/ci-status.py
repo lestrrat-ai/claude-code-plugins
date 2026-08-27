@@ -1765,9 +1765,8 @@ def derive_output(raw: object) -> dict:
     if not isinstance(raw["snapshot"], (str, type(None))):
         fail(f"liveness: derive JSON `snapshot` is {raw['snapshot']!r}, not a path or null")
     evidence = raw["evidence"]
-    if (not isinstance(evidence, dict) or set(evidence) != {"checkrun", "status", "witness"}
-            or any(type(value) is not int or value < 0 for value in evidence.values())):
-        fail(f"liveness: derive JSON `evidence` is not the three nonnegative producer counts: {evidence!r}")
+    if not isinstance(evidence, dict):
+        fail(f"liveness: derive JSON `evidence` is not an object: {evidence!r}")
     head_now = raw["head_sha_now"]
     if head_now is not None and (not isinstance(head_now, str) or not SHA_RE.fullmatch(head_now)):
         fail(f"liveness: derive JSON `head_sha_now` is {head_now!r}, not a 40-hex object id or null")
@@ -1797,10 +1796,31 @@ def derive_output(raw: object) -> dict:
     elif fp is not None or buckets is not None:
         fail(f"liveness: verdict {out['verdict']!r} has no trusted current-head evidence, yet the JSON "
              f"carries fingerprint={fp!r} buckets={buckets!r} — that is not `derive`'s output")
-    if raw["snapshot"] is None and (evidence != {"checkrun": 0, "status": 0, "witness": 0}
-                                     or head_now is not None or raw["head_moved"]):
-        fail("liveness: a derivation without a promoted snapshot must carry no evidence and no current "
-             "head claim")
+    # THE EVIDENCE SHAPE FOLLOWS FROM WHETHER ANYTHING WAS FETCHED, which is exactly what `snapshot`
+    # already says — so it is decided HERE, beside the snapshot-null guard, and not as a free-standing
+    # shape rule that would have to guess. `result()` states the producer's contract in one line
+    # (`evidence` is "`{}` when nothing was ever fetched"), and `derive`'s `FetchError` branch emits
+    # precisely that beside `snapshot: null`. THREE ZERO COUNTS WOULD BE THE WRONG DEMAND HERE, in both
+    # directions: no producer output can satisfy it, and satisfying it would mean asserting three
+    # observations nobody made. A promoted snapshot is the other side of the same fact — `build_snapshot`
+    # returned, so all three counts exist, and `verify_derived_artifact` recomputes them from the
+    # artifact's own rows.
+    #
+    # REFUSING THE EMPTY OBJECT HERE WOULD RE-OPEN THE UNBOUNDED REFETCH. Every `FetchError` inside
+    # `build_snapshot` lands in this class — a source that could not be read, a page shape the reader
+    # refuses, a truncated payload, a rollup the coverage rule will not accept — and this class is the
+    # ONLY thing `unusable_refetches` counts. An envelope refused at the door records no strike, so the
+    # REFETCH CAP (`stage-2-ci.md`, "NOT VERIFIED — the refetch is BOUNDED") never fires and "refetch
+    # until it works" has nothing left to end it. Accepting `{}` weakens no binding: `evidence` is
+    # never recomputed for this class (`verify_derived_artifact` returns at a null snapshot) and
+    # `liveness` never reads it.
+    if raw["snapshot"] is None:
+        if evidence != {} or head_now is not None or raw["head_moved"]:
+            fail("liveness: a derivation without a promoted snapshot must carry no evidence and no "
+                 "current head claim")
+    elif (set(evidence) != {"checkrun", "status", "witness"}
+            or any(type(value) is not int or value < 0 for value in evidence.values())):
+        fail(f"liveness: derive JSON `evidence` is not the three nonnegative producer counts: {evidence!r}")
     out["fingerprint"], out["buckets"] = fp, buckets
     out["trusted_current_head"] = trusted_current_head
     return out
