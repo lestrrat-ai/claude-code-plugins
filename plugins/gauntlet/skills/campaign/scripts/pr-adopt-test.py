@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import tempfile
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
