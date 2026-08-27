@@ -103,21 +103,24 @@ _VIEW_STR_FIELDS = ("title", "headRefName", "headRefOid", "baseRefName", "state"
 
 
 def _labels_problem(view: dict) -> "str | None":
-    """Return the first malformed label shape, or None when every label has a usable string name."""
+    """Return the first malformed label shape, or None when every label is an object with a string name.
+
+    `gh pr view --json labels` emits label OBJECTS, so a bare string is a shape the GitHub boundary never
+    produces and this validator refuses it — the same rule `_repository_problem` applies to
+    `headRepositoryOwner`/`headRepository`. Consumers keep an older `isinstance(lbl, dict)` fallback; that
+    is defence in depth behind this check, not a shape adoption accepts."""
     if "labels" not in view:
         return "missing field 'labels'"
     raw = view["labels"]
     if not isinstance(raw, list):
         return f"field 'labels' must be a list, got {type(raw).__name__}"
     for item in raw:
-        if isinstance(item, dict):
-            if "name" not in item:
-                return "field 'labels' contains an object without a 'name'"
-            name = item["name"]
-        else:
-            name = item
-        if not isinstance(name, str):
-            return f"field 'labels' must hold string names, got {type(name).__name__}"
+        if not isinstance(item, dict):
+            return f"field 'labels' must hold objects, got {type(item).__name__}"
+        if "name" not in item:
+            return "field 'labels' contains an object without a 'name'"
+        if not isinstance(item["name"], str):
+            return f"field 'labels' must hold string names, got {type(item['name']).__name__}"
     return None
 
 

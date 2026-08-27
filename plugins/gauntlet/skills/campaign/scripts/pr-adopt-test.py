@@ -214,6 +214,10 @@ def t_cli_plan_refuses_malformed_views():
         ({**view(), "labels": {"name": "x"}}, "field 'labels' must be a list, got dict"),
         ({**view(), "labels": [{"name": 7}]},
          "field 'labels' must hold string names, got int"),
+        # A bare-string label is a shape `gh pr view --json labels` never emits; adoption refuses it
+        # rather than reading it as a usable name (the rule `_repository_problem` already applies).
+        ({**view(), "labels": ["gauntlet-authored"]},
+         "field 'labels' must hold objects, got str"),
         ({**view(), "headRepositoryOwner": []},
          "field 'headRepositoryOwner' must be an object, got list"),
         ({**view(), "headRepository": {"name": 7}},
