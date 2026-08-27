@@ -982,7 +982,10 @@ class Snapshot(NamedTuple):
     """What `build_snapshot` hands `derive`. `rows` are the ARTIFACT'S LINES — dicts this file built, on
     their way to `promote()`, never read again by anything here."""
     rows: list
-    head_sha_now: object
+    # `str`, NEVER `object`: `fetch_rollup` raises rather than return a head it could not read, so a
+    # Snapshot that exists has one. Widening this to `object` would not describe the value better — it
+    # would only re-open, for every consumer, the "we cannot tell" case the fetch already refused.
+    head_sha_now: str
     evidence: dict
 
 
@@ -1183,7 +1186,7 @@ def fetch_statuses(fetch: Fetch, head_sha: str) -> tuple[list[dict], dict, list[
     return rows, {"row": "source", "source": "status", "sha": sha, "count": str(len(rows))}, seen
 
 
-def fetch_rollup(fetch: Fetch, pr: str) -> tuple[list[dict], dict, object, list[RollupStatus],
+def fetch_rollup(fetch: Fetch, pr: str) -> tuple[list[dict], dict, str, list[RollupStatus],
                                                  list[RollupRun]]:
     """(3) ROLLUP — its ROWS are WITNESSES ONLY (identity, no verdict), for the containment test.
 
