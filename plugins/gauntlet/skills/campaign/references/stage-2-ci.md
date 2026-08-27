@@ -4,9 +4,10 @@ Each PR has a background task that waits on `gh pr checks --watch`. **The watch 
 never evidence.** When the task completes, a heartbeat **fetches a fresh snapshot pinned to the PR's current
 `head_sha`**, verifies it, and decides `ci` **from the snapshot's contents — NEVER from the watch's exit
 code** — and records the result by handing `derive`'s JSON to `ci-status.py liveness` ("THE BOOKKEEPING
-IS A COMMAND", below). `liveness` independently verifies the JSON against the promoted snapshot before it
-writes `ci` and the liveness counters through the ledger accessor **by field
-name** (`files-and-ledger.md`), never by hand-editing the row by column position. (`reviews_ok` is a
+IS A COMMAND", below). `liveness` checks that JSON field by field — each in the class the liveness owner
+block names ("NOT VERIFIED — the refetch is BOUNDED", below) — before it writes `ci` and the liveness
+counters through the ledger accessor **by field name** (`files-and-ledger.md`), never by hand-editing the
+row by column position. (`reviews_ok` is a
 different write: its `0`-reset belongs **only** to a campaign commit landing on the PR head — "Any
 campaign commit to the PR head resets the gate", below, through `scripts/ledger.py … set --pr <N>
 --reviews_ok 0`. An ordinary derivation is observation, not a content change, and never touches it.)
@@ -39,9 +40,10 @@ retained — while `liveness` reduces `buckets.RUNNING` to the `watch_warranted`
 on, and reads it directly for its SETTLED/RUNNING-STALL split), and the path to the snapshot it left
 behind. It exits `0` **only** on green.
 **Pass that JSON to `ci-status.py liveness`; never derive `ci` from an impression of some command's output.**
-The liveness command verifies the producer's exact envelope and recomputes its verdict, evidence counts,
-fingerprint, and bucket tally from the promoted snapshot before it records the result and does the counter
-arithmetic.
+The liveness command refuses anything that is not the producer's exact envelope, then re-derives the
+`recomputed_from_artifact` set from the promoted snapshot and refuses any disagreement, before it records
+the result and does the counter arithmetic. **That set, and the `producer_attested` fields it deliberately
+excludes, are defined once** in the liveness owner block ("NOT VERIFIED — the refetch is BOUNDED", below).
 
 **THE REQUIRED SET IS NAMED, AND IT HAS NO DEFAULT.** `--ledger` resolves the selected **row's**
 `effective_required_set` — its explicit `required_set`, else the legacy header value — because the required
@@ -78,6 +80,10 @@ moved_head.ci = pending
 moved_head.fingerprint = null
 moved_head.buckets = null
 ```
+
+**Only `derive` can apply this rule, and no later step can re-apply it.** `head_sha_now` and `head_moved`
+are `producer_attested` to every consumer downstream — the liveness owner block ("NOT VERIFIED — the
+refetch is BOUNDED", below) owns what that means and what it costs.
 
 **Do NOT read this as "checks have not started"** — that is `verdict = pending` (zero evidence rows), and
 it means *wait*. This means **re-derive**: refresh the PR's `head_sha` into the ledger
@@ -747,7 +753,8 @@ an absorbing state with no exit, which the invariant forbids. Their exact verdic
 command** ("THE BOOKKEEPING IS A COMMAND", above), except the `head_sha changed` line, which belongs to the
 sites that write a new head ("THE LIVENESS COUNTERS").
 
-This is the machine-checked owner block for that counter:
+This is the machine-checked owner block for that counter — and for what `liveness` checks about its input
+before any counter moves:
 
 ```text
 liveness.untrusted_verdicts = unusable unverifiable
@@ -759,8 +766,21 @@ liveness.refetch_cap = unusable_refetches >= 3
 liveness.refetch_diagnostic = exact verdict + exact derive refusal reason
 liveness.unusable_refusal = snapshot/fetch/head-trust failure; may name VERIFY rule and line/row
 liveness.unverifiable_refusal = witness-identity containment failure; line/row not required
+liveness.recomputed_from_artifact = verdict reason evidence fingerprint buckets
+liveness.producer_attested = head_sha_now head_moved
 ```
 
+- **`recomputed_from_artifact` and `producer_attested` are the two halves of what `liveness` can know.**
+  The first set is re-derived from the promoted snapshot's bytes and refused on any disagreement, so the
+  producer's copy of it is never what gets recorded. The second is **the producer's word, by design**:
+  `ci-snapshot.py` is a pure function from bytes to a verdict — handed no PR, making no network call
+  ("THE DERIVATION IS A COMMAND", above) — so the PR's live head never enters the artifact and nothing on
+  disk can confirm or contradict it. `liveness` makes no network call either. The remaining fields are
+  matched against the ledger row and the artifact's own path, or are a total function of a recomputed
+  field. **What that costs, plainly:** a moved head reported as moved is held to the moved-head result
+  above and cannot be dressed up as a green; a moved head **denied** in the envelope is indistinguishable
+  from a head that never moved, because everything else then recomputes correctly. Only `derive`, which
+  read the head, can refuse that — and it does. Nothing else writes this envelope.
 - **The counter follows the final derivation's trust for the current head, never artifact verification.**
   A retained moved-head artifact was verified as an artifact for the requested old commit, but the final
   result is untrusted for the current PR and increments the counter. A trusted current-head result resets

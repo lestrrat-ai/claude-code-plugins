@@ -1398,6 +1398,144 @@ def liveness_cli_cases(ci, tmp: Path) -> list[str]:
     return problems
 
 
+def liveness_field_class_cases(ci) -> list[str]:
+    """THE PARTITION IS TOTAL — no envelope field escapes being classified.
+
+    This is the guard that outlives the reader. `verify_derived_artifact` checks each field in one of
+    three classes and records one class on the producer's word; a field added to `result()` later is
+    checked by NOBODY unless someone places it. The classes are declared as sets precisely so that
+    omission is a failing test rather than a silent belief.
+    """
+    problems: list[str] = []
+    classes = {
+        "RECOMPUTED_FROM_ARTIFACT": ci.RECOMPUTED_FROM_ARTIFACT,
+        "CHECKED_AGAINST_CANONICAL_STATE": ci.CHECKED_AGAINST_CANONICAL_STATE,
+        "DERIVED_FROM_A_CHECKED_FIELD": ci.DERIVED_FROM_A_CHECKED_FIELD,
+        "PRODUCER_ATTESTED": ci.PRODUCER_ATTESTED,
+    }
+    union: set[str] = set()
+    for name, members in classes.items():
+        overlap = union & set(members)
+        if overlap:
+            problems.append(f"[SEC-2] {name} shares {sorted(overlap)!r} with an earlier class — a field "
+                            f"in two classes has two different accounts of how it was checked")
+        union |= set(members)
+    if union != ci.DERIVE_FIELDS:
+        problems.append(f"[SEC-2] the liveness field classes cover {sorted(union)!r}, not the producer "
+                        f"envelope {sorted(ci.DERIVE_FIELDS)!r} — an unclassified field is one the "
+                        f"recorder simply believes")
+    return problems
+
+
+def liveness_head_attestation_cases(ci, tmp: Path) -> list[str]:
+    """THE MOVED-HEAD ENVELOPE — three rewrites the recorder refuses, and the one it cannot.
+
+    `head_sha_now` is `PRODUCER_ATTESTED`: the PR's live head never enters the promoted artifact, so
+    `liveness` has nothing on disk to check it against. These cases pin exactly how far the recomputation
+    reaches, so that neither the reach nor its limit can change without a test saying so.
+    """
+    problems: list[str] = []
+    fx, derived, rundir, _before = run_fixture(ci, "head-moves-mid-fetch.json", tmp / "sec2-attested")
+    if derived["verdict"] != ci.SNAP.UNUSABLE or not derived["head_moved"]:
+        problems.append(f"[SEC-2] the recorded moved-head fixture no longer derives a moved head: "
+                        f"verdict={derived['verdict']!r} head_moved={derived['head_moved']!r}")
+        return problems
+
+    pr = fx.get("pr", "35")
+    ledger = rundir / "state.jsonl"
+    header = dict(ci.LEDGER.HEADER_DEFAULTS)
+    header["run_id"] = "sec2"
+    row = dict(ci.LEDGER.ROW_DEFAULTS)
+    row.update({"pr": pr, "head_sha": ci.FIXTURE_SHA, "status": "in_review",
+                "required_set": ci.SNAP.NONE_DECLARED})
+
+    def record(envelope: dict, name: str) -> tuple[int, str, bool]:
+        ci.LEDGER.dump(ledger, header, [row])
+        payload = rundir / f"{name}.json"
+        payload.write_text(json.dumps(envelope), encoding="utf-8")
+        before_bytes = ledger.read_bytes()
+        proc = subprocess.run(
+            [sys.executable, str(STATUS_PY), "liveness", "--ledger", str(ledger), "--pr", pr,
+             "--derive-json", str(payload), "--machine-action", "none",
+             "--now", "2026-08-26T00:00:00+00:00"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+        )
+        return proc.returncode, proc.stderr, ledger.read_bytes() != before_bytes
+
+    # What the artifact itself says about the commit it was pinned to — the same recomputation
+    # `verify_derived_artifact` performs, and the material any forged envelope has to agree with.
+    snapshot = Path(derived["snapshot"])
+    required = ci.SNAP.parse_required_set(ci.SNAP.NONE_DECLARED)
+    artifact_rows = ci.SNAP.parse(snapshot)
+    artifact_verdict, artifact_reason = ci.SNAP.evaluate(
+        snapshot, ci.FIXTURE_SHA, required=required, expect_filename_sha=True
+    )
+
+    # (1) DENIED BUT NOT REWRITTEN — `head_moved` flipped to false while the moved-head verdict and reason
+    # stay. The recomputation is real, so this is refused: the artifact says one thing and the envelope
+    # another.
+    half = dict(derived)
+    half.update({"head_sha_now": ci.FIXTURE_SHA, "head_moved": False})
+    code, stderr, wrote = record(half, "denied-head-move")
+    if code != 2:
+        problems.append(f"[SEC-2] a denied head move with a retained moved-head verdict exited {code}, "
+                        f"not 2: {stderr!r}")
+    if wrote:
+        problems.append("[SEC-2] a denied head move with a retained moved-head verdict changed the ledger")
+
+    # (2) CLAIMED BUT NOT THE MOVED-HEAD RESULT — `head_moved` left true beside the artifact's own green.
+    # Refused at the door: a trusted current-head verdict must name a current head equal to the pinned
+    # one, which a moved head by definition does not.
+    dressed = dict(derived)
+    dressed.update({"verdict": artifact_verdict, "ci": ci.LEDGER_CI[artifact_verdict],
+                    "reason": artifact_reason})
+    code, stderr, wrote = record(dressed, "dressed-head-move")
+    if code != 2:
+        problems.append(f"[SEC-2] a moved head reported with the artifact's own verdict exited {code}, "
+                        f"not 2: {stderr!r}")
+    if wrote:
+        problems.append("[SEC-2] a moved head reported with the artifact's own verdict changed the ledger")
+
+    # (3) CLAIMED, WITH THE REFUSAL REWORDED — still `unusable`, still moved, but the reason no longer
+    # says what `derive` would have said. Refused by the moved-head branch itself, which rebuilds
+    # `moved_head_reason()` from the artifact and accepts nothing else: the `ci_reason` a park shows the
+    # user is evidence too, and an envelope may not author it.
+    reworded = dict(derived)
+    reworded["reason"] = "HEAD MOVED — nothing to worry about, record the old snapshot"
+    code, stderr, wrote = record(reworded, "reworded-head-move")
+    if code != 2:
+        problems.append(f"[SEC-2] a moved-head refusal with a rewritten reason exited {code}, not 2: "
+                        f"{stderr!r}")
+    if wrote:
+        problems.append("[SEC-2] a moved-head refusal with a rewritten reason changed the ledger")
+
+    # (4) THE DOCUMENTED BOUNDARY — the whole envelope rewritten to the derivation `derive` WOULD have
+    # printed had the head not moved. Every recomputed field then agrees with the artifact, and
+    # `head_sha_now` is the one input no local check can contradict, so this IS recorded. That is the
+    # cost `stage-2-ci.md`'s liveness owner block states, pinned here so it cannot change unnoticed and
+    # be reported as unchanged. Making this case fail requires the recorder to learn the live head —
+    # a network call inside `liveness`, or the head inside the artifact — and both are refused by design.
+    consistent = dict(derived)
+    consistent.update({
+        "head_sha_now": ci.FIXTURE_SHA, "head_moved": False,
+        "verdict": artifact_verdict, "ci": ci.LEDGER_CI[artifact_verdict], "reason": artifact_reason,
+        "fingerprint": ci.SNAP.fingerprint(artifact_rows, ci.FIXTURE_SHA),
+        "buckets": ci.bucket_counts(artifact_rows),
+    })
+    code, stderr, wrote = record(consistent, "consistent-denied-head-move")
+    if code != 0:
+        problems.append(f"[SEC-2] the attested-head boundary changed: a fully consistent denied head move "
+                        f"exited {code}, not 0 ({stderr!r}). If `liveness` can now detect this, say so in "
+                        f"the liveness owner block and in the partition above `derive_output` before "
+                        f"changing this case")
+    elif ci.LEDGER.load(ledger)[1][0]["ci"] != ci.LEDGER_CI[artifact_verdict]:
+        problems.append("[SEC-2] a fully consistent denied head move was accepted without recording the "
+                        "artifact's own ledger value")
+    elif not wrote:
+        problems.append("[SEC-2] a fully consistent denied head move recorded nothing at all")
+    return problems
+
+
 def verdict_doc_cases(ci) -> list[str]:
     """Pin both no-fingerprint verdicts in the DECIDE doc order independently of `doc-check`."""
     problems: list[str] = []
@@ -2150,6 +2288,22 @@ def run(ci, tmp: Path) -> int:
     if not liveness_cli_problems:
         print(f"ok       {'liveness input binding':32} -> forged trusted verdicts, fingerprints, and bucket "
               f"tallies cannot reach the ledger without matching promoted snapshot bytes")
+
+    field_class_problems = liveness_field_class_cases(ci)
+    for problem in field_class_problems:
+        failures += 1
+        print(f"FAIL     {problem}")
+    if not field_class_problems:
+        print(f"ok       {'liveness field classes':32} -> every producer envelope field lands in exactly "
+              f"one check class; nothing is recorded unclassified")
+
+    attestation_problems = liveness_head_attestation_cases(ci, tmp)
+    for problem in attestation_problems:
+        failures += 1
+        print(f"FAIL     {problem}")
+    if not attestation_problems:
+        print(f"ok       {'the attested head boundary':32} -> a moved head cannot be dressed up as a "
+              f"verdict, and a fully consistent denial is recorded exactly as the doc says it is")
 
     verdict_doc_problems = verdict_doc_cases(ci)
     for problem in verdict_doc_problems:

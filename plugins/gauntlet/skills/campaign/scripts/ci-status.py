@@ -1699,24 +1699,53 @@ def check_now(source: str, value: str) -> datetime:
     return ts
 
 
+# WHAT CHECK EACH ENVELOPE FIELD GETS BEFORE IT IS RECORDED — the ONE defining site of that partition.
+# `derive_output` refuses any envelope whose fields are not exactly `DERIVE_FIELDS`,
+# `verify_derived_artifact` applies the three classes, the driver doc's liveness owner block restates the
+# two a reader has to know, and `doc-check` holds those two to these names. The partition is TOTAL, and
+# `ci-status-test.py` asserts that it is: a field added to `result()` cannot reach the recording path
+# without someone saying which class it belongs to. The alternative is a new field nobody ever checked.
+#
+# `PRODUCER_ATTESTED` NAMES A REAL BOUNDARY — it is not a gap waiting to be closed. The PR's head as of
+# the fetch is the ONE liveness input the promoted artifact cannot answer for: `ci-snapshot.py` is a pure
+# function from bytes to a verdict, handed no PR and making no network call (see `derive`), so the head
+# never enters the artifact and nothing on disk can contradict the producer about it. `head_moved` is
+# `head_moved(head_sha, head_sha_now)`, so it stands or falls with that same attestation. Re-deriving
+# either one here would mean a network call inside the recorder, which is exactly what this architecture
+# refuses; putting the head into the artifact would end its auditability as a pure function of bytes.
+#
+# WHAT THAT COSTS, STATED WHERE IT CAN BE READ. The recorder catches a moved head reported as anything
+# but the moved-head result — the `head_moved` branch below rebuilds `moved_head_reason()` and refuses
+# any other verdict, reason, or ledger value. It CANNOT catch a moved head DENIED: an envelope whose
+# `head_sha_now` says the pinned head is still current is indistinguishable from a genuine unmoved-head
+# derivation, because every remaining field then recomputes from the artifact exactly as it should.
+# Only `derive`, which saw the head, can refuse that — and it does. Nothing but `derive` writes this
+# envelope in real operation, so denying a moved head means editing the producer's own output.
+DERIVE_FIELDS = frozenset({
+    "pr", "head_sha", "verdict", "ci", "reason", "snapshot", "evidence", "head_sha_now",
+    "head_moved", "required_set", "fingerprint", "buckets",
+})
+RECOMPUTED_FROM_ARTIFACT = frozenset({"verdict", "reason", "evidence", "fingerprint", "buckets"})
+CHECKED_AGAINST_CANONICAL_STATE = frozenset({"pr", "head_sha", "required_set", "snapshot"})
+DERIVED_FROM_A_CHECKED_FIELD = frozenset({"ci"})   # `ledger_ci(verdict)`, refused when they disagree
+PRODUCER_ATTESTED = frozenset({"head_sha_now", "head_moved"})
+
+
 def derive_output(raw: object) -> dict:
     """Validate the derive JSON handed to `liveness` — the UNEDITED output of `derive`, nothing else.
 
     The same fail-closed posture as every other input: a field missing or of the wrong shape is refused
     at the door, because a liveness pass run on a hand-assembled approximation of `derive`'s output is
     the hand-run bookkeeping this command exists to remove, wearing the command as a costume. The CLI
-    then independently verifies the producer's claims against the promoted snapshot before recording.
+    then checks every field of the envelope in the class the partition above puts it in, before it
+    records anything.
     """
     if not isinstance(raw, dict):
         fail("liveness: the derive JSON is not an object — hand this command the JSON `derive` printed, "
              "unedited")
-    expected_keys = {
-        "pr", "head_sha", "verdict", "ci", "reason", "snapshot", "evidence", "head_sha_now",
-        "head_moved", "required_set", "fingerprint", "buckets",
-    }
-    if set(raw) != expected_keys:
+    if set(raw) != DERIVE_FIELDS:
         fail(f"liveness: the derive JSON fields are {sorted(raw)!r}, not the exact producer shape "
-             f"{sorted(expected_keys)!r}")
+             f"{sorted(DERIVE_FIELDS)!r}")
     out: dict = {}
     for key in ("pr", "head_sha", "verdict", "ci", "reason"):
         value = raw.get(key)
@@ -1780,8 +1809,12 @@ def derive_output(raw: object) -> dict:
 def verify_derived_artifact(ledger_path: Path, pr: str, derived: dict) -> None:
     """Recompute liveness inputs from the promoted artifact before recording them.
 
-    The JSON is a transport envelope, not evidence. The artifact path, ledger row, required-set state,
-    verdict, reason, evidence counts, fingerprint, and bucket tally must all agree with canonical state.
+    The JSON is a transport envelope, not evidence. Every field is checked in the class the partition
+    above this function's validator puts it in — `RECOMPUTED_FROM_ARTIFACT` against the promoted bytes,
+    `CHECKED_AGAINST_CANONICAL_STATE` against the ledger row and the artifact's own path,
+    `DERIVED_FROM_A_CHECKED_FIELD` against the field it is a function of — with the single exception the
+    partition names and explains: `PRODUCER_ATTESTED`. Read that comment before adding a field here; a
+    field this function does not check is a field the recorder believes.
     """
     header, rows = LEDGER.load(ledger_path)
     row = LEDGER.find_row(rows, pr)
@@ -1821,6 +1854,11 @@ def verify_derived_artifact(ledger_path: Path, pr: str, derived: dict) -> None:
         fail(f"liveness: derive JSON `evidence` {derived['evidence']!r} does not match the promoted "
              f"snapshot {evidence!r}")
 
+    # THE BRANCH IS TAKEN ON AN ATTESTED FIELD, AND ONE DIRECTION OF IT CANNOT BE CHECKED HERE. Reported
+    # as moved, the result is rebuilt from the artifact and refused unless it IS the moved-head result —
+    # a moved head cannot be dressed up as anything else. Reported as NOT moved, there is nothing on disk
+    # to contradict it: `head_sha_now` is `PRODUCER_ATTESTED` (see the partition above `derive_output`),
+    # so this falls through to the recomputation below, which is the whole check such an envelope gets.
     if derived["head_moved"]:
         expected_reason = moved_head_reason(
             derived["head_sha"], derived["head_sha_now"], artifact_verdict, artifact_reason
@@ -2182,11 +2220,12 @@ def parse_moved_head_contract(blocks: list[str]) -> dict[str, str]:
 
 
 def parse_liveness_contract(blocks: list[str]) -> dict[str, str]:
-    """The refetch-counter owner block -> trust, actions, cap, and diagnostic shape."""
+    """The refetch-counter owner block -> trust, actions, cap, diagnostic shape, and the input classes."""
     keys = {
         "untrusted_verdicts", "untrusted_action", "trusted_current_head_action",
         "retained_moved_head_artifact", "head_sha_changed_action", "refetch_cap",
         "refetch_diagnostic", "unusable_refusal", "unverifiable_refusal",
+        "recomputed_from_artifact", "producer_attested",
     }
     for block in blocks:
         if "liveness.untrusted_verdicts" not in block:
@@ -2957,8 +2996,10 @@ def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) 
          MARKED `ci-status.py` block against the command `canonical_command()` generates for its id, which
          its body must EQUAL and whose opener must have a conforming CLOSE.
       6. the moved-head owner block says the old-head artifact is retained for audit but contributes no
-         current-PR verdict, fingerprint, or buckets; and the liveness owner block says that final
-         untrusted result increments the refetch counter while trusted current-head evidence resets it.
+         current-PR verdict, fingerprint, or buckets; and the liveness owner block says that a final
+         untrusted result increments the refetch counter while trusted current-head evidence resets it,
+         and names the envelope fields `liveness` recomputes from the promoted artifact and the ones it
+         records on the producer's attestation (the partition above `derive_output` owns those two sets).
 
     (The doc's three snapshot `jq` filters are executed by `ci-snapshot.py` over recorded, multi-page API
     payloads. The required-set reads are production functions here, covered by `ci-status-test.py`.)
@@ -3067,6 +3108,14 @@ def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) 
         ("liveness UNVERIFIABLE refusal", liveness_contract.get("unverifiable_refusal"),
          "witness-identity containment failure; line/row not required",
          "witness identity can prevent containment proof without identifying an evidence row"),
+        ("liveness recomputed fields", set(liveness_contract.get("recomputed_from_artifact", "").split()),
+         set(RECOMPUTED_FROM_ARTIFACT),
+         "a field the doc promises is recomputed from the promoted artifact, but is not, is recorded on "
+         "the producer's word while the doc says it was checked"),
+        ("liveness attested fields", set(liveness_contract.get("producer_attested", "").split()),
+         set(PRODUCER_ATTESTED),
+         "the fields the artifact cannot answer for must be named as the producer's attestation — a doc "
+         "that omits one is claiming a verification the recorder never performs"),
         ("the STRIKE CAP", caps.get("STRIKE"), STRIKE_CAP,
          "the bound `liveness` fires at and the bound the doc promises are different numbers"),
         ("the REFETCH CAP", caps.get("REFETCH"), REFETCH_CAP,
