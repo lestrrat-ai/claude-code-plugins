@@ -846,6 +846,16 @@ def check_document_contract() -> None:
         "it selects only the transition",
     ):
         require(needle in reviewer_flat, f"reviewer.md external failure classes drifted: {needle}")
+    # The post-launch-evidence rule lives INSIDE the `unusable-engine` bullet and must stay scoped to it.
+    # Unscoped, it reads over every later failure and re-routes a shown `content-refusal` — which is
+    # post-launch by definition — to `transient`, i.e. to `retry-external` then `fallback-native`, the two
+    # actions the refusal bullet forbids.
+    for needle in (
+        "It reclassifies nothing outside `unusable-engine`.",
+        "A refusal shown after launch evidence stays `content-refusal` and still parks",
+    ):
+        require(needle in reviewer_flat,
+                f"reviewer.md post-launch-evidence rule is no longer scoped to `unusable-engine`: {needle}")
     stage_flat = " ".join(stage.split())
     require('"--file", ledger_file' in stage_flat and
             '"--prompt-profile", prompt_profile' in stage_flat and
