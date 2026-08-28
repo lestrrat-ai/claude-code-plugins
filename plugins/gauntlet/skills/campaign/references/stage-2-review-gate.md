@@ -191,7 +191,8 @@ Run reviews **one at a time per PR** — never two at once for the same SHA. Whe
 (`head_sha`) has fewer than `required(tier)` SATISFIED verdicts (2a-triage owns the formula) and no review
 already running for it, the heartbeat's dispatch step launches **one** review pass by the selected reviewer
 (see "The reviewer") — a **fresh**, context-isolated pass over the whole `origin/<base>...HEAD` diff, run as
-a **background** task (its completion is a heartbeat; the loop folds the verdict in at step 2). For a
+a **background** task under `runtime-adapter.md`, **Direct asynchronous process launch** (its completion is
+a heartbeat; the loop folds the verdict in at step 2). For a
 `required==2` tier the second, corroborating review is launched only **after** the first comes back
 SATISFIED — so a still-broken commit never burns the second review before the first has said "fix it"
 (a TRIVIAL PR needs no second pass). (Reviews for *different* PRs still run concurrently, up to the ~8

@@ -8,9 +8,9 @@ Before preparing a record or prompt, evaluate `runtime-adapter.md`'s `ReviewIsol
 its transition. Only `launch-external` or `retry-external` uses the commands below; every other action
 stays with the owner.
 A capable adapter runs `review-dispatch.py prepare` through the exact invocation in `review-dispatch.md`,
-then launches the process from its returned transport as a background task whose completion triggers a
-reconcile. Prompt bytes — including verbatim GitHub-derived intent — and dynamic paths never enter shell
-source.
+then launches the process from its returned transport under `runtime-adapter.md`, **Direct asynchronous
+process launch**, as a background task whose completion triggers a reconcile. Prompt bytes — including
+verbatim GitHub-derived intent — and dynamic paths never enter shell source.
 
 `runtime-adapter.md`, **Review preparation mapping**, owns retry profile selection. A retry uses the same
 canonical argv below in a fresh process; never resume a failed external session or select a profile by

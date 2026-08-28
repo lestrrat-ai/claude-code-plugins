@@ -182,7 +182,8 @@ by running `transport.emit_report_path`, and neither transport captures a final-
 `transport.report.path` (`runtime-adapter.md`, "Review transport record and report ownership").
 
 Never embed the prompt in an argument or shell source. External prompt stdin is the prepared prompt file,
-which supplies immediate EOF. Launch in the background so completion triggers reconcile.
+which supplies immediate EOF. Launch under runtime-adapter.md, **Direct asynchronous process launch**;
+completion triggers reconcile.
 
 Never pass destructive instructions to an external reviewer. Keep Codex on `--sandbox workspace-write`;
 never use `--dangerously-bypass-approvals-and-sandbox`. At native-limitation level, `transport.review_root`
