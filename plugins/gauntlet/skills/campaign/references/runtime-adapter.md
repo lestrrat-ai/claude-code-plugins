@@ -99,6 +99,15 @@ of publishing a command-source template:
 - `dispatch_native(message: Bytes, class: ModelClass)` sends exactly `message` as task data to a fresh
   native worker. It never puts message bytes in command source.
 
+### Direct asynchronous process launch
+
+**Use host's background task/process mechanism to launch the direct child process.** Pass canonical argv
+through `run_argv` (or its host equivalent), and let that process own task lifetime. NEVER wrap a launch in
+`nohup`, shell `&`, `disown`, `setsid`, or another detached shell wrapper. A wrapper can finish while its
+child continues, causing its completion notification to be mistaken for worker completion. If the host
+accepts only shell source, mechanically encode the direct argv and keep the wrapper attached until the child
+exits; do not detach it.
+
 `RepositoryContext`, `Path`, `Text`, `Bytes`, and `ModelClass` above are data types, not angle-bracket
 substitution syntax.
 Composition such as `concat("refs/heads/", base)` happens **before** the operation and produces one
