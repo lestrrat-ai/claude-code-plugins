@@ -2871,6 +2871,61 @@ def t_pending_adoption_is_an_ordinary_field(L: ModuleType, tmp: Path) -> None:
     check(header_field(L, path, "last_activity") == FROZEN_B, "clearing pending_adoption is also activity")
 
 
+def t_init_writes_one_complete_fresh_header(L: ModuleType, tmp: Path) -> None:
+    """`init` publishes the run identity, checkpoint, reviewer, version and defaults in one fresh header."""
+    path = tmp / "state.jsonl"
+    with frozen_clock(L, FROZEN_A):
+        code, out, err = cli(L, [
+            "--file", str(path), "init",
+            "--run-id", "g260829-1200-aabbccdd",
+            "--pending-adoption", "09 12",
+            "--reviewer", "codex",
+            "--skill-version", "0.9.1",
+            "--default-non-goals", '["out of scope"]',
+        ])
+    check(code == 0, f"init exited {code}: {err!r}")
+    check(json.loads(out) == {"run_id": "g260829-1200-aabbccdd", "pending_adoption": "9 12"},
+          f"init summary is not canonical: {out!r}")
+    header, rows = L.load(path)
+    check(rows == [], "a fresh startup header must contain no PR rows before adoption")
+    check(header["run_id"] == "g260829-1200-aabbccdd", "init lost the run id")
+    check(header["pending_adoption"] == "9 12", "init did not canonicalize the PR checkpoint")
+    check(header["reviewer"] == "codex" and header["skill_version"] == "0.9.1",
+          "init did not bind reviewer and running skill version")
+    check(header["default_non_goals"] == '["out of scope"]', "init did not validate/store defaults")
+    check(header["status_verbosity"] == L.STATUS_VERBOSITY_BRIEF,
+          "init must use the fresh-run brief status default")
+    check(header["last_activity"] == FROZEN_A, "the initial durable checkpoint must stamp activity")
+
+
+def t_init_refuses_partial_or_existing_state(L: ModuleType, tmp: Path) -> None:
+    """`init` creates no empty run and never replaces an existing ledger during recovery."""
+    base = ["init", "--run-id", "g1", "--reviewer", "default", "--skill-version", "0.9.1"]
+    invalid = tmp / "invalid.jsonl"
+    code, _, err = cli(L, ["--file", str(invalid), *base, "--pending-adoption", "-"])
+    check(code == 1 and not invalid.exists(), f"empty init must write nothing: code={code}, err={err!r}")
+    duplicate = tmp / "duplicate.jsonl"
+    code, _, err = cli(L, ["--file", str(duplicate), *base, "--pending-adoption", "7 07"])
+    check(code == 1 and not duplicate.exists(),
+          f"duplicate PR checkpoint must write nothing: code={code}, err={err!r}")
+    unresolved = tmp / "unresolved.jsonl"
+    code, _, err = cli(L, [
+        "--file", str(unresolved), "init",
+        "--run-id", "g1",
+        "--pending-adoption", "7",
+        "--reviewer", " - ",
+        "--skill-version", "0.9.1",
+    ])
+    check(code == 1 and not unresolved.exists(),
+          f"a padded unresolved header value must write nothing: code={code}, err={err!r}")
+
+    existing = write_lines(tmp / "existing.jsonl", header_line(L, run_id="old"))
+    before = existing.read_bytes()
+    code, _, err = cli(L, ["--file", str(existing), *base, "--pending-adoption", "7"])
+    check(code == 1 and "existing ledger" in err, f"existing init refusal is unclear: {err!r}")
+    check(existing.read_bytes() == before, "refused init replaced an existing recovery ledger")
+
+
 # --- status_verbosity: the operator's display setting, and the lines it may NEVER drop -------------------
 #
 # The field is PRESENTATION. These fixtures pin the two halves that matter: the write door refuses anything
@@ -3541,6 +3596,8 @@ CASES = [
     ("watchdog-due-no-door", "`header set watchdog_due` is refused and writes nothing", t_watchdog_due_has_no_door),
     ("watchdog-interval", "watchdog interval prints the constant in minutes, reads no ledger", t_watchdog_interval_prints_the_constant),
     ("pending-adoption-ordinary", "pending_adoption is an ordinary settable field; setting it IS activity", t_pending_adoption_is_an_ordinary_field),
+    ("init-complete-header", "init atomically publishes one complete fresh-run header", t_init_writes_one_complete_fresh_header),
+    ("init-refuses-partial", "init refuses empty/duplicate PR sets and never replaces recovery state", t_init_refuses_partial_or_existing_state),
     ("verbosity-defaults", "new status_verbosity runs use `brief`; existing ledgers keep the `full` fallback", t_status_verbosity_defaults_to_full),
     ("verbosity-help-defaults", "table help names the new-run `brief` default and existing-ledger `full` fallback", t_table_help_describes_verbosity_defaults),
     ("verbosity-legacy-block-frozen", "a pre-status_verbosity ledger prints the SAME block — pinned against a frozen, retyped list", t_legacy_config_block_is_unchanged),

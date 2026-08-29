@@ -450,11 +450,11 @@ For the heartbeat fallback, choose exactly one lifecycle:
    scheduler answers that there is nothing more to do this turn and the harness yields until the wakeup
    fires (verified empirically on Claude Code) — so the schedule call is ALWAYS the LAST action of a
    turn, and everything the turn still owes (status render, ledger writes, dispatches) happens BEFORE
-   it. The same property is why fresh-run setup spans two turns: "Take a run"'s arm step ends the setup
-   turn, and `acquire` plus the rest of setup run on the heartbeat that arming produced — the acquire
-   proof is that arming, which is already done (`run-identity-and-lease.md`, "Take a run" owns the
-   sequence; `loop-control.md` "Reschedule or exit" sizes the setup delay so a fresh run resumes in
-   about a minute instead of idling a full interval looking stalled). Letting the tool build the prompt
+   it. The same property is why fresh-run setup may span two turns: `campaign-start.py` returns
+   `needs-host-arm`, the arm ends the setup turn, and its returned `take` command runs on the wake that
+   arming produced. The acquire proof names that completed host action (`startup.md` owns the protocol;
+   `loop-control.md` "Reschedule or exit" sizes the setup delay so a fresh run resumes in about a minute
+   instead of idling a full interval looking stalled). Letting the tool build the prompt
    is what enforces the guarantee: the wake
    carries **only** `--run` and `--token` and **never** `--new`/`#PR` (start-time args that would mint a
    fresh run each heartbeat) or `--heartbeat-id` (an acquire-time proof) — and the tool refuses any value
@@ -514,8 +514,8 @@ dispatched worker dies or returns an unusable report.
   the driver where to look; it never replaces a guard.
 - A `superseded` or refused lease verdict in the report stands the driver down exactly as if it had
   run Step 1 inline.
-- First invocation, fresh-run setup, adoption of `#PR` args, and the finished-run prompt stay in the
-  driver: they are arg-driven and interactive. A worker that finds nothing live — or every row
+- First invocation, the `campaign-start.py` protocol, and the finished-run prompt stay in the driver:
+  they are arg-driven or interactive. A worker that finds nothing live — or every row
   terminal — reports that fact, and the driver takes the matching Step 1 branch itself.
 
 ### Session watchdog nudge

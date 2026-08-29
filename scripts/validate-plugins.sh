@@ -689,10 +689,14 @@ fi
 campaign=plugins/gauntlet/skills/campaign
 [[ -f $campaign/references/runtime-adapter.md ]] ||
   fail "campaign is missing references/runtime-adapter.md"
+[[ -f $campaign/references/startup.md ]] ||
+  fail "campaign is missing references/startup.md"
 [[ -f $campaign/references/cross-agent-reviewers.md ]] ||
   fail "campaign is missing references/cross-agent-reviewers.md"
 grep -Fq 'references/runtime-adapter.md' "$campaign/SKILL.md" ||
   fail "campaign SKILL.md does not load the runtime adapter"
+grep -Fq 'references/startup.md' "$campaign/SKILL.md" ||
+  fail "campaign SKILL.md does not load the startup protocol"
 grep -Fq 'the default per host, overridable' "$campaign/references/cross-agent-reviewers.md" ||
   fail "cross-agent review must document the cross-engine default per host"
 grep -Fq '"codex", "exec", "--sandbox", "workspace-write"' "$campaign/references/cross-agent-reviewers.md" ||
@@ -708,6 +712,7 @@ grep -Fq 'ReviewIsolationCapability' "$campaign/references/runtime-adapter.md" |
 python3 "$campaign/scripts/review-dispatch.py" self-test || status=1
 python3 "$campaign/scripts/transport-contract-test.py" || status=1
 python3 "$campaign/scripts/worker-prompt.py" self-test || status=1
+python3 "$campaign/scripts/campaign-start.py" self-test || status=1
 
 campaign_host_leaks=$(
   grep -rnE 'ScheduleWakeup|\$\{CLAUDE_PLUGIN_ROOT\}|Subagent Dispatch|fresh-subagent' \

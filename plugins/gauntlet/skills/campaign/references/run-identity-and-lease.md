@@ -55,21 +55,19 @@ never silently share a directory:
 run-id.py new --runs-dir <repository.scratch_root>   # -> {"run_id": "g260704-0915-a3f29c1b", "rundir": "…"}
 ```
 
-Invoke it through `runtime-adapter.md`'s `create_run_directory(repository)`, which resolves the
-host-specific `repository.scratch_root` and owns that invocation. The atomic create and the collision
-retry live in `run-id.py`; the caller no longer mints an id or retries. Do not unpack that operation here.
+Fresh startup invokes it through `campaign-start.py`; `startup.md` owns that surrounding protocol. The
+runtime adapter still owns the typed repository context, and `run-id.py` owns atomic creation and collision
+retry. No driver mints an ID or retries by hand.
 
-The ledger header field `run_id` records it, and **adoption writes that field itself** — `pr-adopt.py
-adopt` sets it when the header has none and REFUSES a ledger that already names a different run. The
-driver does not set it by hand: it used to, and a driver that forgot left the field unset until
-`merge.py` refused a fully-gated PR with `ledger run_id is unresolved`, after every review had been
-spent. Re-read it every heartbeat (`ledger.py … header get run_id`, like `reviewer`); never trust
-in-context memory for it — a heartbeat may be a fresh agent instance. It flows into:
+The ledger header field `run_id` records it. `ledger.py init` publishes it with the complete fresh header;
+`pr-adopt.py adopt` validates it and fills it only for a legacy ledger whose header has none. The driver
+never sets it by hand. Re-read it every heartbeat (`ledger.py … header get run_id`, like `reviewer`);
+never trust in-context memory for it. It flows into:
 
 | Owned by the run | Namespaced form |
 |------------------|-----------------|
 | tmp working dir  | `<rundir>` from the runtime adapter's run-directory operation (all state/pr/review/ci/abort/lease files) |
-| ledger header    | the `run_id` header field (written by `pr-adopt.py adopt`; read via `ledger.py … header get run_id`) |
+| ledger header    | the `run_id` header field (published by `ledger.py init`; read via `ledger.py … header get run_id`) |
 | PR owner label   | `gauntlet-run-<run-id>` — the **authoritative "mine" marker**. Every adopted PR is tagged with it; it, not any branch name, is what makes a PR this run's. |
 | branch           | the **adopted PR's own `headRefName`** — campaign reuses the PR's existing branch and does NOT mint a `fix-<run-id>-...` branch, so ownership can't be read off the branch name (that's the label's job). |
 | worktree         | the ledger-recorded `worktree` path resolved by the repository-context-aware adoption operation; only a campaign-created worktree (`worktree_owned = yes`) is ever removed (see "PR adoption" / Stage 3) |
@@ -105,32 +103,12 @@ that a busy driver is never mistaken for a dead one, so staleness flags a *dead*
 corrupt-lease refusal, and the read-back. Do not unpack those mechanics here: present a token, act on
 the verdict the tool prints.
 
-- **Take a run** — at fresh-run start or on adoption — **in this order**: (1) `lease.py mint` prints
-  your agent token; **then, BEFORE arming (the arm ends the setup turn on a turn-ending scheduler), do
-  the durable-setup step that must survive a mid-setup death:** record the run intent —
-  `ledger.py --file <rundir>/state.jsonl header set pending_adoption "<pr> <pr> …"`, which creates the
-  ledger + header if missing — so a death before `acquire` does not lose the requested PR list (it
-  otherwise lived only in the invocation args), and any later entry that finds `pending_adoption` set
-  resumes setup idempotently from adoption of exactly those PRs (`files-and-ledger.md`; adoption clears it
-  back to `-` as its final step, `loop-control.md` step 1). Then (2) call the session watchdog's
-  `available?` operation. When available, ensure its recurring nudge using `heartbeat.py watchdog --run
-  <run-id> --token <tok> --invocation <campaign-invocation>` (`runtime-adapter.md`, "Session watchdog
-  nudge"). When unavailable or when `ensure` fails, report that the run has no separate audit wake and
-  continue. The nudge does not end this turn and exists only while this session lives. Then (3) arm the
-  scheduled heartbeat carrying
-  the token (`--token <tok>`, via `heartbeat.py callback` — `runtime-adapter.md` owns the host
-  mechanism); (4) `lease.py --file <rundir>/lease.json
-  acquire --token <tok> --heartbeat-id <proof>`, where the proof names the arming you ALREADY did
-  (`runtime-adapter.md` says what your host's proof is). `acquire` refuses without both and never mints
-  a token itself — arming comes FIRST, so a live session can resume after a turn ends mid-work. **On a host
-  whose scheduler ends the turn (`runtime-adapter.md`, "Scheduled-heartbeat
-  host"), step 3 is the setup turn's LAST action and step 4 plus the rest of setup (header, adoption,
-  first dispatches) run on the heartbeat it armed** — the proof then names the arming that delivered
-  the very turn you are in, which is exactly "something already done". Size that first arm to the
-  setup delay (`loop-control.md`, "Reschedule or exit"): a fresh run resumes in about a minute, not a
-  full idle interval that the user reads as a hung run. Keep the token in context; the heartbeat
-  prompt already carries it, so a summarized/amnesiac heartbeat recovers it from the prompt instead of
-  guessing.
+- **Take a run.** Fresh startup and recovery while `pending_adoption` is set go through
+  `campaign-start.py`'s state protocol; `startup.md` owns the complete sequence. Its `needs-host-arm`
+  state is the only handoff here: the host establishes the returned continuity action before the returned
+  `take` command presents its token and proof to `lease.py acquire`. Never reconstruct header setup,
+  arming, or acquisition as separate driver instructions. For a completed startup, the ordinary
+  `refresh` rule below applies.
 - **You own the run iff the verdict says so.** `acquire`/`refresh` print a verdict, and the verdict —
   not your write, not an eyeballed read of the file — is the proof: `owned`/`adopted` → drive;
   `superseded`/`lost-race`/any refusal → you are NOT the driver — do not review, fix, merge, or
@@ -171,10 +149,12 @@ the verdict the tool prints.
 
 1. **`--run <id>` given** (every scheduled heartbeat, session watchdog nudge, or manual targeted resume).
    Load `<rundir>/state.jsonl`, then present a token to `lease.py`. **Scheduled heartbeat** (token in
-   the prompt's `--token`, without `--watchdog`) → `refresh`: `owned` → reconcile, continue;
-   `superseded` → stand down; refused because the lease is gone → re-arm, then `acquire` (the turn-split
-   in "Take a run" applies on a turn-ending scheduler: the `acquire` runs on the wake the re-arm
-   produces). **Session watchdog** (`--run <id> --token <tok> --watchdog`) → run the runtime
+   the prompt's `--token`, without `--watchdog`) → when this is the wake produced by a startup
+   `needs-host-arm`, run its returned `take` command with that arming's proof; otherwise `refresh`:
+   `owned` → reconcile, continue;
+   `superseded` → stand down; refused because the lease is gone → use `campaign-start.py resume` and obey
+   its returned host-arm state (`startup.md`). **Session watchdog** (`--run <id> --token <tok>
+   --watchdog`) → run the runtime
    adapter's capability-aware inspections (`runtime-adapter.md`, "Session watchdog nudge" — `primary
    inspect` is optional and advisory; where the host exposes no such operation it records `unavailable`
    or `not-applicable` without inventing a host call), then take the same `refresh`: `owned` → run
@@ -182,8 +162,9 @@ the verdict the tool prints.
    or `superseded` → report the inspections and stop. It NEVER calls `acquire`,
    `--allow-takeover`, or adoption: it is a live-session audit, not a recovery path.
    **Manual `--run` with no token in hand** → `lease.py read` (advisory status only):
-   `absent`/`stale` → adopt (mint + arm + `acquire`, per "Take a run"); `held` → another agent
-   appears active, so **confirm takeover with the user** before `acquire --allow-takeover`; `corrupt` →
+   `absent`/`stale` → adopt through `campaign-start.py resume` (`startup.md`); `held` → another agent
+   appears active, so **confirm takeover with the user** before `campaign-start.py resume
+   --allow-takeover`; `corrupt` →
    see "Adopt only an orphaned run".
 
 2. **Bare invocation** → the arg decides intent:

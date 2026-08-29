@@ -107,9 +107,8 @@ above); it never reads or duplicates the follow-up store.
 
 ### Starting a fresh run
 
-1. **Start the run per `loop-control.md` step 1's fresh-run path** — preflight the `#PR` set read-only
-   first, and only then create run state and adopt. That step owns the ordering and the refusal
-   behavior; never restate it here.
+1. **Start the run through `campaign-start.py`** (`startup.md`). Its protocol owns the ordering and
+   refusal behavior; never restate it here.
 2. **Read every file in `.gauntlet/history/`, then prune each entry against its OWN recorded base**
    (a v2 object's `base_branch`, a v1 object against that file's single base; drop entries no longer
    applicable to that base; uncertain deletions are asked about **without blocking** — keep the entries

@@ -1169,6 +1169,82 @@ def guard_default_non_goals_change(header: dict, rows: "list[dict]", new_default
 
 # --- subcommands --------------------------------------------------------------
 
+def init_run(
+    path: Path,
+    *,
+    run_id: str,
+    pending_adoption: str,
+    reviewer: str,
+    skill_version: str,
+    default_non_goals_value: str = "[]",
+) -> dict:
+    """Create one fresh run header in one atomic write and return it.
+
+    ``campaign-start.py`` calls this after the complete PR set has passed read-only preflight.  The fresh
+    header used to be assembled through several independent ``header set`` calls, which left every prefix
+    of startup as a possible durable state after a process death.  This door validates every caller-owned
+    value before writing and publishes the complete header once.
+
+    An existing path is always refused.  Startup recovery reads the existing header and resumes from its
+    ``pending_adoption`` checkpoint; silently replacing it would discard that recovery state.
+    """
+    if path.exists():
+        fail(f"init refuses existing ledger {path} — resume it through campaign-start.py; never replace it")
+
+    values = {
+        "run_id": run_id,
+        "pending_adoption": pending_adoption,
+        "reviewer": reviewer,
+        "skill_version": skill_version,
+    }
+    for field, value in values.items():
+        if (not isinstance(value, str) or not value.strip() or value.strip() == "-"
+                or "\n" in value or "\r" in value):
+            fail(f"init requires a nonempty, single-line {field}; got {value!r}")
+
+    pending: list[str] = []
+    seen: set[str] = set()
+    for raw in pending_adoption.split():
+        if not raw.isascii() or not raw.isdigit() or int(raw) <= 0:
+            fail(f"init pending_adoption contains invalid PR number {raw!r}")
+        canonical = str(int(raw))
+        if canonical in seen:
+            fail(f"init pending_adoption contains duplicate PR {canonical}")
+        seen.add(canonical)
+        pending.append(canonical)
+    if not pending:
+        fail("init requires at least one pending PR; an empty startup would create an orphan run")
+
+    try:
+        defaults = parse_default_non_goals(default_non_goals_value)
+    except ValueError as exc:
+        fail(f"init default_non_goals {exc} — no ledger was written")
+
+    header = dict(NEW_HEADER_DEFAULTS)
+    header.update({
+        "run_id": run_id.strip(),
+        "pending_adoption": " ".join(pending),
+        "reviewer": reviewer.strip(),
+        "skill_version": skill_version.strip(),
+        "default_non_goals": json.dumps(defaults),
+    })
+    save(path, header, [], activity=True)
+    return header
+
+
+def cmd_init(path: Path, args) -> int:
+    header = init_run(
+        path,
+        run_id=args.run_id,
+        pending_adoption=args.pending_adoption,
+        reviewer=args.reviewer,
+        skill_version=args.skill_version,
+        default_non_goals_value=args.default_non_goals,
+    )
+    print(json.dumps({"run_id": header["run_id"], "pending_adoption": header["pending_adoption"]}))
+    return 0
+
+
 def cmd_header(path: Path, args) -> int:
     header, rows = load(path)
     check_field(args.field, HEADER_FIELDS)
@@ -2087,6 +2163,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--file", help="path to the ledger (state.jsonl)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
+    i = sub.add_parser("init", help="atomically create one fresh run header after read-only PR preflight")
+    i.add_argument("--run-id", required=True, help="fresh run id returned by run-id.py new")
+    i.add_argument("--pending-adoption", required=True,
+                   help="space-separated positive PR numbers; the durable startup checkpoint")
+    i.add_argument("--reviewer", required=True,
+                   help="reviewer choice already resolved from trusted state by the host adapter")
+    i.add_argument("--skill-version", required=True,
+                   help="version read from the active host manifest beside the running skill")
+    i.add_argument("--default-non-goals", default="[]",
+                   help="run-wide Non-goal bodies as a JSON-array string (default: [])")
+
     h = sub.add_parser("header", help="get/set a run-config header field")
     h.add_argument("action", choices=("get", "set"))
     h.add_argument("field")
@@ -2239,7 +2326,8 @@ def main(argv: list[str]) -> int:
         parser.error("the following arguments are required: --file")
     path = Path(args.file)
     handlers = {
-        "header": cmd_header, "add-row": cmd_add_row, "set": cmd_set, "verdict": cmd_verdict,
+        "init": cmd_init, "header": cmd_header, "add-row": cmd_add_row, "set": cmd_set,
+        "verdict": cmd_verdict,
         "base-ok": cmd_base_ok,
         "get": cmd_get, "list": cmd_list, "table": cmd_table,
         "dispatch-check": cmd_dispatch_check, "park": cmd_park, "unpark": cmd_unpark,

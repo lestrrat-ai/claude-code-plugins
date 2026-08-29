@@ -213,15 +213,10 @@ the very quiet sensor it backs. It **defaults to `-`** — the schema's "not set
 `watchdog check` reads `-` as `unset`; an old ledger predating the field reads back `-` and every reader
 tolerates that.
 
-`pending_adoption` records **the RUN-INTENT CHECKPOINT** — a space-separated list of PR numbers written at
-setup, **BEFORE `acquire`**, so a death mid-setup does not lose the requested PR list (which otherwise
-lived only in the invocation args — `run-identity-and-lease.md`, "Take a run", owns the sequence). Unlike
-`watchdog_due` it is an **ORDINARY, hand-settable config field** (`header set pending_adoption "89 90"`):
-it has a real door, and **writing it IS meaningful activity** (no exemption — it is **not** a sensor and
-carries no liveness meaning). Adoption clears it back to `-` as its final step, and any later entry — the
-armed wake, a watchdog nudge after it refreshes this owner, or a manual resume — that finds it set resumes
-setup idempotently from exactly those PRs (`loop-control.md` step 1). It **defaults to `-`**: nothing is
-pending.
+`pending_adoption` records **the RUN-INTENT CHECKPOINT** — a canonical space-separated PR set published
+with the rest of a fresh header by `ledger.py init`. `campaign-start.py` is its normal writer and reader;
+`startup.md` owns when it is created, resumed, and cleared. The ordinary `header set` door remains for
+recovery and compatibility, and its writes count as meaningful activity. `-` means startup is complete.
 
 `default_non_goals` records **the RUN-WIDE DEFAULT NON-GOALS** — the exclusions the operator declares
 **ONCE** for the whole run, so several PRs need not be hand-edited one at a time. It is a **JSON ARRAY
@@ -749,6 +744,9 @@ and pass that path to subtasks, exactly as with `emit-progress.py`. Subcommands
 # The synopsis abbreviates that `python3 <skill-dir>/scripts/ledger.py` prefix to `ledger.py`.
 ledger.py --file <state.jsonl> header get <field>                 # read a run-config header field
 ledger.py --file <state.jsonl> header set <field> <value>         # set a run-config header field (refused for a TOOL-STAMPED field: last_activity, watchdog_due)
+ledger.py --file <state.jsonl> init --run-id <id> --pending-adoption "<prs>" \
+  --reviewer <r> --skill-version <v> [--default-non-goals <json>]
+                                                                  # atomically publish one complete fresh-run header; refuses existing state
 ledger.py --file <state.jsonl> watchdog arm                       # stamp watchdog_due = now + WATCHDOG_INTERVAL (activity-EXEMPT)
 ledger.py --file <state.jsonl> watchdog check                     # print unset|ok <rem>|due <age>|invalid — re-arm (read-only, always exit 0)
 ledger.py watchdog interval                                       # print the interval in minutes (reads NO ledger; scheduler adapter consumes THIS)
