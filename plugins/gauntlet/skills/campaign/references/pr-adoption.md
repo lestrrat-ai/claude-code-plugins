@@ -5,7 +5,9 @@ drives each through the gates to merge. This file is the adoption procedure: giv
 them into the run and start their gate work.
 
 Two entry paths feed it (see "Run identity and concurrency" for the full grammar):
-- **explicit `#PR` args** (`<campaign-invocation> #12 #15`) — adopt exactly those PRs.
+- **fresh-run `#PR` args** (`<campaign-invocation> #12 #15`) — `campaign-start.py` calls this
+  procedure for exactly those PRs. `startup.md` owns the surrounding order and resume protocol; the driver
+  never transcribes these steps for a fresh run.
 - **no-arg discovery** (`<campaign-invocation>`, resume) — run **"The canonical `prs.json` command"**
   from `files-and-ledger.md`, then reconcile PRs already labelled for this run. The executable owner is
   `scripts/reconcile.py fetch`; NEVER reconstruct its GitHub query in prose.
@@ -55,6 +57,8 @@ in the same step (`pr-adopt.py` at step 4, `label-mirror.py` at every later reco
 > --worktrees-root <p> --project-root <p>`). The driver still supplies the two JUDGMENT calls it does not
 > make: the **tier DECISION** (`stage-2-review-gate.md`, "2a-triage", owns the complete procedure) and
 > the PR's **INTENT** (step 3a).
+> During fresh startup, `campaign-start.py` prepares and binds both judgments through its typed state
+> protocol. The driver supplies the answers, not the surrounding file and ledger operations.
 > Adoption needs a row before it has resolved the PR-head worktree, so pass `--tier STANDARD` as the
 > conservative bootstrap value. `pr-adopt.py` launches no gate work. Immediately after step 5, follow
 > the owned 2a-triage procedure before any gate work; loop control points to the same owner. Its decision

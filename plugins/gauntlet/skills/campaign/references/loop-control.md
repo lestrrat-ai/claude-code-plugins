@@ -51,6 +51,11 @@ rules keep their own wording; these are illustrations of them, not a second copy
    only on an `owned`/`adopted` verdict; on `superseded` or any refusal, **stand down**.
    This lease gate is what guarantees **no two agents drive one ledger**.
 
+   A fresh startup wake is the one exception to the ordinary `refresh` entry: when the prior
+   `campaign-start.py` state was `needs-host-arm`, this wake runs its returned `take` command with the
+   proof for the arming that produced the wake. That command acquires before it advances. Every later
+   startup wake is already owned and uses `advance` (`startup.md`).
+
    Once you own the run and have loaded its ledger, run
    `scripts/nudge.py --file <rundir>/state.jsonl --followups <project_root>/.gauntlet/followups.jsonl --rundir <rundir>`
    and **READ its output** before reconciling. It is the **advisory reminder list** — computed from durable
@@ -205,40 +210,17 @@ rules keep their own wording; these are illustrations of them, not a second copy
      `#PR` args (a bare or non-`#PR` invocation that found no live run to resume — likewise `--new`
      with no `#PR` args), **create nothing** — no run-id, no `<rundir>`, no lease, no `state.jsonl` — and
      show the **idle prompt** (`run-identity-and-lease.md`, "Resolving a heartbeat", owns its wording).
-     Creating `<rundir>`/lease/header before a PR is confirmed would leave an empty
-     orphan run that later no-arg invocations rediscover as bogus state.
-
-     When there **are** `#PR` args, **preflight the whole set FIRST — read-only, before creating any
-     run state**: read every PR's metadata (`gh pr view`, including each PR's `baseRefName`) and run the
-     refusal checks (foreign-owned, cross-repo/fork per `pr-adoption.md`). **The PRs need NOT share a
-     base** — one run may hold PRs targeting different bases, each driven against its own recorded base
-     (`run-identity-and-lease.md`, "Base branch"). Preflight imposes no cross-row base agreement; every
-     PR must still pass all `pr-adoption.md` refusal checks (foreign-owner, cross-repo/fork).
-     This touches **no** run-id, `<rundir>`, lease, `state.jsonl`, label, worktree, or CI watch. **If any
-     PR is refused, prompt and create nothing** — so a rejected set never leaves an
-     empty orphan run behind. **Only once the full set passes preflight**: call `create_run_directory`
-     **first** — it mints the run-id and atomically creates `<rundir>` — and derive `run_id` from the
-     returned directory's final path component; **then** take the run per `run-identity-and-lease.md`,
-     "Take a run" (which, BEFORE arming, records `pending_adoption` = this set's PR list; then token,
-     heartbeat arming, `lease.py acquire` — in that order),
-     — the `state.jsonl` header's `run_id` is written by adoption below, not here. **The header `base_branch` stays its `-`
-     default** — the base is per-row now, recorded on each row at adoption from that PR's live
-     `baseRefName`, never a run-wide header value (`files-and-ledger.md`, the row `base_branch` field).
-     Then **adopt** each PR
-     (ledger row + labels + worktree, then **Run `liveness`, then ensure or relaunch a watch only when
-     returned `watch_warranted` is `true`** — `pr-adoption.md`, "Step 6 — Run liveness, then act on its
-     CI watch warrant"; adoption fetches **each PR's own base ref**, so a
-     set spanning several bases fetches each of them once at its adoption). A death mid-adoption still
-     leaves a discoverable, adoptable run. **When the whole requested set is adopted, clear the checkpoint —
-     `ledger.py … header set pending_adoption -`** (this is adoption's final step; a later entry that
-     still sees it set knows setup did not finish and resumes it). Then fall through to dispatch/reschedule.
+     With a concrete PR set, run `campaign-start.py new` and obey its JSON states through `ready`.
+     `startup.md` owns the command, full-set preflight-before-state guarantee, host handoff, atomic header,
+     adoption, semantic judgment boundaries, CI initialization, and checkpoint clearing. Do not expand
+     those operations here or perform them separately.
    - **This run's `state.jsonl` is fully terminal — every row `merged`/`aborted`, no open PR carrying this
      run's label → the run is finished.** Do **not** silently exit "all fixed" (the old bug) and do **not**
      silently restart. **Ask the user** whether to gate more PRs — e.g. "gauntlet run
      <run-id> finished (N merged, M aborted). Gate more PRs? Pass PR numbers (or run gauntlet:review
      first)." A new run needs a `#PR` set, so collect PR numbers (equivalently direct the user to
      `<campaign-invocation> --new #PR...`); on a PR set, start a fresh run **with carryover** (see "Fresh
-     runs and carryover") — **no run-id/lease/`state.jsonl` is created until that set passes preflight**.
+     runs and carryover") through `campaign-start.py` (`startup.md`).
      With no PR numbers (or "no"), emit that run's final report and stop. This prompt is the *only* heartbeat
      that asks the user about scope.
 
@@ -672,7 +654,7 @@ resume. This block OWNS when the loop continues; every other site points here, n
      resume path (see "Resume after a killed session"). **Size the scheduled delay or bounded wait to the
      nearest stall it guards:**
      - **Run setup still owed — the lease not yet acquired, or adoption / first dispatches not yet
-       run (a fresh run's arm-ended setup turn, `run-identity-and-lease.md` "Take a run") → ~60 s:**
+       run (a fresh run's `needs-host-arm` state, `startup.md`) → ~60 s:**
        on a turn-ending scheduler the wakeup IS the continuation of setup, so any longer delay is
        dead time the user reads as a hung run.
      - **Any dispatched review pass still awaiting its first line of launch evidence → ~5 min:** its

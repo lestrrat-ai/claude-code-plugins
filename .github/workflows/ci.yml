@@ -152,6 +152,11 @@ jobs:
       - name: Ledger contract
         run: python3 plugins/gauntlet/skills/campaign/scripts/ledger.py self-test
 
+      # Fresh startup is a resumable command protocol. These offline fixtures pin its full-set preflight,
+      # complete-header write, host handoffs, semantic boundaries, and ready commit point.
+      - name: Campaign startup protocol
+        run: python3 plugins/gauntlet/skills/campaign/scripts/campaign-start.py self-test
+
       # The REPAIR PASS's contract, executed — the mechanism that stops the review loop from running
       # forever. Its fixtures REPLAY the two PRs that actually spiralled (21 and 14 adversarial rounds,
       # 8.5 hours, neither converging) and assert the trigger fires where the design says AND stays silent

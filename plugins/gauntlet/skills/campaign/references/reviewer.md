@@ -7,11 +7,12 @@ reviewer is chosen per run. Map host operations through `runtime-adapter.md`.
 ### Selecting the reviewer
 
 **Reviewer selection IS gate machinery, so the choice is resolved from TRUSTED state ONLY** — never from
-a file inside the checkout under review (see priority 2). Resolve once **at run start, and record the
-choice as the ledger `reviewer` header field BEFORE any candidate evidence is read** (see
-`files-and-ledger.md`) so every later heartbeat — including a scheduled heartbeat or a fresh agent that adopted the
-run — re-reads it before launching any review pass and never silently reverts to the default; also
-note it in the final report. Resolve in priority order:
+a file inside the checkout under review (see priority 2). Resolve once **before fresh startup reads any
+candidate evidence**, pass that resolved value to `campaign-start.py`, and never let the command derive it.
+After the complete metadata-only preflight passes, `ledger.py init` publishes it with the rest of the
+header in one atomic write, before startup reads a PR body or diff (`startup.md`). Every later heartbeat
+re-reads it before launching a review and never silently reverts to the default; also note it in the final
+report. Resolve in priority order:
 
 1. **Explicit invocation.** User named a reviewer for this run (e.g. "review with codex", or "review
    natively") → use it. This **overrides** the default below.
@@ -27,8 +28,8 @@ note it in the final report. Resolve in priority order:
    is launched from that checkout, have it read as a saved preference, overriding the cross-engine default
    and letting candidate-controlled content pick its own reviewer. The preference comes ONLY from explicit
    invocation or the orchestrator's own out-of-checkout memory. Because the choice is resolved at run
-   start and pinned to the ledger `reviewer` field before the first pass reads the diff, no candidate
-   file can reach the selection.
+   start and is already fixed before any candidate input is read, no candidate file can reach the
+   selection. Its later atomic ledger write makes that choice durable before any review input is prepared.
 3. **Default — the cross-engine route for the active host.** No preference → Claude Code reviews with
    Codex (`codex exec`) and Codex reviews with Claude Code (`claude -p`), launched at native-limitation
    level whenever the paired CLI is present. Fall back to a fresh, context-isolated **native worker** on

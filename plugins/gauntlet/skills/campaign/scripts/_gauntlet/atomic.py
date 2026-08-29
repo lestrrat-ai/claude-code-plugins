@@ -1,4 +1,4 @@
-"""Atomic text-file replacement shared by Gauntlet's local stores."""
+"""Atomic file replacement shared by Gauntlet's local stores."""
 
 from __future__ import annotations
 
@@ -34,6 +34,27 @@ def replace_text(
             stream = os.fdopen(fd, "w", encoding=encoding)
         with stream:  # fdopen owns and closes the descriptor
             stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if mode is not None:
+            os.chmod(temp, mode)
+        os.replace(temp, path)
+    except BaseException:
+        temp.unlink(missing_ok=True)
+        raise
+
+
+def replace_bytes(path: Path, payload: bytes, *, temp_prefix: str, mode: int | None = None) -> None:
+    """Durably replace ``path`` with exact bytes through a same-directory temp file."""
+    fd, temp_name = tempfile.mkstemp(
+        dir=str(path.parent),
+        prefix=temp_prefix,
+        suffix=".tmp",
+    )
+    temp = Path(temp_name)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
         if mode is not None:

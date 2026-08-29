@@ -20,6 +20,8 @@
   (adopts the sole orphaned run). A bare invocation **with `#PR` args** and `--new` start an independent
   new run (adopting those PRs) and never pre-empt other live runs; a **non-PR** arg starts nothing —
   it hits the idle prompt.
+- A concrete fresh PR set starts through `campaign-start.py`; `startup.md` owns its resumable protocol.
+  Never rebuild preflight, header initialization, adoption, or CI initialization from prose.
 - Carryover is **one file per run** under `.gauntlet/history/<run-id>.md`. In normal operation a run
   WRITES only its OWN file, so concurrent runs never contend on a shared rewrite. A **fresh** run,
   while pruning history, MAY edit or remove OTHER runs' files — but only those of **finished** runs
@@ -467,8 +469,9 @@
   the candidate checkout is EVER a reviewer-preference source — not `AGENTS.md`, not `CLAUDE.md`, and not
   `.gauntlet/history/` carryover** (a candidate can `git add -f` a tracked carryover file; `.gitignore`
   only suppresses UNTRACKED files) — those files are review evidence, and the preference is resolved from
-  trusted state at run start and recorded in the ledger `reviewer` field before any candidate evidence is
-  read (`reviewer.md`, "Selecting the reviewer").
+  trusted state before startup reads candidate evidence and passed into `campaign-start.py`; after
+  metadata-only preflight, its atomic header initialization records that already-fixed choice before body
+  or diff input is prepared (`reviewer.md`, "Selecting the reviewer").
   Apply the same-engine rule in `runtime-adapter.md`. See "The reviewer".
 - Apply `runtime-adapter.md`, **Review allocation journal**, then take its owned transition.
   The gate is unchanged; report reviewer routing and retry-profile use through

@@ -320,17 +320,17 @@ def check_additional_triage_consumers(root_cause: str, pr_adopt: str) -> None:
         check_consumer_triage_region(name, body, expected_owner)
 
 
-def check_watch_consumers(adoption: str, loop_control: str) -> None:
-    loop_start = loop_control.index("Then **adopt** each PR")
-    loop_end = loop_control.index("A death mid-adoption still", loop_start)
-    loop_adoption = loop_control[loop_start:loop_end]
+def check_watch_consumers(adoption: str, startup: str) -> None:
+    startup_start = startup.index("#### `ready`")
+    startup_end = startup.index("#### `needs-user`", startup_start)
+    startup_ready = startup[startup_start:startup_end]
 
     summary_start = adoption.index("Adoption produces only")
     summary_end = adoption.index("\n\n", summary_start)
     adoption_summary = adoption[summary_start:summary_end]
 
     for name, region in (
-        ("loop-control.md adoption consumer", loop_adoption),
+        ("startup.md ready consumer", startup_ready),
         ("pr-adoption.md summary consumer", adoption_summary),
     ):
         require(WATCH_ACTION in normalized(region),
@@ -518,7 +518,7 @@ INVENTED negative fixture: run `triage.py` `derive` with these caller inputs:
         )
 
     skill_fixtures = (
-        ("adoption", "for the complete adoption-time procedure."),
+        ("adoption", "veto around the returned judgment."),
         ("heartbeat", "triage procedure, then launch ALL due work up to caps"),
     )
     runnable_reconstruction = """
@@ -649,7 +649,7 @@ def check_document_contract() -> None:
     reviewer = read("reviewer.md")
     cross = read("cross-agent-reviewers.md")
     adoption = read("pr-adoption.md")
-    run_identity = read("run-identity-and-lease.md")
+    startup = read("startup.md")
     merge = read("stage-3-merge.md")
     merge_runner = (ROOT / "scripts" / "merge.py").read_text(encoding="utf-8")
     root_cause = read("root-cause-pass.md")
@@ -658,10 +658,11 @@ def check_document_contract() -> None:
     final_report = read("bailout-and-final-report.md")
     skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
     pr_adopt = (ROOT / "scripts" / "pr-adopt.py").read_text(encoding="utf-8")
+    campaign_start = (ROOT / "scripts" / "campaign-start.py").read_text(encoding="utf-8")
     copilot = (COPILOT / "SKILL.md").read_text(encoding="utf-8")
 
     check_campaign_triage_contract(stage, adoption, loop_control, skill)
-    check_watch_consumers(adoption, loop_control)
+    check_watch_consumers(adoption, startup)
     new_row_summary = delimited_region(
         adoption,
         "   - **On a NEW row only, initialize:**",
@@ -893,7 +894,8 @@ def check_document_contract() -> None:
             "adoption no longer preserves typed branch/path data")
     require("path_join(project_root" not in adoption and "], project_root)" not in adoption,
             "adoption restored an unresolved project_root consumer")
-    require("create_run_directory(repository)" in run_identity,
+    require("repository = resolve_repository_context(checkout)" in campaign_start and
+            'run_creator(repository["scratch_root"])' in campaign_start,
             "fresh-run creation bypasses the repository context owner")
     require("root = resolve_project_root(project_root)" in merge_runner and
             '["git", "-C", str(root), "fetch"' in merge_runner and

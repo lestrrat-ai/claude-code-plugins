@@ -27,6 +27,8 @@ At every entry/resume, before any other work:
   one final-report producer.
 - Read `references/run-identity-and-lease.md` and `references/files-and-ledger.md` before touching run
   state.
+- Read `references/startup.md` before starting or resuming a run whose `pending_adoption` checkpoint is
+  still set. Its command protocol owns fresh-run setup.
 
 The **adversarial reviewer** is a selectable role: by default the cross-engine route (Claude Code
 reviews with `codex exec`, Codex reviews with `claude -p`), launched at native-limitation level
@@ -73,45 +75,31 @@ it — no trigger means the step runs unconditionally at that point in the seque
 
 1. Resolve args to a run intent (`references/run-identity-and-lease.md`, "Resolving a heartbeat",
    owns resolution).
-2. Fresh run -> `run-id.py new`: mint the run-id and ATOMICALLY create its run directory, then apply
-   carryover from earlier runs (`references/carryover.md`).
-3. `lease.py acquire` (`refresh` on resume): take or keep the run lease; stand down if a fresh lease
-   names a different owner. One active driver per run — never double-drive. **Take a run in order**
-   (`references/run-identity-and-lease.md`, "Take a run"): BEFORE arming, record the run intent
-   (`ledger.py header set pending_adoption "<pr>…"`, cleared when adoption finishes) and — where the
-   host supports it — ensure the session watchdog nudge
-   (`references/runtime-adapter.md`, "Session watchdog nudge"). It audits a live session's campaign
-   soundness; it does not recover a dead session.
-4. Run start -> `ledger.py --file <state.jsonl> header set skill_version <version>`: record the
-   `version` read from the **running plugin's** `plugin.json`. The harness loads this skill from the
-   **installed plugin cache**, so a merged, version-bumped rule governs nothing until that cache
-   refreshes; record what is actually running.
-5. Run start -> set `reviewer` in the ledger header (`references/reviewer.md`) — once, never
-   re-derived from memory. Header fields are DATA: re-read `reviewer` from the ledger every heartbeat,
-   never trust memory. The base a PR merges into is **per-row** now (`effective_base` — the row's
-   recorded base, else the header's legacy `base_branch` fallback), so **re-resolve each active PR's
-   effective base every heartbeat**, never assume `main`. To rule a class out of scope for the WHOLE run
-   in one place, set the run's default Non-goals once (`ledger.py header set default_non_goals '["<body>",
-   …]'`, `references/files-and-ledger.md`); `pr-adopt.py intent-sync` folds them into every adopted PR's
-   intent, so you never hand-edit each `intent-<pr>.md`.
+2. Fresh run -> `campaign-start.py new`: pass the complete PR set, supplied checkout, active host,
+   reviewer already resolved from trusted state, and any run-default Non-goals. Then obey only the JSON
+   state it returns (`references/startup.md`). The coordinator owns full-set preflight, run creation,
+   complete-header initialization, lease take, adoption, semantic handoffs, and CI initialization.
+3. Incomplete startup -> continue the command returned by its prior state. A wake produced by
+   `needs-host-arm` runs the returned `take` with that arming's proof; an acquired owner runs `advance`;
+   a manual entry with no usable token runs `resume`. Continue until `ready`; never replay setup by hand.
+4. Existing completed run -> `lease.py refresh`: keep the run lease and stand down on `superseded` or
+   any refusal. One active driver per run. Re-read every header field, including `reviewer`, every
+   heartbeat. Resolve each row's base through `effective_base`, never assume `main`.
 
 **Adoption** (`references/pr-adoption.md`) — for each explicit `#PR` arg, and on every heartbeat for
 every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snapshot):
 
-6. Fetch the PR; REFUSE foreign-owned and cross-repo/fork PRs. REFUSE an existing terminal row before
-   any refresh, label, worktree, or intent work. For new and existing non-terminal rows, register the
-   ledger row (refresh in place on re-adoption, never duplicate), run label, status label, and worktree.
-   THEN write (or preserve) the PR's **base** intent artifact (`intent-<pr>.md`: `## Purpose` /
-   `## Non-goals` / `## Threat model`;
-   local, git-ignored, never written back to the PR) and `pr-adopt.py intent-sync` to fold the run's
-   default Non-goals into its managed block — the row must exist FIRST, because `intent-sync` REFUSES a PR
-   with no ledger row (`pr-adoption.md`). Before gate work, follow
-   `references/stage-2-review-gate.md`, "2a-triage", for the complete adoption-time procedure.
-   Apply item 21, "CI watch action".
-7. `review-pass.py intent-check --file <rundir>/intent-<pr>.md --ledger <rundir>/state.jsonl`: run
-   immediately after writing an intent artifact and syncing it, before dispatching the PR's first review —
-   the same parser every pass later loads, plus a check that the managed block is in sync with the run
-   header's `default_non_goals`, so a malformed or stale intent fails before review work is spent.
+5. Fresh-run adoption is performed by `campaign-start.py`; the driver supplies only the returned tier and
+   intent judgment. The coordinator calls the adoption, triage, intent, label, and CI owners and returns
+   `ready` only after their preconditions pass (`references/startup.md`). The tier decision remains owned
+   by `references/stage-2-review-gate.md`, "2a-triage"; the coordinator executes its mechanical floor and
+   veto around the returned judgment.
+6. Heartbeat discovery or re-adoption -> `pr-adopt.py adopt`: follow `references/pr-adoption.md`. It
+   refuses foreign-owned, fork, non-open, and terminal rows before their prohibited mutations, and it
+   refreshes a non-terminal row in place.
+7. Before any first review dispatch, require the row's current tier and validated intent. Fresh startup
+   establishes both through `campaign-start.py`; re-adoption follows the existing checks in
+   `references/pr-adoption.md` and `references/stage-2-review-gate.md`.
 
 **Heartbeat loop** (`references/loop-control.md` — read at each heartbeat before dispatch)
 
@@ -284,6 +272,7 @@ a line the tool writes.
 |---|---|---|
 | `run-id.py` | Mint a run-id and ATOMICALLY create its run directory (`new`) | `references/run-identity-and-lease.md` |
 | `lease.py` | Run-lease accessor: `mint` / `acquire` / `refresh` / `release` / `read` | `references/run-identity-and-lease.md` |
+| `campaign-start.py` | Resumable fresh-run coordinator: full-set preflight, atomic complete header, host handoffs, lease take, adoption, semantic binding, and CI initialization | `references/startup.md` |
 | `pr-adopt.py` | `plan` / `adopt` — mechanically adopt an existing first-party PR into a run: refuse fork/foreign/non-open, register the ledger row + ownership/status labels, discover-or-create the PR-head worktree | `references/pr-adoption.md` |
 | `triage.py` | `derive` — classify one stable, SHA-pinned PR diff and emit the per-file inventory + reasons and a mechanical FLOOR tier (SENSITIVE→HIGH, any non-prose→STANDARD, all-prose→no floor; never TRIVIAL — the orchestrator decides the tier); optional `--tier` vetoes a below-floor tier | `references/stage-2-review-gate.md` |
 | `heartbeat.py` | Emit the lean same-session wake prompts (scheduled heartbeat and session watchdog) the driver arms for its next wake | `references/runtime-adapter.md` |
@@ -384,6 +373,8 @@ Always read before touching run state:
 
 - `references/run-identity-and-lease.md`
 - `references/files-and-ledger.md`
+
+Read `references/startup.md` before a fresh run or any resume whose `pending_adoption` is set.
 
 Read `references/loop-control.md` at each heartbeat before dispatch.
 

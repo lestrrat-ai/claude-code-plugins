@@ -5,8 +5,8 @@ A run-id namespaces everything a run owns — its `<rundir>`, its ledger, and it
 PR labels. Until now, minting one was an inline shell snippet in `run-identity-and-lease.md`
 (a minute-resolution timestamp plus a short random hex suffix) and the "create the run dir atomically, retry on
 the rare clash" step was adapter **pseudocode** (`create_run_directory(...)`) with no bundled
-implementation. THIS script now owns both — the mint and the atomic create + retry — and the adapter's
-`create_run_directory` delegates here. That
+implementation. THIS script now owns both — the mint and the atomic create + retry — and both the
+adapter operation and `campaign-start.py` delegate here. That
 atomicity is a real correctness property, not a detail: the `mkdir` that FAILS when the directory already
 exists is the single thing that stops two freshly-started runs from silently sharing one rundir and ledger
 — the exact double-drive the lease exists to prevent, one layer up. Prose a driver reproduces by hand is
