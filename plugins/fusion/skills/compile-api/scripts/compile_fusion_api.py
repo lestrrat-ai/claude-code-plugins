@@ -18,6 +18,13 @@ types were recognised, so a shape this compiler never anticipated is counted
 too. A target part that binds no name counts the same way, even where another
 part of the same statement did bind one.
 
+The stubs are documentation and disagree with the shipped runtime in a few known places. A member
+this compiler knows the runtime does not define is DROPPED rather than indexed, so the database
+answers "does this exist" the way Fusion does; ``STUB_ONLY_MEMBERS`` names every such member and
+owns the reasoning, and ``meta.stub_only_members_dropped`` records what a given compile removed. An
+entry that stops matching is reported on stderr rather than passed over, so the list cannot go
+stale in silence.
+
 Default output is the user-level cache (``~/.cache/fusion-api-db/fusion-api.db``),
 which the query script prefers over the database bundled with the plugin. Pass
 ``--output`` to write elsewhere (e.g. the bundled path in the authoring repo).
@@ -41,8 +48,10 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
 import datetime
 import http.client
+import io
 import json
 import os
 import re
@@ -108,6 +117,40 @@ MAX_PARSE_BYTES = 8 * 1024 * 1024
 SOCKET_TIMEOUT_SECONDS = 60
 MAX_RESPONSE_SECONDS = 120
 READ_CHUNK_BYTES = 64 * 1024
+
+# Members the stubs declare that the SHIPPED RUNTIME does not define, dropped from the database
+# rather than indexed.
+#
+# The stubs are auto-generated DOCUMENTATION; the module Fusion imports is the SWIG output under
+# `API/Python/packages/adsk`. Where the two disagree the runtime is what user code meets, so a
+# member only the stub declares is an answer of "yes, that exists" to a question whose real answer
+# is AttributeError. A checker asking this database whether a call resolves is exactly the consumer
+# that gets it wrong.
+#
+# Each entry is established by diffing a stub set against the SAME Fusion build's runtime modules,
+# never against a different build: the reference repo tracks a newer API than an installed Fusion,
+# and every difference that skew produces is a version gap rather than a defect. Version-matched,
+# the diff yields the two names below and nothing else (2026-09-02, Fusion build 61bf25b2 against
+# the stubs that build ships).
+#
+#   * `cast` is bound per class by an assignment at the end of each runtime module
+#     (`Application.cast = lambda arg: ...`). `Base` gets no such line, so `adsk.core.Base.cast`
+#     does not exist and nothing inherits `cast` from it either; every other runtime class that has
+#     `cast` binds its own.
+#   * `adsk.core.EventHandler` is documentation-only. The runtime defines the concrete
+#     `<Event>EventHandler` classes and no `EventHandler` at all, so its `cast` cannot resolve.
+#
+# RESIDUAL, disclosed rather than fixed: this list drops MEMBERS, so `adsk.core.EventHandler` stays
+# indexed as a class even though the runtime has no such name. Deleting the class would break the
+# base chain of the stub classes that declare it as their base, which is a worse answer than a
+# class whose members are accurate. A caller who needs "is this class importable" cannot get it
+# from here.
+STUB_ONLY_MEMBERS = frozenset(
+    {
+        ("adsk.core", "Base", "cast"),
+        ("adsk.core", "EventHandler", "cast"),
+    }
+)
 
 # A tree entry name must be a plain `.py` file name that lands directly in the staging directory:
 # no separator, no leading dot, no `..`, nothing absolute.
@@ -737,6 +780,36 @@ def compile_module(db: DocDb, path: Path) -> int:
     return unhandled
 
 
+def drop_stub_only_members(db: DocDb) -> tuple[list[str], list[str]]:
+    """Delete every member `STUB_ONLY_MEMBERS` names; return (dropped, stale) qualnames.
+
+    `stale` holds the entries that matched no row, and the caller warns about each one. That
+    warning is the only thing standing between this list and silent rot: an upstream stub that
+    stops declaring the member, a class renamed, or a typo in the tuple all produce an entry that
+    removes nothing, and an entry suppressing nothing is indistinguishable from a working one
+    without the check. It is a warning and not a failure because upstream fixing its own stub must
+    not break a compile.
+
+    `meta.unhandled_statements` is deliberately untouched. That count answers "what did the
+    compiler fail to understand", and these statements were understood completely — they are
+    dropped for disagreeing with the runtime, which is a different fact and is recorded separately
+    in `meta.stub_only_members_dropped`.
+    """
+    dropped: list[str] = []
+    stale: list[str] = []
+    for module, class_name, member in sorted(STUB_ONLY_MEMBERS):
+        # Scoped by module AND class name rather than by member name alone: `cast` is declared on
+        # over a thousand classes, and every one of the others is real.
+        cur = db.conn.execute(
+            "DELETE FROM members WHERE name = ? AND symbol_id IN"
+            " (SELECT id FROM symbols WHERE module = ? AND name = ? AND kind = 'class')",
+            (member, module, class_name),
+        )
+        target = f"{module}.{class_name}.{member}"
+        (dropped if cur.rowcount else stale).append(target)
+    return dropped, stale
+
+
 def fill_database(
     db: DocDb, stub_paths: list[Path], source_desc: str, sha: str, ref: str
 ) -> tuple[int, int, int]:
@@ -746,6 +819,9 @@ def fill_database(
     as well as returned, so a database carries the number of constructs its compiler did not
     understand rather than only the symbols it did.
 
+    The stub-only members are dropped here, between the last stub and the first count, so the
+    totals returned describe the database that is written rather than the one that was parsed.
+
     `meta.source_ref` records what was ASKED FOR and `meta.source_commit` what that resolved to, so
     the two are checkable against each other. A commit id alone cannot be checked: it says which
     commit was compiled and nothing about whether it is the one the operator named.
@@ -753,6 +829,15 @@ def fill_database(
     unhandled = 0
     for path in stub_paths:
         unhandled += compile_module(db, path)
+    # Before the counts below, so the symbol and member totals a compile reports describe the
+    # database it actually wrote.
+    dropped, stale = drop_stub_only_members(db)
+    for target in stale:
+        err(
+            f"warning: {target} is listed in STUB_ONLY_MEMBERS but the stubs no longer declare it;"
+            " drop the entry after confirming against the runtime module"
+        )
+    db.set_meta("stub_only_members_dropped", json.dumps(dropped))
     db.set_meta("unhandled_statements", str(unhandled))
     db.set_meta("schema_version", SCHEMA_VERSION)
     db.set_meta("source", source_desc)
@@ -811,6 +896,106 @@ def build_database(
     return symbols, members, unhandled
 
 
+class SelfTestFailure(RuntimeError):
+    """One self-test assertion that did not hold."""
+
+
+def check(condition: bool, message: str) -> None:
+    if not condition:
+        raise SelfTestFailure(message)
+
+
+# A stub set shaped like the real one in the ONE respect these fixtures test: `cast` is declared
+# identically on a class the runtime gives it to and on a class the runtime does not, so nothing but
+# STUB_ONLY_MEMBERS can tell the two apart. `EventHandler` is deliberately absent so the stale-entry
+# warning has something to fire on.
+SELF_TEST_STUB = '''
+class Base():
+    """The base class that all other classes are derived from."""
+    @staticmethod
+    def cast(arg) -> Base:
+        return Base()
+    @staticmethod
+    def classType() -> str:
+        return str()
+
+class Point3D(Base):
+    """A point."""
+    @staticmethod
+    def cast(arg) -> Point3D:
+        return Point3D()
+    @property
+    def x(self) -> float:
+        return float()
+'''
+
+
+def self_test() -> int:
+    """Compile SELF_TEST_STUB and assert what the stub-only drop does and does not remove."""
+    with tempfile.TemporaryDirectory(prefix="fusion-self-test-") as tmpdir:
+        root = Path(tmpdir)
+        stub = root / "core.py"
+        stub.write_text(SELF_TEST_STUB, encoding="utf-8")
+        output = root / "self-test.db"
+        # err() writes through `sys.stderr`, so redirecting it captures the warnings this compile
+        # raises instead of leaving them on the terminal of a run that is asserting them.
+        captured = io.StringIO()
+        with contextlib.redirect_stderr(captured):
+            build_database([stub], output, str(root), "local", "local")
+        stderr = captured.getvalue()
+        conn = sqlite3.connect(output)
+        try:
+            present = {
+                (module, symbol, member)
+                for module, symbol, member in conn.execute(
+                    "SELECT s.module, s.name, m.name FROM members m"
+                    " JOIN symbols s ON s.id = m.symbol_id"
+                )
+            }
+            meta = dict(conn.execute("SELECT key, value FROM meta"))
+        finally:
+            conn.close()
+
+    check(
+        ("adsk.core", "Base", "cast") not in present,
+        "adsk.core.Base.cast must be dropped: the runtime binds `cast` per class and gives Base"
+        " no such attribute, so indexing it tells a caller a call resolves that raises",
+    )
+    check(
+        ("adsk.core", "Base", "classType") in present,
+        "the drop must be scoped to the listed member: Base's other members are real and stay",
+    )
+    check(
+        ("adsk.core", "Point3D", "cast") in present,
+        "the drop must be scoped to the listed CLASS: `cast` is declared on over a thousand"
+        " classes and every one of the others is real",
+    )
+    check(
+        json.loads(meta["stub_only_members_dropped"]) == ["adsk.core.Base.cast"],
+        "meta.stub_only_members_dropped must record exactly what this compile removed;"
+        f" got {meta.get('stub_only_members_dropped')!r}",
+    )
+    check(
+        meta["unhandled_statements"] == "0",
+        "a dropped member is understood, not unhandled — the two counts must stay separate",
+    )
+    # The stale-entry warning is the only thing that can catch STUB_ONLY_MEMBERS going out of date,
+    # so it is asserted rather than assumed. This stub declares no `EventHandler`, which is exactly
+    # the shape an upstream fix would produce.
+    check(
+        "adsk.core.EventHandler.cast" in stderr
+        and "STUB_ONLY_MEMBERS" in stderr,
+        "an entry that matched nothing must be reported on stderr; without that warning a stale"
+        f" entry is indistinguishable from a working one. stderr was: {stderr!r}",
+    )
+    check(
+        "adsk.core.Base.cast is listed" not in stderr,
+        "an entry that DID match must not be reported as stale",
+    )
+    out("self-test: ok")
+    return 0
+
+
 def main() -> int:
     parser = SanitizedParser(description=__doc__)
     # Mutually exclusive, because a `--source` compile resolves no ref: it parses the directory it
@@ -837,7 +1022,22 @@ def main() -> int:
         default=Path.home() / ".cache" / "fusion-api-db" / "fusion-api.db",
         help="database path to write (default: %(default)s)",
     )
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="compile a built-in stub and assert the stub-only member drop, then exit",
+    )
     args = parser.parse_args()
+
+    if args.self_test:
+        # Ahead of every other compile path, and it returns rather than falling through: the
+        # self-test builds its own stub in its own temporary directory, so `--output` and `--ref`
+        # have nothing to act on and are ignored (the SKILL.md option entry says so).
+        try:
+            return self_test()
+        except (SelfTestFailure, OSError, sqlite3.Error) as exc:
+            err(f"error: self-test: {exc}")
+            return 1
 
     try:
         if args.source is not None:

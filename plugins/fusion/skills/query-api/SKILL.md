@@ -52,5 +52,11 @@ Invocation: Claude Code `/fusion:query-api`; Codex `$fusion:query-api`.
    in the database — report them as such, and recompile with `/fusion:compile-api` (Codex
    `$fusion:compile-api`).
 
+The database tracks what the Fusion runtime defines, not what the reference stubs declare. The stubs
+declare a few members the shipped module does not define, and `compile-api` drops those, so a member
+this database does not list is one a call cannot reach — that is the answer to give, not a gap to
+work around. `info` names what the database in use dropped (`stub_only_members_dropped`);
+`compile-api`'s `STUB_ONLY_MEMBERS` owns the list and the reasoning.
+
 Read-only. The bundled database ships with the plugin; NEVER edit or regenerate it here — regeneration
 is `compile-api`'s job.
