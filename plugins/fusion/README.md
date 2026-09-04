@@ -2,7 +2,8 @@
 
 Look up the Autodesk Fusion 360 Python API (`adsk.core`, `adsk.fusion`, `adsk.cam`, …) without leaving
 your session. A SQLite database compiled from the official
-[FusionAPIReference](https://github.com/AutodeskFusion360/FusionAPIReference) intellisense stubs ships
+[FusionAPIReference](https://github.com/AutodeskFusion360/FusionAPIReference) intellisense stubs — minus
+the handful of members those stubs declare that the shipped Fusion runtime does not define — ships
 with the plugin, so queries work offline out of the box.
 
 ## Skills

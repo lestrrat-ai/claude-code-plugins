@@ -384,3 +384,14 @@ jobs:
       # passing that the runner guards, and fails if any of those came back zero or unreported.
       - name: Shared fixture runner refuses every way of not passing
         run: python3 plugins/gauntlet/skills/campaign/scripts/self-test-runner-test.py
+
+      # The Fusion compiler's stub-only member drop, executed. The reference stubs are auto-generated
+      # DOCUMENTATION and declare members the module Fusion actually imports does not define, so the
+      # compiler drops those; a database that indexed them would tell a caller a call resolves that
+      # raises AttributeError. The fixtures pin the two ways this goes wrong silently: a drop scoped by
+      # member name alone would delete `cast` from the thousand-plus classes that really have it, and a
+      # STUB_ONLY_MEMBERS entry that matches nothing would keep reading like a working one, so the
+      # stale-entry warning is asserted rather than assumed. The stub is built into the script, so this
+      # step needs no network and writes only inside its own temporary directory.
+      - name: Fusion stub-only member drop
+        run: python3 plugins/fusion/skills/compile-api/scripts/compile_fusion_api.py --self-test
