@@ -58,5 +58,9 @@ this database does not list is one a call cannot reach — that is the answer to
 work around. `info` names what the database in use dropped (`stub_only_members_dropped`);
 `compile-api`'s `STUB_ONLY_MEMBERS` owns the list and the reasoning.
 
+For several related lookups, start the optional local JSON Lines session with `serve` and keep the
+child process for the questions. Its exact request and response schema, error behavior, and database
+snapshot contract are documented in [the query session protocol](query-session.md).
+
 Read-only. The bundled database ships with the plugin; NEVER edit or regenerate it here — regeneration
 is `compile-api`'s job.

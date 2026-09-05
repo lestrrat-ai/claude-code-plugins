@@ -26,6 +26,7 @@ Subcommands:
     members <class>          list a class's members; --own omits inherited ones
     tree <class>             base chain and direct subclasses
     doc-search <term>        substring search over docstrings
+    serve                    serve show, members, and search over JSON Lines
 
 Member lookups resolve inherited members by default: ``show Class.member``,
 ``show Class``, and ``members Class`` all walk the class's bases and report
@@ -46,7 +47,10 @@ Stdlib only. Read-only: the database is opened with ``mode=ro``.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
+import math
 import re
 import shlex
 import sqlite3
@@ -186,17 +190,29 @@ def fail(message: str) -> NoReturn:
     raise SystemExit(1)
 
 
+class DatabaseOpenError(Exception):
+    """A database could not be opened or did not have the query schema."""
+
+
+def database_path(arg: Path | None) -> Path:
+    return arg if arg is not None else default_db_path()
+
+
 def open_db(arg: Path | None) -> sqlite3.Connection:
-    path = arg if arg is not None else default_db_path()
+    path = database_path(arg)
     if not path.exists():
-        fail(f"database not found at {path}; rebuild it with: {rebuild_command(path)}")
+        raise DatabaseOpenError(
+            f"database not found at {path}; rebuild it with: {rebuild_command(path)}"
+        )
     # as_uri() percent-encodes '?' and '#'. Interpolating the path into the URI instead lets
     # either character end the path component, which opens a different file and drops mode=ro.
     uri = f"{path.resolve().as_uri()}?mode=ro"
     try:
         conn = sqlite3.connect(uri, uri=True)
     except sqlite3.Error as exc:
-        fail(f"cannot open {path} ({exc}); rebuild it with: {rebuild_command(path)}")
+        raise DatabaseOpenError(
+            f"cannot open {path} ({exc}); rebuild it with: {rebuild_command(path)}"
+        ) from exc
     conn.row_factory = sqlite3.Row
     try:
         for probe in (
@@ -207,10 +223,10 @@ def open_db(arg: Path | None) -> sqlite3.Connection:
             conn.execute(probe).fetchone()
     except sqlite3.Error as exc:
         conn.close()
-        fail(
+        raise DatabaseOpenError(
             f"{path} is not a Fusion API database ({exc});"
             f" rebuild it with: {rebuild_command(path)}"
-        )
+        ) from exc
     return conn
 
 
@@ -841,11 +857,24 @@ def cmd_doc_search(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
     return print_capped(lines, total, f"no docstrings mention {args.term!r}")
 
 
-def main() -> int:
+HANDLERS = {
+    "info": cmd_info,
+    "search": cmd_search,
+    "show": cmd_show,
+    "members": cmd_members,
+    "tree": cmd_tree,
+    "doc-search": cmd_doc_search,
+}
+SESSION_COMMANDS = frozenset(("show", "members", "search"))
+PROTOCOL_VERSION = 1
+
+
+def build_parser(*, include_db: bool = True) -> SanitizedParser:
     parser = SanitizedParser(description=__doc__)
-    parser.add_argument(
-        "--db", type=Path, help="explicit database path (goes before the subcommand)"
-    )
+    if include_db:
+        parser.add_argument(
+            "--db", type=Path, help="explicit database path (goes before the subcommand)"
+        )
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("info", help="database provenance and counts")
@@ -872,29 +901,164 @@ def main() -> int:
     p_doc = sub.add_parser("doc-search", help="substring search over docstrings")
     p_doc.add_argument("term")
 
-    args = parser.parse_args()
-    conn = open_db(args.db)
-    handlers = {
-        "info": cmd_info,
-        "search": cmd_search,
-        "show": cmd_show,
-        "members": cmd_members,
-        "tree": cmd_tree,
-        "doc-search": cmd_doc_search,
-    }
+    sub.add_parser("serve", help="serve query requests over JSON Lines")
+    return parser
+
+
+def handler_error_message(
+    db_path: Path, command: str, exc: sqlite3.Error
+) -> str:
+    return (
+        f"{db_path} could not answer {command!r} ({exc});"
+        f" rebuild it with: {rebuild_command(db_path)}"
+    )
+
+
+def protocol_write(payload: dict[str, object]) -> bool:
+    """Write and flush one protocol response, returning false when the parent went away."""
     try:
-        return handlers[args.command](conn, args)
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+    except (BrokenPipeError, UnicodeEncodeError):
+        return False
+    return True
+
+
+def protocol_error(request_id: object, message: str) -> dict[str, object]:
+    return {"id": request_id, "type": "error", "message": message}
+
+
+def usable_request_id(request: object) -> object:
+    if not isinstance(request, dict):
+        return None
+    value = request.get("id")
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (str, int)):
+        return value
+    if isinstance(value, float) and math.isfinite(value):
+        return value
+    return None
+
+
+def parse_session_argv(argv: list[str]) -> tuple[argparse.Namespace | None, str | None]:
+    """Parse one session argv while keeping argparse diagnostics inside the error envelope."""
+    parser = build_parser(include_db=False)
+    captured_out = io.StringIO()
+    captured_err = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(captured_out), contextlib.redirect_stderr(captured_err):
+            args = parser.parse_args(argv)
+    except SystemExit as exc:
+        diagnostics = (captured_err.getvalue() or captured_out.getvalue()).strip()
+        if exc.code == 0:
+            diagnostics = "help is not a session query"
+        return None, f"invalid arguments{': ' + diagnostics if diagnostics else ''}"
+    return args, None
+
+
+def session_request(
+    conn: sqlite3.Connection, db_path: Path, request: object
+) -> tuple[dict[str, object], bool]:
+    """Execute one request and return its response plus whether the session must stop."""
+    request_id = usable_request_id(request)
+    if not isinstance(request, dict):
+        return protocol_error(request_id, "request must be a JSON object"), False
+    unknown = sorted(set(request) - {"id", "argv"})
+    if unknown:
+        return protocol_error(request_id, f"unknown request field(s): {', '.join(unknown)}"), False
+    argv = request.get("argv")
+    if not isinstance(argv, list) or not all(isinstance(item, str) for item in argv):
+        return protocol_error(request_id, "request argv must be an array of strings"), False
+    args, parse_error = parse_session_argv(argv)
+    if parse_error is not None:
+        return protocol_error(request_id, parse_error), False
+    assert args is not None
+    if args.command not in SESSION_COMMANDS:
+        return (
+            protocol_error(request_id, f"unsupported session command: {args.command}"),
+            False,
+        )
+
+    captured_out = io.StringIO()
+    captured_err = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(captured_out), contextlib.redirect_stderr(captured_err):
+            returncode = HANDLERS[args.command](conn, args)
+    except InconsistentHierarchy as exc:
+        return protocol_error(request_id, f"error: {exc}"), False
+    except sqlite3.Error as exc:
+        return protocol_error(request_id, f"error: {handler_error_message(db_path, args.command, exc)}"), True
+    return (
+        {
+            "id": request_id,
+            "type": "result",
+            "returncode": returncode,
+            "stdout": captured_out.getvalue(),
+            "stderr": captured_err.getvalue(),
+        },
+        False,
+    )
+
+
+def serve(arg: Path | None) -> int:
+    """Serve query requests until EOF, keeping one read-only connection for the session."""
+    db_path = database_path(arg)
+    try:
+        conn = open_db(arg)
+    except DatabaseOpenError as exc:
+        protocol_write(protocol_error(None, f"error: {exc}"))
+        return 1
+    try:
+        if not protocol_write(
+            {
+                "type": "ready",
+                "protocol": PROTOCOL_VERSION,
+                "commands": ["show", "members", "search"],
+            }
+        ):
+            return 1
+        input_stream = getattr(sys.stdin, "buffer", sys.stdin)
+        for raw_line in input_stream:
+            try:
+                line = (
+                    raw_line.decode("utf-8")
+                    if isinstance(raw_line, bytes)
+                    else raw_line
+                )
+                request = json.loads(line)
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                response, fatal = protocol_error(None, f"malformed JSON: {exc}"), False
+            else:
+                response, fatal = session_request(conn, db_path, request)
+            if not protocol_write(response):
+                return 1
+            if fatal:
+                return 1
+        return 0
+    finally:
+        conn.close()
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+    if args.command == "serve":
+        return serve(args.db)
+    try:
+        conn = open_db(args.db)
+    except DatabaseOpenError as exc:
+        fail(str(exc))
+    try:
+        return HANDLERS[args.command](conn, args)
     except InconsistentHierarchy as exc:
         # A real failure, not a lookup miss: the database records a hierarchy that cannot exist, so
         # there is no member answer to give. Reported on stderr, where the other real failures go.
         err(f"error: {exc}")
         return 1
     except sqlite3.Error as exc:
-        db_path = args.db if args.db is not None else default_db_path()
-        err(
-            f"error: {db_path} could not answer {args.command!r} ({exc});"
-            f" rebuild it with: {rebuild_command(db_path)}"
-        )
+        err(f"error: {handler_error_message(database_path(args.db), args.command, exc)}")
         return 1
     finally:
         conn.close()
