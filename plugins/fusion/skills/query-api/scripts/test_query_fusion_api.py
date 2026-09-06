@@ -47,7 +47,9 @@ def make_database(path: Path, *, inconsistent: bool = False) -> None:
             "INSERT INTO symbols(module,name,qualname,kind,bases,signature,doc) VALUES(?,?,?,?,?,?,?)",
             (module, name, qualname, "class", json.dumps(bases or []), None, doc),
         )
-        return cursor.lastrowid
+        row_id = cursor.lastrowid
+        assert row_id is not None, "symbol insert did not produce a row ID"
+        return row_id
 
     def member(symbol_id: int, name: str, *, doc: str = "") -> None:
         conn.execute(
