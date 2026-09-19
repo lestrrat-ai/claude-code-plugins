@@ -1,0 +1,6 @@
+interface:
+  display_name: "Gauntlet Campaign"
+  short_description: "Gate pull requests through review and CI"
+
+policy:
+  allow_implicit_invocation: false
